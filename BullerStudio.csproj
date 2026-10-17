@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>BullerStudio</AssemblyName>
+    <RootNamespace>BullerStudio</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <GameAssetsPath Condition="'$(GameAssetsPath)' == '' and '$(GameProjectPath)' != ''">$([System.IO.Path]::GetDirectoryName('$(GameProjectPath)'))\assets</GameAssetsPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(GameProjectPath)' != ''">
+    <DefineConstants>$(DefineConstants);GAME_PLAYER_BUILD</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="HelixToolkit.SharpDX.Core.Wpf" Version="2.27.3" />
+    <PackageReference Include="WattleScript.Interpreter" Version="1.0.0" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(GameProjectPath)' != '' and '$(GameBuildMode)' == 'Included'">
+    <EmbeddedResource Include="$(GameProjectPath)" LogicalName="BullerStudio.GameProject.json" />
+    <EmbeddedResource Include="$(GameAssetsPath)\**\*" LogicalName="BullerStudioAssets/%(RecursiveDir)%(Filename)%(Extension)" Condition="Exists('$(GameAssetsPath)')" />
+  </ItemGroup>
+</Project>

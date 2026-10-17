@@ -1,30 +1,48 @@
 # Buller Studio
 
-Buller Studio is a Windows desktop game engine and editor. Projects are saved locally under `Documents/Buller Studio Projects/<project>/`, with `game.buller.json` for scene and script data and `assets/` for imported files.
+Buller Studio is a native C#/.NET 8 Windows game editor and runtime. It renders a local 3D workspace, manages scene objects and assets, runs Lua X scripts, and builds standalone Windows games.
 
-## Start the editor
+## Run the editor
 
-Install Node.js 20 or newer, then run:
+Install the .NET 8 SDK, then from this folder run:
 
 ```powershell
-npm install
-npm start
+dotnet restore BullerStudio.csproj
+dotnet run --project BullerStudio.csproj
 ```
 
-The first launch creates a project. Later launches open the local project list. Use the three-dot project menu to build or delete a project. `Ctrl+S` saves, `Ctrl+Z` undoes, and `Ctrl+Shift+Z` redoes.
+The editor creates projects under `Documents/Buller Studio Projects/<project>/`. Each project contains `game.buller.json` and an `assets/` folder. Use the Projects screen to create/open projects, or its three-dot menu to build or delete one.
 
-## Editor controls
+## Editing
 
-- Add Parts, MeshParts, ImageLabels, Folders, and Scripts from the toolbar.
-- Edit object transforms, appearance, and camera properties in the Properties panel. Positions and rotations use three numeric components; rotations are degrees.
-- The Workspace includes its persistent Camera object. Custom mode uses the camera's position and rotation. Subject mode orbits its selected Part. In the editor, WASD moves the custom camera, right mouse drag looks around, and the mouse wheel zooms.
-- Import image, OBJ mesh, audio, and font files into the project's `assets/` folder. Assign an imported image to an ImageLabel or an OBJ file to a MeshPart using its Asset path property.
-- Add a Script and use the Lua X panel. `SetProperty(instanceId, propertyName, value)`, `GetProperty(instanceId, propertyName)`, `GetAssetPath(assetName)`, `WaitForChild(parentIdOrWorkspace, childName)`, `ConnectTouched(instanceId, callback)`, and `print(...)` are available in game builds. `WaitForChild("Workspace", "Part")` finds an immediate child by name and returns its ID. Touched callbacks receive the other object's ID.
-- The scene and game renderer use the Workspace Camera and support directional shadows.
-- Drag an Explorer, Scene, Properties, or lower-panel header over another panel to swap their snapped workspace positions.
+- Create `Part`, `MeshPart`, `ImageLabel`, `Folder`, and `Script` objects from the toolbar. The Workspace always keeps one Camera.
+- Edit Position, Rotation (degrees), Size, Color, Anchored, and CastShadow in Properties. Transform values are separate vectors; there is no CFrame type.
+- The Workspace Camera has `Mode` (`Custom` or `Subject`), `Position`, `Rotation`, `Subject`, and `FieldOfView` properties. Custom mode uses Position and Rotation. Subject mode orbits the selected Part or MeshPart. The scene view uses this same camera.
+- Use right mouse drag to turn the editor camera, WASD/QE to move it, and the wheel to zoom. Camera controls only affect the editor camera; games have no built-in player or character.
+- Import PNG/JPEG/BMP/GIF images and Wavefront OBJ meshes into the local assets list. Assign an asset's relative path, such as `assets/tree.obj`, to a MeshPart or `assets/logo.png` to an ImageLabel. Lua X can also access imported asset paths.
+- `Ctrl+S` saves, `Ctrl+Z` undoes, `Ctrl+Shift+Z` redoes, and `Delete` removes a selected non-camera object.
+- Drag Explorer, Properties, or the lower panel header to snap that panel into a workspace region.
+
+## Lua X
+
+Scripts use a sandboxed Lua interpreter. Instances are available by name and under `game.Workspace`. Useful APIs include:
+
+```lua
+local part = game.Workspace:WaitForChild("Part")
+part:SetProperty("Position", {X = 0, Y = 3, Z = 0})
+print(part:GetProperty("Name"))
+part.Touched:Connect(function(other)
+    print("Touched", other.Name)
+end)
+local imagePath = GetAssetPath("logo.png")
+```
+
+`SetProperty(instance, property, value)`, `GetProperty(instance, property)`, `WaitForChild(parent, childName)`, `ConnectTouched(instance, callback)`, `GetAssetPath(assetName)`, and `print(...)` are available. `waitforchild` and lowercase `touched` aliases are supported. Touched events are generated for overlapping Part/MeshPart bounds.
 
 ## Build games
 
-Select **Included** to package the project's assets inside its Windows portable executable, or **External assets** to emit the executable with an `assets/` directory beside it. Builds are saved to a named folder in Downloads. Building downloads Electron and packaging dependencies when needed. The editor itself runs as a desktop Electron application; `npm run dist` packages the editor as a Windows portable executable.
+Choose **Included** to embed the project and its assets into the game executable, or **Excluded** to place `game.buller.json` and an `assets/` folder beside the executable. Build output is placed in a named subfolder in Downloads. Builds use `dotnet publish` for a self-contained Windows x64 single-file executable; the .NET SDK and a network connection may be needed on the first build to restore the Windows runtime pack.
 
-This first engine release renders box Parts, image planes, and OBJ meshes. Projects and imported files stay on the local computer. The Lua X runtime is based on Lua 5.3 through Fengari; the language and engine API will grow with later engine versions.
+## Engine capabilities
+
+The first version includes a Direct3D scene view with directional lighting and shadow mapping, local project persistence, basic parts and folders, OBJ mesh and image rendering, camera modes, a Lua X runtime, and included/excluded game packaging. This version does not include physics simulation, glTF import, multiplayer, or built-in character controllers.

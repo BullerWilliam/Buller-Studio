@@ -1,0 +1,80 @@
+<Window x:Class="BullerStudio.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
+        Title="Buller Studio" Width="1500" Height="940" MinWidth="1120" MinHeight="720"
+        Background="{StaticResource AppBackground}" Foreground="{StaticResource TextPrimary}"
+        KeyDown="Window_KeyDown">
+  <Grid x:Name="RootGrid">
+    <Grid.RowDefinitions><RowDefinition Height="38"/><RowDefinition Height="42"/><RowDefinition Height="*"/><RowDefinition Height="24"/></Grid.RowDefinitions>
+    <Border Grid.Row="0" Background="#151B28" BorderBrush="{StaticResource PanelBorder}" BorderThickness="0,0,0,1">
+      <DockPanel Margin="12,0">
+        <TextBlock VerticalAlignment="Center" FontSize="13" FontWeight="Bold" Foreground="#EDF3FD"><Run Text="BULLER "/><Run Text="STUDIO" Foreground="#65A4FF"/></TextBlock>
+        <StackPanel Orientation="Horizontal" Margin="22,0"><Button Content="File" Click="ShowProjects_Click"/><Button Content="Edit" Click="Undo_Click"/><Button Content="View"/><Button Content="Help" Click="Help_Click"/></StackPanel>
+        <TextBlock x:Name="TitleProjectPath" DockPanel.Dock="Right" VerticalAlignment="Center" Foreground="{StaticResource TextMuted}" FontSize="11"/>
+      </DockPanel>
+    </Border>
+    <Border Grid.Row="1" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="0,0,0,1">
+      <DockPanel Margin="8,0">
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <Button Content="⌂ Projects" Click="ShowProjects_Click"/><Button Content="Save   Ctrl+S" Click="Save_Click"/>
+          <Button Content="↶" Width="34" Click="Undo_Click"/><Button Content="↷" Width="34" Click="Redo_Click"/>
+          <Button Content="＋ Part" Click="AddPart_Click"/><Button Content="◈ Mesh" Click="AddMesh_Click"/><Button Content="▧ Image" Click="AddImage_Click"/>
+          <Button Content="▰ Folder" Click="AddFolder_Click"/><Button Content="⌘ Script" Click="AddScript_Click"/>
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="IncludedButton" Content="Included" Click="Included_Click"/>
+          <Button x:Name="ExcludedButton" Content="Excluded" Click="Excluded_Click"/>
+          <Button Content="▶ Build .exe" Background="#316FBA" Click="Build_Click"/>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+    <Grid x:Name="WorkspaceGrid" Grid.Row="2" Margin="1">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="232"/><ColumnDefinition Width="*"/><ColumnDefinition Width="292"/></Grid.ColumnDefinitions>
+      <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="190"/></Grid.RowDefinitions>
+      <Border x:Name="ExplorerPanel" Grid.Column="0" Grid.RowSpan="2" Background="{StaticResource PanelBackground}" BorderBrush="#0D121C" BorderThickness="0,0,1,0" Tag="DockPanel">
+        <Grid><Grid.RowDefinitions><RowDefinition Height="34"/><RowDefinition Height="*"/><RowDefinition Height="38"/></Grid.RowDefinitions>
+          <Border Grid.Row="0" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="0,0,0,1" MouseLeftButtonDown="DockHeader_MouseLeftButtonDown" MouseMove="DockHeader_MouseMove" MouseLeftButtonUp="DockHeader_MouseLeftButtonUp"><DockPanel Margin="10,0"><TextBlock Text="EXPLORER" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/><TextBlock x:Name="ObjectCount" DockPanel.Dock="Right" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" FontSize="10"/></DockPanel></Border>
+          <TreeView x:Name="ExplorerTree" Grid.Row="1" Margin="5" Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextPrimary}" SelectedItemChanged="ExplorerTree_SelectedItemChanged">
+            <TreeView.Resources><HierarchicalDataTemplate DataType="{x:Type models:SceneNode}" xmlns:models="clr-namespace:BullerStudio.Models" ItemsSource="{Binding Children}"><StackPanel Orientation="Horizontal"><TextBlock Text="{Binding Type}" Foreground="#7BB6FF" Width="70"/><TextBlock Text="{Binding Name}"/></StackPanel></HierarchicalDataTemplate></TreeView.Resources>
+          </TreeView>
+          <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center"><Button Content="＋ Part" Click="AddPart_Click"/><Button Content="▰ Folder" Click="AddFolder_Click"/><Button Content="⇧ Asset" Click="ImportAssets_Click"/></StackPanel>
+        </Grid>
+      </Border>
+      <Border x:Name="ScenePanel" Grid.Column="1" Grid.Row="0" Background="#111725" BorderBrush="#0D121C" BorderThickness="0,0,0,1" Tag="DockPanel">
+        <Grid><hx:Viewport3DX x:Name="SceneViewport" Grid.Row="0" BackgroundColor="#101522" IsShadowMappingEnabled="True" MSAA="Maximum" MouseDown3D="SceneViewport_MouseDown3D" PreviewMouseRightButtonDown="SceneViewport_PreviewMouseRightButtonDown" PreviewMouseRightButtonUp="SceneViewport_PreviewMouseRightButtonUp" PreviewMouseMove="SceneViewport_PreviewMouseMove" PreviewMouseWheel="SceneViewport_PreviewMouseWheel" Focusable="True">
+          </hx:Viewport3DX>
+          <Border VerticalAlignment="Top" Background="#DD111725" Padding="10,7" MouseLeftButtonDown="DockHeader_MouseLeftButtonDown" MouseMove="DockHeader_MouseMove" MouseLeftButtonUp="DockHeader_MouseLeftButtonUp"><DockPanel><TextBlock Text="◉  SCENE" FontSize="10" FontWeight="Bold"/><TextBlock Text="WASD move · RMB look · Scroll zoom" DockPanel.Dock="Right" Foreground="{StaticResource TextMuted}" FontSize="10"/></DockPanel></Border>
+          <TextBlock Text="Camera view uses the Workspace Camera" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,12" Foreground="#77869A" FontSize="10" IsHitTestVisible="False"/>
+        </Grid>
+      </Border>
+      <Border x:Name="PropertiesPanel" Grid.Column="2" Grid.RowSpan="2" Background="{StaticResource PanelBackground}" BorderBrush="#0D121C" BorderThickness="1,0,0,0" Tag="DockPanel">
+        <Grid><Grid.RowDefinitions><RowDefinition Height="34"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+          <Border Grid.Row="0" BorderBrush="{StaticResource PanelBorder}" BorderThickness="0,0,0,1" MouseLeftButtonDown="DockHeader_MouseLeftButtonDown" MouseMove="DockHeader_MouseMove" MouseLeftButtonUp="DockHeader_MouseLeftButtonUp"><TextBlock Text="PROPERTIES" Margin="10,0" VerticalAlignment="Center" FontWeight="Bold" FontSize="10"/></Border>
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="PropertyEditor" Margin="10"/></ScrollViewer>
+        </Grid>
+      </Border>
+      <Border x:Name="BottomPanel" Grid.Column="1" Grid.Row="1" Background="{StaticResource PanelBackground}" Tag="DockPanel">
+        <Grid><Grid.RowDefinitions><RowDefinition Height="34"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+          <DockPanel Grid.Row="0" Background="{StaticResource PanelBackground}" MouseLeftButtonDown="DockHeader_MouseLeftButtonDown" MouseMove="DockHeader_MouseMove" MouseLeftButtonUp="DockHeader_MouseLeftButtonUp">
+            <StackPanel Orientation="Horizontal"><Button x:Name="AssetsTab" Content="Assets" Click="AssetsTab_Click"/><Button x:Name="LuaTab" Content="Lua X" Click="LuaTab_Click"/><Button x:Name="OutputTab" Content="Output" Click="OutputTab_Click"/></StackPanel>
+            <Button DockPanel.Dock="Right" Content="＋ Import assets" Click="ImportAssets_Click"/>
+          </DockPanel>
+          <ContentControl x:Name="BottomContent" Grid.Row="1"/>
+        </Grid>
+      </Border>
+    </Grid>
+    <Border Grid.Row="3" Background="#151B28" BorderBrush="{StaticResource PanelBorder}" BorderThickness="0,1,0,0"><TextBlock x:Name="StatusText" Text="Ready" Margin="9,0" FontSize="10" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center"/></Border>
+    <Grid x:Name="ProjectBrowser" Grid.RowSpan="4" Background="#E6070B12" Visibility="Collapsed">
+      <Border Width="620" MaxHeight="620" Background="#1A2231" BorderBrush="#34435A" BorderThickness="1" CornerRadius="9" Padding="20" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <TextBlock Text="Buller Studio" FontSize="20" FontWeight="Bold"/><TextBlock Grid.Row="1" Text="Your games are saved locally as project folders." Margin="0,7,0,14" Foreground="{StaticResource TextMuted}"/>
+          <ListBox x:Name="ProjectList" Grid.Row="2" Background="#111824" BorderBrush="{StaticResource PanelBorder}" ItemContainerStyle="{StaticResource {x:Type ListBoxItem}}">
+            <ListBox.ItemTemplate><DataTemplate><Grid Margin="7"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Button Content="{Binding Name}" HorizontalContentAlignment="Left" Click="OpenProject_Click" Tag="{Binding Path}"/><StackPanel Grid.Column="1" Orientation="Horizontal"><TextBlock Text="{Binding LastModified, StringFormat='Modified {0:g}'}" VerticalAlignment="Center" Foreground="{StaticResource TextMuted}" Margin="8,0"/><Button Content="⋯" Tag="{Binding Path}" Click="ProjectOptions_Click"/></StackPanel></Grid></DataTemplate></ListBox.ItemTemplate>
+          </ListBox>
+          <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0"><Button Content="＋ New project" Background="#316FBA" Click="CreateProject_Click"/></StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>
