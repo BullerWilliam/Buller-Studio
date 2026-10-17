@@ -4,8 +4,12 @@
         xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
         xmlns:ad="https://github.com/Dirkster99/AvalonDock"
         xmlns:models="clr-namespace:BullerStudio.Models"
-        Title="Buller Studio" Icon="{StaticResource BullerStudioIcon}" Width="1540" Height="980" MinWidth="980" MinHeight="620" WindowState="Maximized"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="Buller Studio" Icon="{StaticResource BullerStudioIcon}" Width="1540" Height="980" MinWidth="980" MinHeight="620" WindowState="Maximized" WindowStyle="None" ResizeMode="CanResize"
         Background="#1F2022" Foreground="#F2F3F4" KeyDown="Window_KeyDown">
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="32" ResizeBorderThickness="6" GlassFrameThickness="0" UseAeroCaptionButtons="False" />
+  </shell:WindowChrome.WindowChrome>
   <Window.Resources>
     <BooleanToVisibilityConverter x:Key="BooleanToVisibility"/>
     <HierarchicalDataTemplate DataType="{x:Type models:SceneNode}" ItemsSource="{Binding Children}">
@@ -79,16 +83,59 @@
     <Style x:Key="RibbonTab" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="BorderBrush" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0,0,0,2"/>
       <Setter Property="Padding" Value="11,4"/>
       <Setter Property="Margin" Value="1,0"/>
       <Setter Property="Height" Value="28"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="TabChrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="TabChrome" Property="Background" Value="#303235"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="TabChrome" Property="Background" Value="#383B3E"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
     <Style TargetType="TreeViewItem">
       <Setter Property="Foreground" Value="#D7D7D7"/>
-      <Setter Property="Padding" Value="1"/>
+      <Setter Property="Padding" Value="0"/>
       <Setter Property="IsExpanded" Value="True"/>
       <Setter Property="Visibility" Value="{Binding IsExplorerVisible, Converter={StaticResource BooleanToVisibility}}"/>
       <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TreeViewItem">
+            <Grid>
+              <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="17"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <ToggleButton x:Name="ExpanderButton" IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" Content="▸" Foreground="#A0A3A7" Background="Transparent" BorderBrush="Transparent" BorderThickness="0" Padding="0" Focusable="False" FontSize="10" HorizontalContentAlignment="Center" VerticalContentAlignment="Center">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border Background="{TemplateBinding Background}"><ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/></Border>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
+              <Border x:Name="HeaderChrome" Grid.Column="1" Background="Transparent" Padding="3,0">
+                <ContentPresenter x:Name="PART_Header" ContentSource="Header" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+              </Border>
+              <ItemsPresenter x:Name="ItemsHost" Grid.Row="1" Grid.Column="1" Margin="12,0,0,0" Visibility="Collapsed"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="HasItems" Value="False"><Setter TargetName="ExpanderButton" Property="Visibility" Value="Hidden"/></Trigger>
+              <Trigger Property="IsExpanded" Value="True"><Setter TargetName="ItemsHost" Property="Visibility" Value="Visible"/><Setter TargetName="ExpanderButton" Property="Content" Value="▾"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="HeaderChrome" Property="Background" Value="#303337"/></Trigger>
+              <Trigger Property="IsSelected" Value="True"><Setter TargetName="HeaderChrome" Property="Background" Value="#294258"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
     <Style TargetType="TabControl">
       <Setter Property="Background" Value="#202123"/>
@@ -120,7 +167,8 @@
   <Grid x:Name="RootGrid">
     <Grid.RowDefinitions>
       <RowDefinition Height="32"/>
-      <RowDefinition Height="82"/>
+      <RowDefinition Height="30"/>
+      <RowDefinition Height="76"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="22"/>
     </Grid.RowDefinitions>
@@ -129,39 +177,40 @@
       <Grid Margin="5,0">
         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button Content="FILE" Click="FileMenu_Click" Padding="13,3" Background="#252628" BorderBrush="Transparent" FontWeight="Bold"/>
-          <Button Content="VIEW" Click="WindowMenu_Click" Padding="10,3" Background="#222426" BorderBrush="Transparent"/>
-          <Button Content="&#xE80F;" FontFamily="Segoe MDL2 Assets" FontSize="14" Click="ShowProjects_Click" Padding="8,3" Background="#222426" BorderBrush="Transparent" ToolTip="Home / projects"/>
-          <Button Content="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="13" Click="Play_Click" Background="#287A3D" Padding="9,3" ToolTip="Play test"/>
-          <Button Content="&#xE71A;" FontFamily="Segoe MDL2 Assets" FontSize="12" Click="StopPlayer_Click" Padding="9,3" ToolTip="Stop test"/>
+          <Button Content="FILE" Click="FileMenu_Click" Padding="13,3" Background="#252628" BorderBrush="Transparent" FontWeight="Bold" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+          <Button Content="VIEW" Click="WindowMenu_Click" Padding="10,3" Background="#222426" BorderBrush="Transparent" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+          <Button Content="&#xE80F;" FontFamily="Segoe MDL2 Assets" FontSize="14" Click="ShowProjects_Click" Padding="8,3" Background="#222426" BorderBrush="Transparent" ToolTip="Home / projects" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+          <Border Width="1" Height="19" Background="#414346" Margin="4,0" VerticalAlignment="Center"/>
+          <Button Content="&#xE74E;" FontFamily="Segoe MDL2 Assets" Click="Save_Click" Padding="7,3" Background="Transparent" BorderBrush="Transparent" ToolTip="Save project (Ctrl+S)" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+          <Button Content="&#xE7A7;" FontFamily="Segoe MDL2 Assets" Click="Undo_Click" Padding="7,3" Background="Transparent" BorderBrush="Transparent" ToolTip="Undo (Ctrl+Z)" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+          <Button Content="&#xE7A6;" FontFamily="Segoe MDL2 Assets" Click="Redo_Click" Padding="7,3" Background="Transparent" BorderBrush="Transparent" ToolTip="Redo (Ctrl+Shift+Z)" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+          <Border Width="1" Height="19" Background="#414346" Margin="4,0" VerticalAlignment="Center"/>
+          <Button Content="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="13" Click="Play_Click" Background="#287A3D" Padding="9,3" ToolTip="Play test" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+          <Button Content="&#xE71A;" FontFamily="Segoe MDL2 Assets" FontSize="12" Click="StopPlayer_Click" Padding="9,3" ToolTip="Stop test" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
         </StackPanel>
-        <StackPanel x:Name="RibbonTabBar" Grid.Column="1" Orientation="Horizontal" Margin="5,0" HorizontalAlignment="Center" VerticalAlignment="Center">
-          <Button Content="HOME" Tag="HOME" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
-          <Button Content="MODEL" Tag="MODEL" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
-          <Button Content="AVATAR" Tag="AVATAR" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
-          <Button Content="UI" Tag="UI" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
-          <Button Content="SCRIPT" Tag="SCRIPT" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
-          <Button Content="PLUGINS" Tag="PLUGINS" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
-        </StackPanel>
+        <TextBlock Grid.Column="1" Text="{Binding Title, RelativeSource={RelativeSource AncestorType=Window}}" Foreground="#D7D9DC" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="10,0" IsHitTestVisible="False"/>
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button x:Name="IncludedButton" Content="Included" Click="Included_Click" Padding="7,3" FontSize="10" ToolTip="Build with assets inside the executable"/>
-          <Button x:Name="ExcludedButton" Content="Excluded" Click="Excluded_Click" Padding="7,3" FontSize="10" ToolTip="Build with a separate assets folder"/>
-          <Button Content="Build" Click="Build_Click" Background="#0067A8" Padding="9,3" FontSize="10" ToolTip="Compile this project"/>
-          <Button Content="?" Click="Help_Click" Padding="8,3" ToolTip="Lua X and camera help"/>
+          <Button Style="{StaticResource TitleBarButton}" Content="&#xE921;" FontFamily="Segoe MDL2 Assets" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="MinimizeWindow_Click" ToolTip="Minimize"/>
+          <Button x:Name="MaximizeWindowButton" Style="{StaticResource TitleBarButton}" Content="&#xE922;" FontFamily="Segoe MDL2 Assets" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="MaximizeWindow_Click" ToolTip="Maximize"/>
+          <Button Style="{StaticResource TitleBarButton}" Tag="Close" Content="&#xE8BB;" FontFamily="Segoe MDL2 Assets" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="CloseWindow_Click" ToolTip="Close"/>
         </StackPanel>
       </Grid>
     </Border>
 
-    <Border Grid.Row="1" Background="#292B2D" BorderBrush="#111213" BorderThickness="0,0,0,1">
+    <Border Grid.Row="1" Background="#222426" BorderBrush="#111213" BorderThickness="0,0,0,1">
+      <StackPanel x:Name="RibbonTabBar" Orientation="Horizontal" Margin="8,0" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <Button Content="Home" Tag="HOME" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Content="Model" Tag="MODEL" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Content="Camera" Tag="CAMERA" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Content="UI" Tag="UI" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Content="Script" Tag="SCRIPT" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+        <Button Content="Plugins" Tag="PLUGINS" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+      </StackPanel>
+    </Border>
+
+    <Border Grid.Row="2" Background="#292B2D" BorderBrush="#111213" BorderThickness="0,0,0,1">
       <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
         <StackPanel x:Name="RibbonTools" Orientation="Horizontal" VerticalAlignment="Stretch">
-          <StackPanel x:Name="ClipboardGroup" Tag="HOME,SCRIPT" Style="{StaticResource RibbonGroup}">
-            <StackPanel Orientation="Horizontal">
-              <Button Style="{StaticResource RibbonTool}" Click="Save_Click"><StackPanel><TextBlock Text="&#xE74E;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Save" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button Style="{StaticResource RibbonTool}" Click="Undo_Click"><StackPanel><TextBlock Text="&#xE7A7;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Undo" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button Style="{StaticResource RibbonTool}" Click="Redo_Click"><StackPanel><TextBlock Text="&#xE7A6;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Redo" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-            </StackPanel><TextBlock Text="Clipboard &amp; History" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
-          </StackPanel>
           <StackPanel x:Name="TransformGroup" Tag="HOME,MODEL" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
               <Button x:Name="SelectToolButton" Style="{StaticResource RibbonTool}" Click="ToolSelect_Click"><StackPanel><TextBlock Text="&#xE762;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Select" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
@@ -170,6 +219,7 @@
               <Button x:Name="RotateToolButton" Style="{StaticResource RibbonTool}" Click="ToolRotate_Click"><StackPanel><TextBlock Text="&#xE7AD;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Rotate" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Tools" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
+          <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="HOME,MODEL"/>
           <StackPanel x:Name="InsertGroup" Tag="HOME,MODEL" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
               <Button Style="{StaticResource RibbonTool}" Click="AddPart_Click"><StackPanel><TextBlock Text="▰" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Part ▾" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
@@ -179,6 +229,7 @@
               <Button Style="{StaticResource RibbonTool}" Click="AddScript_Click"><StackPanel><TextBlock Text="{}" FontSize="17" HorizontalAlignment="Center"/><TextBlock Text="Script" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Insert" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
+          <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="HOME,MODEL"/>
           <StackPanel x:Name="WindowsGroup" Tag="HOME" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
               <Button Style="{StaticResource RibbonTool}" Click="Toolbox_Click" ToolTip="Show Toolbox"><StackPanel><TextBlock Text="&#xE71D;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Toolbox" FontSize="9" HorizontalAlignment="Center"/></StackPanel></Button>
@@ -188,18 +239,43 @@
               <Button Style="{StaticResource RibbonTool}" Click="AssetsTab_Click"><StackPanel><TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Assets" FontSize="9" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Windows" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
+          <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="HOME"/>
           <StackPanel x:Name="AssetsGroup" Tag="HOME" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
               <Button Style="{StaticResource RibbonTool}" Click="ImportAssets_Click"><StackPanel><TextBlock Text="↥" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Import" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Assets" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
+          <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="HOME"/>
+          <StackPanel x:Name="BuildGroup" Tag="HOME" Style="{StaticResource RibbonGroup}">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+              <StackPanel VerticalAlignment="Center" Margin="2,0">
+                <Button x:Name="IncludedButton" Content="Included" Click="Included_Click" Width="76" Height="25" Padding="7,2" HorizontalContentAlignment="Left" Background="{StaticResource Accent}" ToolTip="Include assets inside the executable"/>
+                <Button x:Name="ExcludedButton" Content="Excluded" Click="Excluded_Click" Width="76" Height="25" Padding="7,2" HorizontalContentAlignment="Left" Background="{StaticResource PanelRaised}" ToolTip="Place assets beside the executable"/>
+              </StackPanel>
+              <Button Style="{StaticResource RibbonTool}" Width="52" MinWidth="52" Click="Build_Click" ToolTip="Compile this project">
+                <StackPanel><TextBlock Text="&#xE74E;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Build" FontSize="10" HorizontalAlignment="Center"/></StackPanel>
+              </Button>
+            </StackPanel>
+            <TextBlock Text="Build" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
+          </StackPanel>
+          <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="MODEL"/>
           <StackPanel x:Name="ModelGroup" Tag="MODEL" Style="{StaticResource RibbonGroup}">
-            <StackPanel Orientation="Horizontal"><Button Content="Anchor" Style="{StaticResource RibbonTool}" Click="AnchorSelection_Click"/><Button Content="Focus" Style="{StaticResource RibbonTool}" Click="FocusSelection_Click"/></StackPanel>
+            <StackPanel Orientation="Horizontal"><Button Content="Anchor" Style="{StaticResource RibbonTool}" Click="AnchorSelection_Click"/></StackPanel>
             <TextBlock Text="Selection" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
-          <StackPanel x:Name="AvatarGroup" Tag="AVATAR" Style="{StaticResource RibbonGroup}">
-            <TextBlock Text="Character handling is not built into this engine." TextWrapping="Wrap" Width="190" Foreground="#A0A3A7" VerticalAlignment="Center" Margin="12"/>
-            <TextBlock Text="Avatar" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
+          <StackPanel x:Name="CameraGroup" Tag="CAMERA" Style="{StaticResource RibbonGroup}">
+            <StackPanel Orientation="Horizontal">
+              <Button Style="{StaticResource RibbonTool}" Click="CameraCustom_Click" ToolTip="Use the camera's position and rotation">
+                <StackPanel><TextBlock Text="◉" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Custom" FontSize="9" HorizontalAlignment="Center"/></StackPanel>
+              </Button>
+              <Button Style="{StaticResource RibbonTool}" Click="FocusSelection_Click" ToolTip="Orbit the selected BasePart as the camera subject">
+                <StackPanel><TextBlock Text="◎" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Subject" FontSize="9" HorizontalAlignment="Center"/></StackPanel>
+              </Button>
+              <Button Style="{StaticResource RibbonTool}" Click="ResetCamera_Click" ToolTip="Reset camera position and rotation">
+                <StackPanel><TextBlock Text="↺" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Reset" FontSize="9" HorizontalAlignment="Center"/></StackPanel>
+              </Button>
+            </StackPanel>
+            <TextBlock Text="Camera" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
           <StackPanel x:Name="UIGroup" Tag="UI" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal"><Button Content="ImageLabel" Style="{StaticResource RibbonTool}" Click="AddImage_Click"/><Button Content="Import Image" Style="{StaticResource RibbonTool}" Click="ImportAssets_Click"/></StackPanel>
@@ -221,7 +297,7 @@
       </ScrollViewer>
     </Border>
 
-    <ad:DockingManager x:Name="DockManager" Grid.Row="2" Background="#191A1B" BorderThickness="0">
+    <ad:DockingManager x:Name="DockManager" Grid.Row="3" Background="#191A1B" BorderThickness="0">
       <ad:DockingManager.Layout>
         <ad:LayoutRoot>
           <ad:LayoutPanel Orientation="Horizontal">
@@ -241,20 +317,6 @@
                     </StackPanel>
                     <Grid Grid.Row="2" Margin="5,3">
                       <ListBox x:Name="ToolboxAssetList" Background="Transparent" BorderThickness="0" Foreground="#D7D7D7">
-                        <ListBox.ItemTemplate>
-                          <DataTemplate>
-                            <Border Background="#292B2E" BorderBrush="#37393C" BorderThickness="0,0,0,1" Padding="5" Margin="0,1">
-                              <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                <Border Width="28" Height="28" Background="#3A3D41" CornerRadius="3" VerticalAlignment="Center"><TextBlock Text="{Binding Type}" FontSize="8" FontWeight="Bold" TextAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"/></Border>
-                                <StackPanel Grid.Column="1" Margin="7,0,0,0" VerticalAlignment="Center">
-                                  <TextBlock Text="{Binding Name}" FontSize="11" TextTrimming="CharacterEllipsis"/>
-                                  <TextBlock Text="{Binding Size, StringFormat={}{0:N0} bytes}" FontSize="9" Foreground="#92969B" Margin="0,2,0,0"/>
-                                </StackPanel>
-                              </Grid>
-                            </Border>
-                          </DataTemplate>
-                        </ListBox.ItemTemplate>
                       </ListBox>
                       <TextBlock x:Name="ToolboxEmptyState" Text="No local assets yet. Import image or OBJ files to use them in this project." Foreground="#9DA0A4" FontSize="11" TextWrapping="Wrap" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12" IsHitTestVisible="False"/>
                     </Grid>
@@ -271,7 +333,11 @@
             <Grid>
               <hx:Viewport3DX x:Name="SceneViewport" BackgroundColor="#101522" IsShadowMappingEnabled="True" MSAA="Maximum" ShowCoordinateSystem="True" ShowViewCube="True" MouseDown3D="SceneViewport_MouseDown3D" PreviewMouseLeftButtonDown="SceneViewport_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="SceneViewport_PreviewMouseLeftButtonUp" PreviewMouseRightButtonDown="SceneViewport_PreviewMouseRightButtonDown" PreviewMouseRightButtonUp="SceneViewport_PreviewMouseRightButtonUp" PreviewMouseMove="SceneViewport_PreviewMouseMove" PreviewMouseWheel="SceneViewport_PreviewMouseWheel" Focusable="True"/>
               <Border VerticalAlignment="Top" Background="#EE252628" Padding="8,5">
-                <DockPanel LastChildFill="False"><TextBlock Text="◉  Workspace" FontSize="11" FontWeight="SemiBold"/><TextBlock Text="Workspace Camera  ·  WASD move  ·  RMB look" DockPanel.Dock="Right" Foreground="#A0A3A7" FontSize="10"/></DockPanel>
+                <DockPanel LastChildFill="False">
+                  <TextBlock Text="◉  Workspace" FontSize="11" FontWeight="SemiBold"/>
+                  <Button Content="⋯" Width="28" Height="22" Padding="0" Margin="2,0,0,0" Click="ViewportOptions_Click" DockPanel.Dock="Right" ToolTip="Viewport options"/>
+                  <TextBlock Text="Workspace Camera  ·  WASD move  ·  RMB look" DockPanel.Dock="Right" Foreground="#A0A3A7" FontSize="10" VerticalAlignment="Center"/>
+                </DockPanel>
               </Border>
               <TextBlock Text="Camera view uses the Workspace Camera" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,10" Foreground="#81858A" FontSize="10" IsHitTestVisible="False"/>
             </Grid>
@@ -298,8 +364,12 @@
                   <Border x:Name="ExplorerPanel" Background="#252628" BorderBrush="#101112" BorderThickness="0,0,0,1">
                     <Grid><Grid.RowDefinitions><RowDefinition Height="30"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                       <Grid Grid.Row="0" Margin="6,3">
-              <TextBox x:Name="ExplorerSearch" Padding="6,3" ToolTip="Filter by object name or type" TextChanged="ExplorerSearch_TextChanged"/>
-              <TextBlock x:Name="ExplorerSearchHint" Text="⌕  Filter objects" Foreground="#85898D" Margin="7,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <Grid>
+                          <TextBox x:Name="ExplorerSearch" Padding="6,3" ToolTip="Filter by object name or type" TextChanged="ExplorerSearch_TextChanged"/>
+                          <TextBlock x:Name="ExplorerSearchHint" Text="⌕  Filter objects" Foreground="#85898D" Margin="7,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                        </Grid>
+                        <TextBlock x:Name="ObjectCount" Grid.Column="1" Margin="7,0,0,0" Foreground="#9DA0A4" FontSize="10" VerticalAlignment="Center" IsHitTestVisible="False"/>
                       </Grid>
                       <TreeView x:Name="ExplorerTree" Grid.Row="1" Margin="5" Background="Transparent" BorderThickness="0" Foreground="#D7D7D7" SelectedItemChanged="ExplorerTree_SelectedItemChanged">
                         <TreeView.ItemContainerStyle>
@@ -308,7 +378,6 @@
                           </Style>
                         </TreeView.ItemContainerStyle>
                       </TreeView>
-                      <TextBlock x:Name="ObjectCount" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,9,8,0" Foreground="#9DA0A4" FontSize="10" IsHitTestVisible="False"/>
                     </Grid>
                   </Border>
                 </ad:LayoutAnchorable>
@@ -332,7 +401,7 @@
       </ad:DockingManager.Layout>
     </ad:DockingManager>
 
-    <Border Grid.Row="3" Background="#202123" BorderBrush="#111213" BorderThickness="0,1,0,0">
+    <Border Grid.Row="4" Background="#202123" BorderBrush="#111213" BorderThickness="0,1,0,0">
       <DockPanel Margin="7,0" LastChildFill="False"><TextBlock x:Name="StatusText" Text="Ready" FontSize="10" Foreground="#A0A3A7" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><TextBlock Text="Lua X  |  Local project" DockPanel.Dock="Right" FontSize="10" Foreground="#85898D" VerticalAlignment="Center"/></DockPanel>
     </Border>
   </Grid>

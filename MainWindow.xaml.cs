@@ -1,10 +1,16 @@
+using System.IO;
 using System.Text.Json;
+using System.Xml;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using BullerStudio.Models;
 using BullerStudio.Services;
+using ICSharpCode.AvalonEdit;
+using ICSharpCode.AvalonEdit.Highlighting;
+using ICSharpCode.AvalonEdit.Highlighting.Xshd;
 using HelixToolkit.Wpf.SharpDX;
 using Microsoft.Win32;
 using AvalonDock.Layout;
@@ -16,14 +22,14 @@ public partial class MainWindow : Window
 {
     private readonly Stack<string> undo = new();
     private readonly Stack<string> redo = new();
-    private readonly Dictionary<string, TextBox> scriptEditors = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, TextEditor> scriptEditors = new(StringComparer.Ordinal);
     private readonly GameBuildService buildService = new();
     private PlayerWindow? playerWindow;
     private GameProject? project;
     private SceneRenderService? renderer;
     private SceneNode? selected;
     private GameScript? selectedScript;
-    private TextBox? scriptEditor;
+    private TextEditor? scriptEditor;
     private TextBox? outputBox;
     private StackPanel? propertyTarget;
     private bool included = true;
@@ -36,10 +42,13 @@ public partial class MainWindow : Window
     private string toolboxCategory = "All";
     private string activeRibbonTab = "HOME";
     private Point lastPointer;
+    private static readonly IHighlightingDefinition LuaXHighlighting = CreateLuaXHighlighting();
 
     public MainWindow()
     {
         InitializeComponent();
+        StateChanged += (_, _) => UpdateWindowStateButton();
+        UpdateWindowStateButton();
         DockManager.Theme = new Vs2013DarkTheme();
         DockManager.ActiveContentChanged += (_, _) => HandleActiveDocumentChanged();
         IncludedButton.Background = (Brush)FindResource("Accent");
@@ -143,7 +152,7 @@ public partial class MainWindow : Window
             };
             return matchesCategory && (string.IsNullOrEmpty(query) || asset.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || asset.Type.Contains(query, StringComparison.OrdinalIgnoreCase));
         }).ToArray();
-        foreach (var asset in assets) ToolboxAssetList.Items.Add(asset);
+        foreach (var asset in assets) ToolboxAssetList.Items.Add(CreateAssetListItem(asset));
         ToolboxEmptyState.Text = project.Assets.Count == 0 ? "No local assets yet. Import image or OBJ files to use them in this project." : "No assets match this search or category.";
         ToolboxEmptyState.Visibility = assets.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -218,26 +227,37 @@ public partial class MainWindow : Window
 
     private void AddTextField(string property, string value)
     {
-        var label = new TextBlock { Text = property, Tag = property, Margin = new Thickness(0, 8, 0, 3), Foreground = (Brush)FindResource("TextMuted"), FontSize = 11 };
-        var box = new TextBox { Text = value, Tag = property, MinWidth = 170 };
+        var box = new TextBox { Text = value, Tag = property, MinWidth = 100, Padding = new Thickness(5, 3, 5, 3) };
         box.LostFocus += PropertyText_LostFocus;
         box.KeyDown += (_, args) => { if (args.Key == Key.Enter) { ApplyTextProperty(box); Keyboard.ClearFocus(); } };
-        (propertyTarget ?? PropertyEditor).Children.Add(label); (propertyTarget ?? PropertyEditor).Children.Add(box);
+        (propertyTarget ?? PropertyEditor).Children.Add(CreatePropertyRow(property, box));
     }
 
     private void AddCheckField(string property, bool value)
     {
-        var box = new CheckBox { Content = property, IsChecked = value, Margin = new Thickness(0, 8, 0, 2), Tag = property, Foreground = (Brush)FindResource("TextPrimary") };
+        var box = new CheckBox { IsChecked = value, Margin = new Thickness(5, 2, 0, 2), Tag = property, Foreground = (Brush)FindResource("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Left };
         box.Checked += PropertyCheck_Changed; box.Unchecked += PropertyCheck_Changed;
-        (propertyTarget ?? PropertyEditor).Children.Add(box);
+        (propertyTarget ?? PropertyEditor).Children.Add(CreatePropertyRow(property, box));
     }
 
     private void AddComboField(string property, IEnumerable<string> values, string selectedValue)
     {
-        (propertyTarget ?? PropertyEditor).Children.Add(new TextBlock { Text = property, Tag = property, Margin = new Thickness(0, 8, 0, 3), Foreground = (Brush)FindResource("TextMuted"), FontSize = 11 });
-        var combo = new ComboBox { ItemsSource = values, SelectedItem = selectedValue, Tag = property, Margin = new Thickness(0, 0, 0, 3) };
+        var combo = new ComboBox { ItemsSource = values, SelectedItem = selectedValue, Tag = property, Margin = new Thickness(0, 1, 0, 1), MinWidth = 100, Height = 26 };
         combo.SelectionChanged += PropertyCombo_Changed;
-        (propertyTarget ?? PropertyEditor).Children.Add(combo);
+        (propertyTarget ?? PropertyEditor).Children.Add(CreatePropertyRow(property, combo));
+    }
+
+    private static Grid CreatePropertyRow(string property, FrameworkElement value)
+    {
+        var row = new Grid { MinHeight = 28, Margin = new Thickness(0, 1, 0, 1), Tag = property };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(100) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var label = new TextBlock { Text = property, Foreground = (Brush)Application.Current.FindResource("TextMuted"), FontSize = 10, Margin = new Thickness(4, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        row.Children.Add(label);
+        value.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(value, 1);
+        row.Children.Add(value);
+        return row;
     }
 
     private void PropertySearch_TextChanged(object sender, TextChangedEventArgs e)
@@ -255,14 +275,7 @@ public partial class MainWindow : Window
             {
                 foreach (UIElement child in content.Children)
                 {
-                    var property = child switch
-                    {
-                        TextBlock { Tag: string label } => label,
-                        TextBox { Tag: string text } => text,
-                        ComboBox { Tag: string combo } => combo,
-                        CheckBox { Content: string check } => check,
-                        _ => null
-                    };
+                    var property = (child as FrameworkElement)?.Tag as string;
                     var isVisible = string.IsNullOrEmpty(filter) || property is null || property.Contains(filter, StringComparison.OrdinalIgnoreCase);
                     child.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
                     sectionHasMatch |= property is not null && isVisible;
@@ -359,10 +372,96 @@ public partial class MainWindow : Window
     {
         if (project is null) return;
         SetOutputPanelVisible(true);
-        var list = new ListBox { Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = (Brush)FindResource("TextPrimary") };
-        foreach (var asset in project.Assets.Where(asset => string.IsNullOrEmpty(ToolboxSearch.Text.Trim()) || asset.Name.Contains(ToolboxSearch.Text.Trim(), StringComparison.OrdinalIgnoreCase) || asset.Type.Contains(ToolboxSearch.Text.Trim(), StringComparison.OrdinalIgnoreCase))) list.Items.Add($"{asset.Name}   ·   {asset.Type}   ·   {asset.Size:N0} bytes");
-        BottomContent.Content = list;
+        var query = ToolboxSearch.Text.Trim();
+        var assets = project.Assets.Where(asset => string.IsNullOrEmpty(query) || asset.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || asset.Type.Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
+        var panel = new Grid();
+        panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(34) });
+        panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var header = new DockPanel { Margin = new Thickness(8, 2, 8, 1), LastChildFill = false };
+        var title = new TextBlock { Text = "Project assets", FontSize = 11, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)FindResource("TextPrimary") };
+        DockPanel.SetDock(title, Dock.Left);
+        header.Children.Add(title);
+        var import = new Button { Content = "＋ Import files", Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(2, 1, 0, 1) };
+        import.Click += ImportAssets_Click;
+        DockPanel.SetDock(import, Dock.Right);
+        header.Children.Add(import);
+        panel.Children.Add(header);
+        var body = new Grid { Margin = new Thickness(7, 2, 7, 5) };
+        if (assets.Length == 0)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = project.Assets.Count == 0 ? "No local assets yet. Import images or meshes to use them in this project." : "No assets match this search.",
+                Foreground = (Brush)FindResource("TextMuted"),
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                MaxWidth = 310,
+                TextAlignment = TextAlignment.Center,
+                Margin = new Thickness(12)
+            });
+        }
+        else
+        {
+            var list = new ListBox { Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = (Brush)FindResource("TextPrimary") };
+            foreach (var asset in assets) list.Items.Add(CreateAssetListItem(asset));
+            body.Children.Add(list);
+        }
+        Grid.SetRow(body, 1);
+        panel.Children.Add(body);
+        BottomContent.Content = panel;
         SelectBottomTab(showOutput: false);
+    }
+
+    private FrameworkElement CreateAssetListItem(ProjectAsset asset)
+    {
+        var row = new Grid { MinHeight = 52 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(54) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var preview = new Border { Width = 46, Height = 46, CornerRadius = new CornerRadius(3), Background = (Brush)FindResource("PanelRaised"), VerticalAlignment = VerticalAlignment.Center, ClipToBounds = true };
+        var previewImage = LoadAssetThumbnail(asset);
+        if (previewImage is not null)
+        {
+            var previewContents = new Grid();
+            previewContents.Children.Add(new Image { Source = previewImage, Stretch = Stretch.UniformToFill });
+            previewContents.Children.Add(new TextBlock { Text = asset.Type.ToUpperInvariant(), FontSize = 7, FontWeight = FontWeights.SemiBold, Padding = new Thickness(3, 1, 3, 1), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Background = new SolidColorBrush(Color.FromArgb(210, 25, 27, 30)), Foreground = Brushes.White });
+            preview.Child = previewContents;
+        }
+        else
+        {
+            preview.Child = new TextBlock { Text = asset.Type == "obj" ? "◈" : "▧", FontSize = 17, FontWeight = FontWeights.SemiBold, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = asset.Type == "obj" ? new SolidColorBrush(Color.FromRgb(168, 155, 228)) : (Brush)FindResource("TextMuted") };
+        }
+        row.Children.Add(preview);
+        var details = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 2, 0) };
+        details.Children.Add(new TextBlock { Text = asset.Name, FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = (Brush)FindResource("TextPrimary") });
+        details.Children.Add(new TextBlock { Text = $"{asset.Type.ToUpperInvariant()}  ·  {asset.Size:N0} bytes", FontSize = 9, Margin = new Thickness(0, 2, 0, 0), Foreground = (Brush)FindResource("TextMuted") });
+        Grid.SetColumn(details, 1);
+        row.Children.Add(details);
+        return new Border { Background = Brushes.Transparent, BorderBrush = new SolidColorBrush(Color.FromRgb(55, 57, 60)), BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(5), Margin = new Thickness(0, 1, 0, 1), Child = row };
+    }
+
+    private BitmapImage? LoadAssetThumbnail(ProjectAsset asset)
+    {
+        if (project is null || asset.Type is not ("png" or "jpg" or "jpeg" or "bmp" or "gif")) return null;
+        try
+        {
+            var assetsRoot = Path.GetFullPath(Path.Combine(project.ProjectPath, "assets")) + Path.DirectorySeparatorChar;
+            var assetPath = Path.GetFullPath(Path.Combine(project.ProjectPath, asset.RelativePath));
+            if (!assetPath.StartsWith(assetsRoot, StringComparison.OrdinalIgnoreCase) || !File.Exists(assetPath)) return null;
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.DecodePixelWidth = 96;
+            image.UriSource = new System.Uri(assetPath, System.UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException or InvalidOperationException or FormatException)
+        {
+            return null;
+        }
     }
 
     private void ShowScript(GameScript script)
@@ -391,10 +490,51 @@ public partial class MainWindow : Window
         run.Click += (_, _) => RunScript(script);
         DockPanel.SetDock(run, Dock.Right); editorToolbar.Children.Add(run); editorToolbar.Children.Add(language);
         DockPanel.SetDock(editorToolbar, Dock.Top); editorPanel.Children.Add(editorToolbar);
-        var editor = new TextBox { Text = script.Source, AcceptsReturn = true, AcceptsTab = true, FontFamily = new FontFamily("Consolas"), FontSize = 13, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, TextWrapping = TextWrapping.NoWrap, Background = new SolidColorBrush(Color.FromRgb(17, 24, 36)), Foreground = (Brush)FindResource("TextPrimary"), BorderThickness = new Thickness(0), Padding = new Thickness(8) };
+        var editor = new TextEditor
+        {
+            Text = script.Source,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 13,
+            ShowLineNumbers = true,
+            LineNumbersForeground = new SolidColorBrush(Color.FromRgb(112, 119, 129)),
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            WordWrap = false,
+            Background = new SolidColorBrush(Color.FromRgb(17, 24, 36)),
+            Foreground = (Brush)FindResource("TextPrimary"),
+            BorderThickness = new Thickness(0),
+            SyntaxHighlighting = LuaXHighlighting
+        };
         editorPanel.Children.Add(editor);
         scriptEditors[script.Id] = editor;
         return editorPanel;
+    }
+
+    private static IHighlightingDefinition CreateLuaXHighlighting()
+    {
+        const string definition = """
+            <SyntaxDefinition name="Lua X" extensions=".lua" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+              <Color name="Comment" foreground="#6A9955" />
+              <Color name="String" foreground="#CE9178" />
+              <Color name="Number" foreground="#B5CEA8" />
+              <Color name="Keyword" foreground="#C586C0" fontWeight="bold" />
+              <Color name="Builtin" foreground="#4EC9B0" />
+              <RuleSet>
+                <Span color="Comment" begin="--" />
+                <Span color="String" begin="&quot;" end="&quot;" />
+                <Span color="String" begin="'" end="'" />
+                <Keywords color="Keyword">
+                  <Word>and</Word><Word>break</Word><Word>do</Word><Word>else</Word><Word>elseif</Word><Word>end</Word><Word>false</Word><Word>for</Word><Word>function</Word><Word>if</Word><Word>in</Word><Word>local</Word><Word>nil</Word><Word>not</Word><Word>or</Word><Word>repeat</Word><Word>return</Word><Word>then</Word><Word>true</Word><Word>until</Word><Word>while</Word>
+                </Keywords>
+                <Keywords color="Builtin">
+                  <Word>print</Word><Word>warn</Word><Word>wait</Word><Word>workspace</Word><Word>game</Word><Word>script</Word><Word>SetProperty</Word><Word>WaitForChild</Word><Word>Vector3</Word><Word>Color3</Word><Word>Instance</Word>
+                </Keywords>
+                <Rule color="Number">\b\d+(\.\d+)?\b</Rule>
+              </RuleSet>
+            </SyntaxDefinition>
+            """;
+        using var reader = XmlReader.Create(new StringReader(definition));
+        return HighlightingLoader.Load(reader, HighlightingManager.Instance);
     }
 
     private void HandleActiveDocumentChanged()
@@ -471,13 +611,28 @@ public partial class MainWindow : Window
             SetStatus("Building game…");
             var executable = await buildService.BuildAsync(project, included, SetStatus);
             SetStatus($"Build complete: {executable}");
-            MessageBox.Show(this, $"Game built successfully:\n{executable}", "Build complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            StudioDialog.Show(this, "Build complete", $"Game built successfully:\n{executable}", StudioDialogKind.Success);
         }
         catch (Exception exception) { ShowError(exception); }
     }
 
     private void Included_Click(object sender, RoutedEventArgs e) { included = true; IncludedButton.Background = (Brush)FindResource("Accent"); ExcludedButton.Background = (Brush)FindResource("PanelRaised"); SetStatus("Build mode: Included assets"); }
     private void Excluded_Click(object sender, RoutedEventArgs e) { included = false; ExcludedButton.Background = (Brush)FindResource("Accent"); IncludedButton.Background = (Brush)FindResource("PanelRaised"); SetStatus("Build mode: Excluded assets"); }
+
+    private void MinimizeWindow_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void MaximizeWindow_Click(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+    }
+
+    private void UpdateWindowStateButton()
+    {
+        MaximizeWindowButton.Content = WindowState == WindowState.Maximized ? "\uE923" : "\uE922";
+        MaximizeWindowButton.ToolTip = WindowState == WindowState.Maximized ? "Restore" : "Maximize";
+    }
+
+    private void CloseWindow_Click(object sender, RoutedEventArgs e) => Close();
 
     private async void ShowProjects_Click(object sender, RoutedEventArgs e)
     {
@@ -515,13 +670,19 @@ public partial class MainWindow : Window
     {
         activeRibbonTab = tab;
         foreach (var child in RibbonTabBar.Children.OfType<Button>())
-            child.Background = Equals(child.Tag, tab) ? new SolidColorBrush(Color.FromRgb(48, 49, 52)) : Brushes.Transparent;
+        {
+            var isSelected = Equals(child.Tag, tab);
+            child.Background = isSelected ? new SolidColorBrush(Color.FromRgb(48, 49, 52)) : Brushes.Transparent;
+            child.BorderBrush = isSelected ? (Brush)FindResource("Accent") : Brushes.Transparent;
+            child.BorderThickness = new Thickness(0, 0, 0, isSelected ? 2 : 0);
+            child.Foreground = isSelected ? Brushes.White : (Brush)FindResource("TextMuted");
+        }
         ApplyRibbonTab(tab);
     }
 
     private void ApplyRibbonTab(string tab)
     {
-        foreach (var group in RibbonTools.Children.OfType<StackPanel>())
+        foreach (var group in RibbonTools.Children.OfType<FrameworkElement>())
             group.Visibility = group.Tag is string tabs && tabs.Split(',').Contains(tab, StringComparer.Ordinal) ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -532,12 +693,29 @@ public partial class MainWindow : Window
         RecordEdit(); RenderProperties();
     }
 
+    private void CameraCustom_Click(object sender, RoutedEventArgs e)
+    {
+        if (project is null) return;
+        var camera = project.Workspace.Children.First(node => node.Type == "Camera");
+        camera.CameraMode = "Custom";
+        renderer?.UpdateCamera(project);
+        RenderProperties();
+        RecordEdit();
+        SetStatus("Camera mode: Custom");
+    }
+
     private void FocusSelection_Click(object sender, RoutedEventArgs e)
     {
-        if (project is null || selected is null || selected.Type is not ("Part" or "MeshPart")) return;
+        if (project is null) return;
+        if (selected is null || selected.Type is not ("Part" or "MeshPart"))
+        {
+            SetStatus("Select a BasePart to use Subject camera mode.");
+            return;
+        }
         var camera = project.Workspace.Children.First(node => node.Type == "Camera");
         camera.CameraMode = "Subject"; camera.Subject = selected.Id;
         renderer?.UpdateCamera(project); RenderProperties(); RecordEdit();
+        SetStatus($"Camera subject: {selected.Name}");
     }
 
     private void ToggleShadows_Click(object sender, RoutedEventArgs e)
@@ -547,12 +725,32 @@ public partial class MainWindow : Window
         renderer?.Refresh(project); SetStatus($"Shadows {(project.Settings.Shadows ? "enabled" : "disabled")}"); RecordEdit();
     }
 
+    private void ViewportOptions_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu();
+        menu.Items.Add(new MenuItem { Header = "Visualization options", IsEnabled = false });
+        menu.Items.Add(new Separator());
+        var shadows = new MenuItem { Header = "Shadows", IsCheckable = true, IsChecked = project?.Settings.Shadows == true };
+        shadows.Click += ToggleShadows_Click;
+        var focus = new MenuItem { Header = "Focus selection" };
+        focus.Click += FocusSelection_Click;
+        var reset = new MenuItem { Header = "Reset camera" };
+        reset.Click += ResetCamera_Click;
+        menu.Items.Add(shadows);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(focus);
+        menu.Items.Add(reset);
+        menu.PlacementTarget = sender as UIElement;
+        menu.IsOpen = true;
+    }
+
     private void ResetCamera_Click(object sender, RoutedEventArgs e)
     {
         if (project is null) return;
         var camera = project.Workspace.Children.First(node => node.Type == "Camera");
         camera.CameraMode = "Custom"; camera.Position = [8, 7, 11]; camera.Rotation = [-24, 35, 0];
         renderer?.UpdateCamera(project); RenderProperties(); RecordEdit();
+        SetStatus("Camera reset");
     }
 
     private void RunSelectedScript_Click(object sender, RoutedEventArgs e)
@@ -696,7 +894,7 @@ public partial class MainWindow : Window
     }
 
     private void StopPlayer_Click(object sender, RoutedEventArgs e) => playerWindow?.Close();
-    private void Help_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "Buller Studio saves projects locally. Game scripts run with Lua X: use SetProperty(id, 'Position', {X=0,Y=2,Z=0}), WaitForChild(workspace, 'Part'), and part.Touched:Connect(function(other) ... end). Camera Mode is Custom or Subject.", "Buller Studio Help");
+    private void Help_Click(object sender, RoutedEventArgs e) => StudioDialog.Show(this, "Buller Studio Help", "Buller Studio saves projects locally. Game scripts run with Lua X: use SetProperty(id, 'Position', {X=0,Y=2,Z=0}), WaitForChild(workspace, 'Part'), and part.Touched:Connect(function(other) ... end). Camera Mode is Custom or Subject.");
     private void Undo_Click(object sender, RoutedEventArgs e) => UndoEdit();
     private void Redo_Click(object sender, RoutedEventArgs e) => RedoEdit();
 
@@ -784,7 +982,7 @@ public partial class MainWindow : Window
     private void DeleteSelected()
     {
         if (project is null || selected is null || selected.Type is "Camera" or "Workspace") return;
-        if (MessageBox.Show(this, $"Delete {selected.Name}?", "Delete object", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!StudioDialog.Confirm(this, "Delete object", $"Delete {selected.Name}?")) return;
         var removeId = selected.Id;
         if (selected.Type == "Script") CommitScriptEditor();
         GameProjectStore.RemoveNode(project.Workspace.Children, removeId);
@@ -855,6 +1053,6 @@ public partial class MainWindow : Window
     }
     private static string VectorText(float[] value) => string.Join(", ", value.Select(number => number.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
     private void SetStatus(string message) => Dispatcher.Invoke(() => StatusText.Text = message);
-    private void ShowError(Exception exception) => MessageBox.Show(this, exception.Message, "Buller Studio", MessageBoxButton.OK, MessageBoxImage.Error);
+    private void ShowError(Exception exception) => StudioDialog.Show(this, "Buller Studio", exception.Message, StudioDialogKind.Error);
 
 }

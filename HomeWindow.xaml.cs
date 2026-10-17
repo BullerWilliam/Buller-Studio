@@ -22,6 +22,8 @@ public partial class HomeWindow : Window
     public HomeWindow()
     {
         InitializeComponent();
+        StateChanged += (_, _) => UpdateWindowStateButton();
+        UpdateWindowStateButton();
         projectView = CollectionViewSource.GetDefaultView(projects);
         projectView.Filter = FilterProject;
         ProjectCards.ItemsSource = projectView;
@@ -60,22 +62,75 @@ public partial class HomeWindow : Window
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshProjectsAsync();
     private void HomeNav_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { Tag: "Templates" })
-        {
-            foreach (var button in WorkspaceNav.Children.OfType<Button>().Where(button => button.Tag is not null)) button.Background = Brushes.Transparent;
-            if (sender is Button templatesButton) templatesButton.Background = new SolidColorBrush(Color.FromRgb(48, 50, 53));
-            HomeScrollViewer.ScrollToTop(); StatusText.Text = "Choose a template to start a project."; return;
-        }
-        currentSection = (sender as FrameworkElement)?.Tag as string ?? "Home";
+        if ((sender as FrameworkElement)?.Tag is not string section) return;
+        currentSection = section;
         foreach (var button in WorkspaceNav.Children.OfType<Button>().Where(button => button.Tag is not null)) button.Background = Brushes.Transparent;
-        if (sender is Button selectedButton) selectedButton.Background = new SolidColorBrush(Color.FromRgb(48, 50, 53));
-        projectView.Refresh(); UpdateEmptyState();
+        var navigationButton = WorkspaceNav.Children.OfType<Button>().FirstOrDefault(button => Equals(button.Tag, section));
+        if (navigationButton is not null) navigationButton.Background = new SolidColorBrush(Color.FromRgb(48, 50, 53));
+        projectView.Refresh();
+        var isHome = section == "Home";
+        QuickTourSection.Visibility = isHome ? Visibility.Visible : Visibility.Collapsed;
+        ProjectsViewSection.Visibility = section is "Home" or "Recent" or "Projects" ? Visibility.Visible : Visibility.Collapsed;
+        TemplatesViewSection.Visibility = section is "Home" or "Templates" ? Visibility.Visible : Visibility.Collapsed;
+        DiscoverySection.Visibility = isHome ? Visibility.Visible : Visibility.Collapsed;
+        ProjectSectionTitle.Text = section switch
+        {
+            "Recent" => "RECENT PROJECTS",
+            "Projects" => "MY PROJECTS",
+            _ => "MY RECENT EXPERIENCES"
+        };
+        ProjectSectionSubtitle.Text = section switch
+        {
+            "Recent" => "Continue working on a project you recently opened.",
+            "Projects" => "All projects saved on this computer.",
+            _ => "Open a local project or continue where you left off."
+        };
+        SeeAllProjectsButton.Visibility = section == "Projects" ? Visibility.Collapsed : Visibility.Visible;
+        UpdateEmptyState();
+        if (section == "Templates")
+        {
+            StatusText.Text = "Choose a template to start a project.";
+        }
+        else if (section is "Recent" or "Projects")
+        {
+            StatusText.Text = section == "Recent" ? "Showing recent projects." : "Showing all local projects.";
+        }
+        else
+        {
+            StatusText.Text = "Ready";
+        }
+        HomeScrollViewer.ScrollToTop();
+    }
+
+    private void QuickTour_Click(object sender, RoutedEventArgs e)
+    {
+        StudioDialog.Show(this, "Buller Studio quick tour", "Start with a template, add and arrange Parts in the viewport, then edit object values in Properties. Use Explorer to organize the scene, Ctrl+S to save, and Build to create an executable.");
+    }
+
+    private void Discovery_Click(object sender, RoutedEventArgs e)
+    {
+        var topic = (sender as FrameworkElement)?.Tag as string ?? "Buller Studio";
+        var details = topic switch
+        {
+            "Lua X" => "Create a Script object and use Lua X for property changes, WaitForChild, and Touched events.",
+            "Local assets" => "Import images and OBJ meshes into the project assets folder, then reference them from the Toolbox or scripts.",
+            "Workspace camera" => "Every project includes a Workspace Camera. Use Custom mode for position and rotation, or Subject mode to orbit a BasePart.",
+            _ => "Explore the editor tools and local project workflow."
+        };
+        StudioDialog.Show(this, topic, details);
     }
 
     private void UpdateEmptyState()
     {
         var hasVisibleProjects = projectView.Cast<object>().Any();
-        EmptyState.Text = projects.Count == 0 ? "No projects yet. Create a project above to get started." : "No matching projects found.";
+        EmptyState.Text = projects.Count == 0
+            ? currentSection switch
+            {
+                "Recent" => "No recent projects yet. Projects you open will appear here.",
+                "Projects" => "No projects yet. Create one from a template to get started.",
+                _ => "No recent projects yet. Create one from a template below."
+            }
+            : "No projects match your search.";
         EmptyState.Visibility = hasVisibleProjects ? Visibility.Collapsed : Visibility.Visible;
     }
 
@@ -83,7 +138,7 @@ public partial class HomeWindow : Window
     {
         var template = (sender as FrameworkElement)?.Tag as string;
         var initialName = template == "Baseplate" ? "Baseplate" : template == "Empty World" ? "Empty World" : template == "Asset Playground" ? "Asset Playground" : "My Game";
-        var name = Prompt("New project", "Project name", initialName);
+        var name = StudioDialog.Prompt(this, "New project", "Project name", initialName);
         if (string.IsNullOrWhiteSpace(name)) return;
         try
         {
@@ -138,7 +193,7 @@ public partial class HomeWindow : Window
             var game = await GameProjectStore.LoadAsync(path);
             StatusText.Text = $"Building {game.Name}…";
             var executable = await buildService.BuildAsync(game, included, message => Dispatcher.Invoke(() => StatusText.Text = message));
-            MessageBox.Show(this, $"Game built successfully:\n{executable}", "Build complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            StudioDialog.Show(this, "Build complete", $"Game built successfully:\n{executable}", StudioDialogKind.Success);
             StatusText.Text = "Build complete";
         }
         catch (Exception exception) { ShowError(exception); }
@@ -148,8 +203,8 @@ public partial class HomeWindow : Window
     {
         var target = Path.GetFullPath(path);
         var root = Path.GetFullPath(GameProjectStore.ProjectsRoot) + Path.DirectorySeparatorChar;
-        if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase)) { MessageBox.Show(this, "This project is outside the local projects folder."); return; }
-        if (MessageBox.Show(this, "Delete this project and its local assets?", "Delete project", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase)) { StudioDialog.Show(this, "Delete project", "This project is outside the local projects folder.", StudioDialogKind.Warning); return; }
+        if (!StudioDialog.Confirm(this, "Delete project", "Delete this project and its local assets?")) return;
         try { Directory.Delete(target, true); await RefreshProjectsAsync(); }
         catch (Exception exception) { ShowError(exception); }
     }
@@ -168,24 +223,26 @@ public partial class HomeWindow : Window
         var openFolder = new MenuItem { Header = "Open projects folder" };
         openFolder.Click += OpenProjectsFolder_Click;
         var about = new MenuItem { Header = "About Buller Studio" };
-        about.Click += (_, _) => MessageBox.Show(this, "Buller Studio is a local C# game editor with a Lua X runtime.", "About Buller Studio", MessageBoxButton.OK, MessageBoxImage.Information);
+        about.Click += (_, _) => StudioDialog.Show(this, "About Buller Studio", "Buller Studio is a local C# game editor with a Lua X runtime.");
         menu.Items.Add(refresh); menu.Items.Add(openFolder); menu.Items.Add(new Separator()); menu.Items.Add(about);
         menu.PlacementTarget = sender as UIElement;
         menu.IsOpen = true;
     }
 
-    private void ShowError(Exception exception) => MessageBox.Show(this, exception.Message, "Buller Studio", MessageBoxButton.OK, MessageBoxImage.Error);
+    private void MinimizeWindow_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 
-    private static string? Prompt(string title, string label, string initial)
+    private void MaximizeWindow_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new Window { Title = title, Width = 380, Height = 162, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Owner = Application.Current.MainWindow, Background = new SolidColorBrush(Color.FromRgb(34, 35, 37)), Foreground = Brushes.White };
-        var panel = new StackPanel { Margin = new Thickness(16) };
-        panel.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 0, 0, 7) });
-        var text = new TextBox { Text = initial, Padding = new Thickness(7) }; panel.Children.Add(text);
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 11, 0, 0) };
-        var ok = new Button { Content = "Create", IsDefault = true, Padding = new Thickness(14, 5, 14, 5) }; ok.Click += (_, _) => dialog.DialogResult = true;
-        var cancel = new Button { Content = "Cancel", IsCancel = true, Margin = new Thickness(7, 0, 0, 0), Padding = new Thickness(14, 5, 14, 5) };
-        buttons.Children.Add(ok); buttons.Children.Add(cancel); panel.Children.Add(buttons); dialog.Content = panel;
-        return dialog.ShowDialog() == true ? text.Text : null;
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     }
+
+    private void UpdateWindowStateButton()
+    {
+        MaximizeWindowButton.Content = WindowState == WindowState.Maximized ? "\uE923" : "\uE922";
+        MaximizeWindowButton.ToolTip = WindowState == WindowState.Maximized ? "Restore" : "Maximize";
+    }
+
+    private void CloseWindow_Click(object sender, RoutedEventArgs e) => Close();
+
+    private void ShowError(Exception exception) => StudioDialog.Show(this, "Buller Studio", exception.Message, StudioDialogKind.Error);
 }
