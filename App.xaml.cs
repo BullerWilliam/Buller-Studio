@@ -10,7 +10,7 @@ public partial class App : Application
 #if GAME_PLAYER_BUILD
         var window = new PlayerWindow(GameProjectStore.LoadPackaged());
 #else
-        var window = new MainWindow();
+        var window = new HomeWindow();
 #endif
         MainWindow = window;
         window.Show();

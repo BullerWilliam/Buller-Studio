@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -14,10 +13,10 @@ namespace BullerStudio;
 
 public partial class MainWindow : Window
 {
-    private readonly ObservableCollection<ProjectSummary> projects = [];
     private readonly Stack<string> undo = new();
     private readonly Stack<string> redo = new();
     private readonly GameBuildService buildService = new();
+    private PlayerWindow? playerWindow;
     private GameProject? project;
     private SceneRenderService? renderer;
     private SceneNode? selected;
@@ -38,37 +37,14 @@ public partial class MainWindow : Window
         InitializeComponent();
         IncludedButton.Background = (Brush)FindResource("Accent");
         ExcludedButton.Background = (Brush)FindResource("PanelRaised");
-        dockSlots[ExplorerPanel] = "left";
+        dockSlots[ToolboxPanel] = "left";
         dockSlots[ScenePanel] = "centerTop";
-        dockSlots[PropertiesPanel] = "right";
+        dockSlots[RightDock] = "right";
         dockSlots[BottomPanel] = "centerBottom";
-        ProjectList.ItemsSource = projects;
-        Loaded += async (_, _) => await ShowProjectBrowserAsync();
+        ApplyRibbonTab("HOME");
     }
 
-    private async Task ShowProjectBrowserAsync()
-    {
-        ProjectBrowser.Visibility = Visibility.Visible;
-        projects.Clear();
-        foreach (var item in await GameProjectStore.ListAsync()) projects.Add(item);
-    }
-
-    private async void CreateProject_Click(object sender, RoutedEventArgs e)
-    {
-        var name = Prompt("New project", "Project name", "My Game");
-        if (string.IsNullOrWhiteSpace(name)) return;
-        try { await OpenProjectAsync(await GameProjectStore.CreateAsync(name)); }
-        catch (Exception exception) { ShowError(exception); }
-    }
-
-    private async void OpenProject_Click(object sender, RoutedEventArgs e)
-    {
-        if ((sender as FrameworkElement)?.Tag is not string path) return;
-        try { await OpenProjectAsync(await GameProjectStore.LoadAsync(path)); }
-        catch (Exception exception) { ShowError(exception); }
-    }
-
-    private async Task OpenProjectAsync(GameProject next)
+    public async Task OpenProjectAsync(GameProject next)
     {
         project = next;
         selected = null;
@@ -76,11 +52,12 @@ public partial class MainWindow : Window
         undo.Clear(); redo.Clear();
         currentSnapshot = JsonSerializer.Serialize(next, GameProjectStore.JsonOptions);
         TitleProjectPath.Text = next.ProjectPath;
-        ProjectBrowser.Visibility = Visibility.Collapsed;
+        ProjectTitle.Text = next.Name;
+        Title = $"{next.Name} - Buller Studio";
         renderer = new SceneRenderService(SceneViewport, next.Workspace.Children.First(node => node.Type == "Camera"));
         RefreshEditor();
-        await GameProjectStore.SaveAsync(next);
         SetStatus($"Opened {next.Name}");
+        await Task.CompletedTask;
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e) => await SaveProjectAsync();
@@ -93,15 +70,8 @@ public partial class MainWindow : Window
             CommitScriptEditor();
             await GameProjectStore.SaveAsync(project);
             SetStatus("Saved");
-            await ReloadProjectListAsync();
         }
         catch (Exception exception) { ShowError(exception); }
-    }
-
-    private async Task ReloadProjectListAsync()
-    {
-        projects.Clear();
-        foreach (var item in await GameProjectStore.ListAsync()) projects.Add(item);
     }
 
     private void RefreshEditor()
@@ -110,6 +80,8 @@ public partial class MainWindow : Window
         GameProjectStore.EnsureProject(project);
         ExplorerTree.ItemsSource = new[] { project.Workspace };
         ObjectCount.Text = GameProjectStore.Flatten(project.Workspace.Children).Count.ToString();
+        ToolboxAssetList.Items.Clear();
+        foreach (var asset in project.Assets) ToolboxAssetList.Items.Add($"▧  {asset.Name}");
         renderer?.Refresh(project);
         RenderProperties();
         ShowAssets();
@@ -354,23 +326,78 @@ public partial class MainWindow : Window
     private void Included_Click(object sender, RoutedEventArgs e) { included = true; IncludedButton.Background = (Brush)FindResource("Accent"); ExcludedButton.Background = (Brush)FindResource("PanelRaised"); SetStatus("Build mode: Included assets"); }
     private void Excluded_Click(object sender, RoutedEventArgs e) { included = false; ExcludedButton.Background = (Brush)FindResource("Accent"); IncludedButton.Background = (Brush)FindResource("PanelRaised"); SetStatus("Build mode: Excluded assets"); }
 
-    private void ProjectOptions_Click(object sender, RoutedEventArgs e)
+    private void ShowProjects_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is not string path) return;
-        var menu = new ContextMenu();
-        var build = new MenuItem { Header = "Build / compile" }; build.Click += async (_, _) => { try { var game = await GameProjectStore.LoadAsync(path); project = game; await BuildAsync(); } catch (Exception error) { ShowError(error); } };
-        var delete = new MenuItem { Header = "Delete project" }; delete.Click += async (_, _) =>
-        {
-            var safeRoot = Path.GetFullPath(GameProjectStore.ProjectsRoot) + Path.DirectorySeparatorChar;
-            var target = Path.GetFullPath(path);
-            if (!target.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase)) { MessageBox.Show(this, "Project folder is outside the projects directory."); return; }
-            if (MessageBox.Show(this, "Delete this project and all of its assets?", "Delete project", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-            try { Directory.Delete(target, true); await ReloadProjectListAsync(); } catch (Exception error) { ShowError(error); }
-        };
-        menu.Items.Add(build); menu.Items.Add(delete); menu.PlacementTarget = sender as UIElement; menu.IsOpen = true;
+        var home = new HomeWindow();
+        Application.Current.MainWindow = home;
+        home.Show();
+        Close();
     }
 
-    private async void ShowProjects_Click(object sender, RoutedEventArgs e) => await ShowProjectBrowserAsync();
+    private void RibbonTab_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var child in RibbonTabBar.Children.OfType<Button>()) child.Background = Brushes.Transparent;
+        if (sender is Button selectedTab && selectedTab.Tag is string tab)
+        {
+            selectedTab.Background = new SolidColorBrush(Color.FromRgb(48, 49, 52));
+            ApplyRibbonTab(tab);
+        }
+    }
+
+    private void ApplyRibbonTab(string tab)
+    {
+        foreach (var group in RibbonTools.Children.OfType<StackPanel>())
+            group.Visibility = group.Tag is string tabs && tabs.Split(',').Contains(tab, StringComparer.Ordinal) ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void AnchorSelection_Click(object sender, RoutedEventArgs e)
+    {
+        if (selected is null || selected.Type is not ("Part" or "MeshPart")) return;
+        selected.Anchored = !selected.Anchored;
+        RecordEdit(); RenderProperties();
+    }
+
+    private void FocusSelection_Click(object sender, RoutedEventArgs e)
+    {
+        if (project is null || selected is null || selected.Type is not ("Part" or "MeshPart")) return;
+        var camera = project.Workspace.Children.First(node => node.Type == "Camera");
+        camera.CameraMode = "Subject"; camera.Subject = selected.Id;
+        renderer?.UpdateCamera(project); RenderProperties(); RecordEdit();
+    }
+
+    private void ToggleShadows_Click(object sender, RoutedEventArgs e)
+    {
+        if (project is null) return;
+        project.Settings.Shadows = !project.Settings.Shadows;
+        renderer?.Refresh(project); SetStatus($"Shadows {(project.Settings.Shadows ? "enabled" : "disabled")}"); RecordEdit();
+    }
+
+    private void ResetCamera_Click(object sender, RoutedEventArgs e)
+    {
+        if (project is null) return;
+        var camera = project.Workspace.Children.First(node => node.Type == "Camera");
+        camera.CameraMode = "Custom"; camera.Position = [8, 7, 11]; camera.Rotation = [-24, 35, 0];
+        renderer?.UpdateCamera(project); RenderProperties(); RecordEdit();
+    }
+
+    private void RunSelectedScript_Click(object sender, RoutedEventArgs e)
+    {
+        if (project is null) return;
+        var script = selected is { Type: "Script" } ? project.Scripts.FirstOrDefault(item => item.Id == selected.Id) : selectedScript ?? project.Scripts.FirstOrDefault();
+        if (script is null) { SetStatus("Add a Script object before running Lua X."); return; }
+        RunScript(script);
+    }
+
+    private void Play_Click(object sender, RoutedEventArgs e)
+    {
+        if (project is null) return;
+        CommitScriptEditor();
+        playerWindow = new PlayerWindow(project);
+        playerWindow.Closed += (_, _) => playerWindow = null;
+        playerWindow.Show();
+    }
+
+    private void StopPlayer_Click(object sender, RoutedEventArgs e) => playerWindow?.Close();
     private void Help_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "Buller Studio saves projects locally. Game scripts run with Lua X: use SetProperty(id, 'Position', {X=0,Y=2,Z=0}), WaitForChild(workspace, 'Part'), and part.Touched:Connect(function(other) ... end). Camera Mode is Custom or Subject.", "Buller Studio Help");
     private void Undo_Click(object sender, RoutedEventArgs e) => UndoEdit();
     private void Redo_Click(object sender, RoutedEventArgs e) => RedoEdit();
