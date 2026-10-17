@@ -1,0 +1,1 @@
+.section-head,.view-top,.tabs{cursor:grab;user-select:none}.section-head:active,.view-top:active,.tabs:active{cursor:grabbing}.view-top{pointer-events:auto}.view-top .view-actions{pointer-events:auto}.panel{transition:outline-color .12s}.panel[draggable="true"]{outline-offset:-2px}
