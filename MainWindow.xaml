@@ -21,7 +21,7 @@
       <Setter Property="Height" Value="28"/>
     </Style>
     <Style x:Key="RibbonGroup" TargetType="StackPanel">
-      <Setter Property="Orientation" Value="Horizontal"/>
+      <Setter Property="Orientation" Value="Vertical"/>
       <Setter Property="Margin" Value="7,4"/>
     </Style>
     <Style x:Key="RibbonTool" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
@@ -48,100 +48,88 @@
   </Window.Resources>
   <Grid x:Name="RootGrid">
     <Grid.RowDefinitions>
-      <RowDefinition Height="31"/>
       <RowDefinition Height="32"/>
       <RowDefinition Height="82"/>
+      <RowDefinition Height="28"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="22"/>
     </Grid.RowDefinitions>
 
-    <Border Grid.Row="0" Background="#202123" BorderBrush="#111213" BorderThickness="0,0,0,1">
-      <DockPanel Margin="7,0">
-        <Border Width="19" Height="19" Background="#00A2FF" CornerRadius="3" VerticalAlignment="Center" Margin="0,0,8,0">
-          <TextBlock Text="B" FontSize="13" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="White"/>
-        </Border>
-        <TextBlock Text="Buller Studio" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center"/>
-        <TextBlock Text="  |  " Foreground="#66686B" VerticalAlignment="Center" Margin="7,0"/>
-        <TextBlock x:Name="ProjectTitle" Text="Untitled project" Foreground="#C5C7CA" VerticalAlignment="Center"/>
-        <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
-          <Button Content="⌂  Home" Click="ShowProjects_Click" Padding="10,3"/>
-          <TextBlock x:Name="TitleProjectPath" Foreground="#92969B" VerticalAlignment="Center" FontSize="10" Margin="10,0"/>
-        </StackPanel>
-      </DockPanel>
-    </Border>
-
-    <Border Grid.Row="1" Background="#252628" BorderBrush="#111213" BorderThickness="0,0,0,1">
+    <Border Grid.Row="0" Background="#252628" BorderBrush="#111213" BorderThickness="0,0,0,1">
       <DockPanel Margin="5,0">
-        <Button Content="FILE" Click="ShowProjects_Click" Padding="13,3" Background="#252628" BorderBrush="Transparent" FontWeight="Bold"/>
+        <Button Content="FILE" Click="FileMenu_Click" Padding="13,3" Background="#252628" BorderBrush="Transparent" FontWeight="Bold"/>
+        <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center" Margin="4,0">
+          <Button Content="▶ Play" Click="Play_Click" Background="#287A3D" Padding="11,3"/>
+          <Button Content="■ Stop" Click="StopPlayer_Click" Padding="9,3"/>
+        </StackPanel>
         <StackPanel x:Name="RibbonTabBar" Orientation="Horizontal" Margin="5,0">
           <Button Content="HOME" Tag="HOME" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
           <Button Content="MODEL" Tag="MODEL" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
-          <Button Content="TEST" Tag="TEST" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
-          <Button Content="VIEW" Tag="VIEW" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
+          <Button Content="AVATAR" Tag="AVATAR" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
+          <Button Content="UI" Tag="UI" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
           <Button Content="SCRIPT" Tag="SCRIPT" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
           <Button Content="PLUGINS" Tag="PLUGINS" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click"/>
-        </StackPanel>
-        <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
-          <Button Content="▶  Play" Click="Play_Click" Background="#287A3D" Padding="13,4"/>
-          <Button Content="Ⅱ" Padding="9,4"/>
-          <Button Content="■" Padding="9,4"/>
         </StackPanel>
       </DockPanel>
     </Border>
 
-    <Border Grid.Row="2" Background="#2B2C2F" BorderBrush="#111213" BorderThickness="0,0,0,1">
+    <Border Grid.Row="1" Background="#2B2C2F" BorderBrush="#111213" BorderThickness="0,0,0,1">
       <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
         <StackPanel x:Name="RibbonTools" Orientation="Horizontal" VerticalAlignment="Stretch">
           <StackPanel x:Name="ClipboardGroup" Tag="HOME,SCRIPT" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
-              <Button Content="Save\nCtrl+S" Style="{StaticResource RibbonTool}" Click="Save_Click"/>
-              <Button Content="Undo" Style="{StaticResource RibbonTool}" Click="Undo_Click"/>
-              <Button Content="Redo" Style="{StaticResource RibbonTool}" Click="Redo_Click"/>
+              <Button Style="{StaticResource RibbonTool}" Click="Save_Click"><StackPanel><TextBlock Text="▣" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Save" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Click="Undo_Click"><StackPanel><TextBlock Text="↶" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Undo" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Click="Redo_Click"><StackPanel><TextBlock Text="↷" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Redo" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Clipboard &amp; History" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
           <StackPanel x:Name="TransformGroup" Tag="HOME,MODEL" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
-              <Button Content="Select" Style="{StaticResource RibbonTool}"/>
-              <Button Content="Move" Style="{StaticResource RibbonTool}"/>
-              <Button Content="Scale" Style="{StaticResource RibbonTool}"/>
-              <Button Content="Rotate" Style="{StaticResource RibbonTool}"/>
+              <Button x:Name="SelectToolButton" Style="{StaticResource RibbonTool}" Click="ToolSelect_Click"><StackPanel><TextBlock Text="⌖" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Select" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="MoveToolButton" Style="{StaticResource RibbonTool}" Click="ToolMove_Click"><StackPanel><TextBlock Text="✥" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Move" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="ScaleToolButton" Style="{StaticResource RibbonTool}" Click="ToolScale_Click"><StackPanel><TextBlock Text="↗" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Scale" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="RotateToolButton" Style="{StaticResource RibbonTool}" Click="ToolRotate_Click"><StackPanel><TextBlock Text="⟳" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Rotate" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Tools" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
           <StackPanel x:Name="InsertGroup" Tag="HOME,MODEL" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
-              <Button Content="Part ▾" Style="{StaticResource RibbonTool}" Click="AddPart_Click"/>
-              <Button Content="Mesh" Style="{StaticResource RibbonTool}" Click="AddMesh_Click"/>
-              <Button Content="Image" Style="{StaticResource RibbonTool}" Click="AddImage_Click"/>
-              <Button Content="Folder" Style="{StaticResource RibbonTool}" Click="AddFolder_Click"/>
-              <Button Content="Script" Style="{StaticResource RibbonTool}" Click="AddScript_Click"/>
+              <Button Style="{StaticResource RibbonTool}" Click="AddPart_Click"><StackPanel><TextBlock Text="▰" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Part ▾" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Click="AddMesh_Click"><StackPanel><TextBlock Text="◈" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Mesh" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Click="AddImage_Click"><StackPanel><TextBlock Text="▧" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Image" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Click="AddFolder_Click"><StackPanel><TextBlock Text="▱" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Folder" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Click="AddScript_Click"><StackPanel><TextBlock Text="{}" FontSize="17" HorizontalAlignment="Center"/><TextBlock Text="Script" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Insert" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
-          <StackPanel x:Name="WindowsGroup" Tag="VIEW" Style="{StaticResource RibbonGroup}">
+          <StackPanel x:Name="WindowsGroup" Tag="HOME" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
-              <Button Content="Import\nAssets" Style="{StaticResource RibbonTool}" Click="ImportAssets_Click"/>
-              <Button Content="Explorer" Style="{StaticResource RibbonTool}"/>
-              <Button Content="Properties" Style="{StaticResource RibbonTool}"/>
-              <Button Content="Output" Style="{StaticResource RibbonTool}" Click="OutputTab_Click"/>
+              <Button Style="{StaticResource RibbonTool}" Click="ImportAssets_Click"><StackPanel><TextBlock Text="↥" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Import" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Click="Explorer_Click"><StackPanel><TextBlock Text="☷" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Explorer" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Click="Properties_Click"><StackPanel><TextBlock Text="☷" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Properties" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Click="OutputTab_Click"><StackPanel><TextBlock Text="▤" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Output" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Windows" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
           <StackPanel x:Name="PublishGroup" Tag="HOME" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
-              <Button x:Name="IncludedButton" Content="Included" Style="{StaticResource RibbonTool}" Click="Included_Click"/>
-              <Button x:Name="ExcludedButton" Content="Excluded" Style="{StaticResource RibbonTool}" Click="Excluded_Click"/>
-              <Button Content="Build\n.exe" Style="{StaticResource RibbonTool}" Background="#1877C9" Click="Build_Click"/>
+              <Button x:Name="IncludedButton" Style="{StaticResource RibbonTool}" Click="Included_Click"><StackPanel><TextBlock Text="▣" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Included" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="ExcludedButton" Style="{StaticResource RibbonTool}" Click="Excluded_Click"><StackPanel><TextBlock Text="▤" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Excluded" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button Style="{StaticResource RibbonTool}" Background="#1877C9" Click="Build_Click"><StackPanel><TextBlock Text="▶" FontSize="16" HorizontalAlignment="Center"/><TextBlock Text="Build" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Publish" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
           <StackPanel x:Name="ModelGroup" Tag="MODEL" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal"><Button Content="Anchor" Style="{StaticResource RibbonTool}" Click="AnchorSelection_Click"/><Button Content="Focus" Style="{StaticResource RibbonTool}" Click="FocusSelection_Click"/></StackPanel>
             <TextBlock Text="Selection" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
-          <StackPanel x:Name="TestGroup" Tag="TEST" Style="{StaticResource RibbonGroup}">
-            <StackPanel Orientation="Horizontal"><Button Content="▶ Run" Style="{StaticResource RibbonTool}" Click="Play_Click"/><Button Content="Stop" Style="{StaticResource RibbonTool}" Click="StopPlayer_Click"/></StackPanel>
-            <TextBlock Text="Playtest" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
+          <StackPanel x:Name="AvatarGroup" Tag="AVATAR" Style="{StaticResource RibbonGroup}">
+            <TextBlock Text="No built-in character or avatar system" TextWrapping="Wrap" Width="180" Foreground="#A0A3A7" VerticalAlignment="Center" Margin="12"/>
+            <TextBlock Text="Avatar tools" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
-          <StackPanel x:Name="ViewGroup" Tag="VIEW" Style="{StaticResource RibbonGroup}">
+          <StackPanel x:Name="ViewGroup" Tag="HOME" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal"><Button Content="Shadows" Style="{StaticResource RibbonTool}" Click="ToggleShadows_Click"/><Button Content="Workspace Camera" Style="{StaticResource RibbonTool}" Click="ResetCamera_Click"/></StackPanel>
-            <TextBlock Text="Viewport" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
+            <TextBlock Text="View" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
+          </StackPanel>
+          <StackPanel x:Name="UIGroup" Tag="UI" Style="{StaticResource RibbonGroup}">
+            <StackPanel Orientation="Horizontal"><Button Content="ImageLabel" Style="{StaticResource RibbonTool}" Click="AddImage_Click"/><Button Content="Import Image" Style="{StaticResource RibbonTool}" Click="ImportAssets_Click"/></StackPanel>
+            <TextBlock Text="UI" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
           <StackPanel x:Name="ScriptGroup" Tag="SCRIPT" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal"><Button Content="＋ Script" Style="{StaticResource RibbonTool}" Click="AddScript_Click"/><Button Content="Run Script" Style="{StaticResource RibbonTool}" Click="RunSelectedScript_Click"/><Button Content="Output" Style="{StaticResource RibbonTool}" Click="OutputTab_Click"/></StackPanel>
@@ -153,6 +141,16 @@
           </StackPanel>
         </StackPanel>
       </ScrollViewer>
+    </Border>
+
+    <Border Grid.Row="2" Background="#202123" BorderBrush="#111213" BorderThickness="0,0,0,1">
+      <DockPanel>
+        <Button x:Name="ProjectDocumentTab" Background="#303235" BorderBrush="#434549" BorderThickness="0,0,0,2" Padding="13,3" Margin="0" HorizontalContentAlignment="Left">
+          <StackPanel Orientation="Horizontal"><TextBlock Text="▧" Foreground="#7BB6FF" Margin="0,0,8,0"/><TextBlock x:Name="ProjectDocumentName" Text="Project" FontSize="11"/></StackPanel>
+        </Button>
+        <Button Content="＋" Padding="9,2" Margin="1,0" Click="ShowProjects_Click" ToolTip="Open the Home screen"/>
+        <TextBlock Text="Local project" DockPanel.Dock="Right" Foreground="#85898D" FontSize="10" VerticalAlignment="Center" Margin="10,0"/>
+      </DockPanel>
     </Border>
 
     <Grid x:Name="WorkspaceGrid" Grid.Row="3" Background="#191A1B" Margin="1">
@@ -175,7 +173,7 @@
 
       <Border x:Name="ScenePanel" Grid.Column="1" Grid.Row="0" Background="#101214" BorderBrush="#111213" BorderThickness="0,0,0,1">
         <Grid>
-          <hx:Viewport3DX x:Name="SceneViewport" BackgroundColor="#101522" IsShadowMappingEnabled="True" MSAA="Maximum" MouseDown3D="SceneViewport_MouseDown3D" PreviewMouseRightButtonDown="SceneViewport_PreviewMouseRightButtonDown" PreviewMouseRightButtonUp="SceneViewport_PreviewMouseRightButtonUp" PreviewMouseMove="SceneViewport_PreviewMouseMove" PreviewMouseWheel="SceneViewport_PreviewMouseWheel" Focusable="True"/>
+          <hx:Viewport3DX x:Name="SceneViewport" BackgroundColor="#101522" IsShadowMappingEnabled="True" MSAA="Maximum" MouseDown3D="SceneViewport_MouseDown3D" PreviewMouseLeftButtonDown="SceneViewport_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="SceneViewport_PreviewMouseLeftButtonUp" PreviewMouseRightButtonDown="SceneViewport_PreviewMouseRightButtonDown" PreviewMouseRightButtonUp="SceneViewport_PreviewMouseRightButtonUp" PreviewMouseMove="SceneViewport_PreviewMouseMove" PreviewMouseWheel="SceneViewport_PreviewMouseWheel" Focusable="True"/>
           <Border VerticalAlignment="Top" Background="#EE252628" Padding="8,5" MouseLeftButtonDown="DockHeader_MouseLeftButtonDown" MouseMove="DockHeader_MouseMove" MouseLeftButtonUp="DockHeader_MouseLeftButtonUp">
             <DockPanel><TextBlock Text="◉  Viewport" FontSize="11" FontWeight="SemiBold"/><TextBlock Text="Workspace Camera  ·  WASD move  ·  RMB look" DockPanel.Dock="Right" Foreground="#A0A3A7" FontSize="10"/></DockPanel>
           </Border>

@@ -16,6 +16,7 @@ public partial class HomeWindow : Window
     private readonly ObservableCollection<ProjectSummary> projects = [];
     private readonly ICollectionView projectView;
     private readonly GameBuildService buildService = new();
+    private string currentSection = "Home";
 
     public HomeWindow()
     {
@@ -33,8 +34,8 @@ public partial class HomeWindow : Window
             projects.Clear();
             foreach (var item in await GameProjectStore.ListAsync()) projects.Add(item);
             ProjectCount.Text = $"{projects.Count} project{(projects.Count == 1 ? "" : "s")}";
-            EmptyState.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             projectView.Refresh();
+            UpdateEmptyState();
             StatusText.Text = $"Projects saved in {GameProjectStore.ProjectsRoot}";
         }
         catch (Exception exception) { ShowError(exception); }
@@ -44,12 +45,37 @@ public partial class HomeWindow : Window
     {
         if (item is not ProjectSummary project) return false;
         var query = SearchBox?.Text?.Trim();
-        return string.IsNullOrEmpty(query) || project.Name.Contains(query, StringComparison.OrdinalIgnoreCase);
+        var matchesSearch = string.IsNullOrEmpty(query) || project.Name.Contains(query, StringComparison.OrdinalIgnoreCase);
+        var matchesSection = currentSection != "Recent" || projects.OrderByDescending(entry => entry.LastModified).Take(10).Contains(project);
+        return matchesSearch && matchesSection;
     }
 
-    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => projectView.Refresh();
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        SearchHint.Visibility = string.IsNullOrEmpty(SearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+        projectView.Refresh(); UpdateEmptyState();
+    }
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshProjectsAsync();
-    private void HomeNav_Click(object sender, RoutedEventArgs e) { if (sender is Button { Tag: "Templates" }) CreateProject_Click(sender, e); else projectView.Refresh(); }
+    private void HomeNav_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: "Templates" })
+        {
+            foreach (var button in WorkspaceNav.Children.OfType<Button>().Where(button => button.Tag is not null)) button.Background = Brushes.Transparent;
+            if (sender is Button templatesButton) templatesButton.Background = new SolidColorBrush(Color.FromRgb(48, 50, 53));
+            HomeScrollViewer.ScrollToTop(); StatusText.Text = "Choose a template to start a project."; return;
+        }
+        currentSection = (sender as FrameworkElement)?.Tag as string ?? "Home";
+        foreach (var button in WorkspaceNav.Children.OfType<Button>().Where(button => button.Tag is not null)) button.Background = Brushes.Transparent;
+        if (sender is Button selectedButton) selectedButton.Background = new SolidColorBrush(Color.FromRgb(48, 50, 53));
+        projectView.Refresh(); UpdateEmptyState();
+    }
+
+    private void UpdateEmptyState()
+    {
+        var hasVisibleProjects = projectView.Cast<object>().Any();
+        EmptyState.Text = projects.Count == 0 ? "No projects yet. Create a project above to get started." : "No matching projects found.";
+        EmptyState.Visibility = hasVisibleProjects ? Visibility.Collapsed : Visibility.Visible;
+    }
 
     private async void CreateProject_Click(object sender, RoutedEventArgs e)
     {
@@ -57,7 +83,16 @@ public partial class HomeWindow : Window
         var initialName = template == "Baseplate" ? "Baseplate" : template == "Empty World" ? "Empty World" : template == "Asset Playground" ? "Asset Playground" : "My Game";
         var name = Prompt("New project", "Project name", initialName);
         if (string.IsNullOrWhiteSpace(name)) return;
-        try { await OpenProjectAsync(await GameProjectStore.CreateAsync(name)); }
+        try
+        {
+            var project = await GameProjectStore.CreateAsync(name);
+            if (template == "Empty World")
+            {
+                project.Workspace.Children.RemoveAll(node => node.Type == "Part");
+                await GameProjectStore.SaveAsync(project);
+            }
+            await OpenProjectAsync(project);
+        }
         catch (Exception exception) { ShowError(exception); }
     }
 
@@ -121,6 +156,20 @@ public partial class HomeWindow : Window
     {
         Directory.CreateDirectory(GameProjectStore.ProjectsRoot);
         Process.Start(new ProcessStartInfo("explorer.exe", GameProjectStore.ProjectsRoot) { UseShellExecute = true });
+    }
+
+    private void MoreOptions_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu();
+        var refresh = new MenuItem { Header = "Refresh projects" };
+        refresh.Click += async (_, _) => await RefreshProjectsAsync();
+        var openFolder = new MenuItem { Header = "Open projects folder" };
+        openFolder.Click += OpenProjectsFolder_Click;
+        var about = new MenuItem { Header = "About Buller Studio" };
+        about.Click += (_, _) => MessageBox.Show(this, "Buller Studio is a local C# game editor with a Lua X runtime.", "About Buller Studio", MessageBoxButton.OK, MessageBoxImage.Information);
+        menu.Items.Add(refresh); menu.Items.Add(openFolder); menu.Items.Add(new Separator()); menu.Items.Add(about);
+        menu.PlacementTarget = sender as UIElement;
+        menu.IsOpen = true;
     }
 
     private void ShowError(Exception exception) => MessageBox.Show(this, exception.Message, "Buller Studio", MessageBoxButton.OK, MessageBoxImage.Error);

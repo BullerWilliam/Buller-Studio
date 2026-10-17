@@ -1,4 +1,3 @@
-using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -27,6 +26,9 @@ public partial class MainWindow : Window
     private bool isRestoring;
     private string currentSnapshot = string.Empty;
     private bool isRightDragging;
+    private bool isTransformDragging;
+    private bool transformChanged;
+    private string selectedTool = "Select";
     private Point lastPointer;
     private Border? draggingPanel;
     private Point dragStart;
@@ -42,22 +44,23 @@ public partial class MainWindow : Window
         dockSlots[RightDock] = "right";
         dockSlots[BottomPanel] = "centerBottom";
         ApplyRibbonTab("HOME");
+        if (RibbonTabBar.Children.OfType<Button>().FirstOrDefault() is { } homeTab) homeTab.Background = new SolidColorBrush(Color.FromRgb(48, 49, 52));
+        SetTool("Select");
     }
 
-    public async Task OpenProjectAsync(GameProject next)
+    public Task OpenProjectAsync(GameProject next)
     {
         project = next;
         selected = null;
         selectedScript = null;
         undo.Clear(); redo.Clear();
         currentSnapshot = JsonSerializer.Serialize(next, GameProjectStore.JsonOptions);
-        TitleProjectPath.Text = next.ProjectPath;
-        ProjectTitle.Text = next.Name;
         Title = $"{next.Name} - Buller Studio";
+        ProjectDocumentName.Text = next.Name;
         renderer = new SceneRenderService(SceneViewport, next.Workspace.Children.First(node => node.Type == "Camera"));
         RefreshEditor();
         SetStatus($"Opened {next.Name}");
-        await Task.CompletedTask;
+        return Task.CompletedTask;
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e) => await SaveProjectAsync();
@@ -326,12 +329,31 @@ public partial class MainWindow : Window
     private void Included_Click(object sender, RoutedEventArgs e) { included = true; IncludedButton.Background = (Brush)FindResource("Accent"); ExcludedButton.Background = (Brush)FindResource("PanelRaised"); SetStatus("Build mode: Included assets"); }
     private void Excluded_Click(object sender, RoutedEventArgs e) { included = false; ExcludedButton.Background = (Brush)FindResource("Accent"); IncludedButton.Background = (Brush)FindResource("PanelRaised"); SetStatus("Build mode: Excluded assets"); }
 
-    private void ShowProjects_Click(object sender, RoutedEventArgs e)
+    private async void ShowProjects_Click(object sender, RoutedEventArgs e)
     {
+        if (project is not null)
+        {
+            try { CommitScriptEditor(); await GameProjectStore.SaveAsync(project); }
+            catch (Exception exception) { ShowError(exception); return; }
+        }
         var home = new HomeWindow();
         Application.Current.MainWindow = home;
         home.Show();
         Close();
+    }
+
+    private void FileMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu();
+        var save = new MenuItem { Header = "Save project     Ctrl+S" };
+        save.Click += Save_Click;
+        var home = new MenuItem { Header = "Home" };
+        home.Click += ShowProjects_Click;
+        var exit = new MenuItem { Header = "Exit" };
+        exit.Click += (_, _) => Close();
+        menu.Items.Add(save); menu.Items.Add(home); menu.Items.Add(new Separator()); menu.Items.Add(exit);
+        menu.PlacementTarget = sender as UIElement;
+        menu.IsOpen = true;
     }
 
     private void RibbonTab_Click(object sender, RoutedEventArgs e)
@@ -388,6 +410,30 @@ public partial class MainWindow : Window
         RunScript(script);
     }
 
+    private void ToolSelect_Click(object sender, RoutedEventArgs e) => SetTool("Select");
+    private void ToolMove_Click(object sender, RoutedEventArgs e) => SetTool("Move");
+    private void ToolScale_Click(object sender, RoutedEventArgs e) => SetTool("Scale");
+    private void ToolRotate_Click(object sender, RoutedEventArgs e) => SetTool("Rotate");
+
+    private void SetTool(string tool)
+    {
+        selectedTool = tool;
+        SelectToolButton.Background = Brushes.Transparent;
+        MoveToolButton.Background = Brushes.Transparent;
+        ScaleToolButton.Background = Brushes.Transparent;
+        RotateToolButton.Background = Brushes.Transparent;
+        var active = tool switch { "Move" => MoveToolButton, "Scale" => ScaleToolButton, "Rotate" => RotateToolButton, _ => SelectToolButton };
+        active.Background = new SolidColorBrush(Color.FromRgb(0, 103, 168));
+        SetStatus($"{tool} tool selected. Choose an object in the Explorer or viewport.");
+    }
+
+    private void Explorer_Click(object sender, RoutedEventArgs e) => ExplorerTree.Focus();
+    private void Properties_Click(object sender, RoutedEventArgs e)
+    {
+        PropertyEditor.Focusable = true;
+        PropertyEditor.Focus();
+    }
+
     private void Play_Click(object sender, RoutedEventArgs e)
     {
         if (project is null) return;
@@ -422,10 +468,46 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SceneViewport_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (selectedTool == "Select" || isRightDragging || selected is null || selected.Type is not ("Part" or "MeshPart")) return;
+        isTransformDragging = true;
+        transformChanged = false;
+        lastPointer = e.GetPosition(SceneViewport);
+        SceneViewport.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void SceneViewport_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!isTransformDragging) return;
+        isTransformDragging = false;
+        SceneViewport.ReleaseMouseCapture();
+        if (transformChanged)
+        {
+            RecordEdit();
+            RenderProperties();
+        }
+        e.Handled = true;
+    }
+
     private void SceneViewport_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e) { isRightDragging = true; lastPointer = e.GetPosition(SceneViewport); SceneViewport.Focus(); Mouse.Capture(SceneViewport); e.Handled = true; }
     private void SceneViewport_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e) { isRightDragging = false; Mouse.Capture(null); e.Handled = true; }
     private void SceneViewport_PreviewMouseMove(object sender, MouseEventArgs e)
     {
+        if (isTransformDragging && e.LeftButton == MouseButtonState.Pressed && selected is not null && project is not null)
+        {
+            var pointer = e.GetPosition(SceneViewport);
+            var deltaX = (float)(pointer.X - lastPointer.X);
+            var deltaY = (float)(pointer.Y - lastPointer.Y);
+            lastPointer = pointer;
+            if (selectedTool == "Move") { selected.Position[0] += deltaX * .02f; selected.Position[1] -= deltaY * .02f; }
+            if (selectedTool == "Scale") { selected.Size[0] = Math.Max(.05f, selected.Size[0] + deltaX * .02f); selected.Size[1] = Math.Max(.05f, selected.Size[1] - deltaY * .02f); }
+            if (selectedTool == "Rotate") { selected.Rotation[1] += deltaX * .5f; selected.Rotation[0] -= deltaY * .5f; }
+            renderer?.UpdateNode(selected, project);
+            transformChanged = true;
+            return;
+        }
         if (!isRightDragging || renderer is null || project is null) return;
         var point = e.GetPosition(SceneViewport); var dx = point.X - lastPointer.X; var dy = point.Y - lastPointer.Y; lastPointer = point;
         if (project.Workspace.Children.FirstOrDefault(node => node.Type == "Camera") is { } camera)
@@ -561,16 +643,4 @@ public partial class MainWindow : Window
     private void SetStatus(string message) => Dispatcher.Invoke(() => StatusText.Text = message);
     private void ShowError(Exception exception) => MessageBox.Show(this, exception.Message, "Buller Studio", MessageBoxButton.OK, MessageBoxImage.Error);
 
-    private static string? Prompt(string title, string label, string initial)
-    {
-        var dialog = new Window { Title = title, Width = 360, Height = 150, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Background = new SolidColorBrush(Color.FromRgb(26, 34, 49)), Foreground = Brushes.White };
-        var panel = new StackPanel { Margin = new Thickness(14) };
-        panel.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 0, 0, 6) });
-        var text = new TextBox { Text = initial }; panel.Children.Add(text);
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 10, 0, 0) };
-        var ok = new Button { Content = "Create", IsDefault = true }; ok.Click += (_, _) => dialog.DialogResult = true;
-        var cancel = new Button { Content = "Cancel", IsCancel = true, Margin = new Thickness(6, 0, 0, 0) };
-        buttons.Children.Add(ok); buttons.Children.Add(cancel); panel.Children.Add(buttons); dialog.Content = panel;
-        return dialog.ShowDialog() == true ? text.Text : null;
-    }
 }

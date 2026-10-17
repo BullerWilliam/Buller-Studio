@@ -32,7 +32,7 @@
         <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
           <Button Content="↻" Click="Refresh_Click" Padding="7,2" ToolTip="Refresh projects"/>
           <Button Content="Open projects folder" Click="OpenProjectsFolder_Click" Padding="10,3"/>
-          <Button Content="⋯" Padding="8,3"/>
+          <Button Content="⋯" Padding="8,3" Click="MoreOptions_Click"/>
         </StackPanel>
       </DockPanel>
     </Border>
@@ -41,7 +41,7 @@
       <Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
       <Border Grid.Column="0" Background="#222325" BorderBrush="#111213" BorderThickness="0,0,1,0">
         <DockPanel>
-          <StackPanel DockPanel.Dock="Top" Margin="0,18,0,0">
+          <StackPanel x:Name="WorkspaceNav" DockPanel.Dock="Top" Margin="0,18,0,0">
             <TextBlock Text="CREATE" FontSize="10" FontWeight="Bold" Foreground="#8F9499" Margin="18,0,0,8"/>
             <Button Content="＋  New project" Style="{StaticResource NavButton}" Background="#0878C9" Click="CreateProject_Click"/>
             <Button Content="▦  Templates" Style="{StaticResource NavButton}" Tag="Templates" Click="HomeNav_Click"/>
@@ -58,11 +58,14 @@
         </DockPanel>
       </Border>
 
-      <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <ScrollViewer x:Name="HomeScrollViewer" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="34,28,34,38">
           <DockPanel Margin="0,0,0,22">
             <StackPanel><TextBlock Text="Start creating" FontSize="26" FontWeight="SemiBold"/><TextBlock Text="Choose a starting point or continue a recent project." Foreground="#A3A6AA" FontSize="12" Margin="0,5,0,0"/></StackPanel>
-            <TextBox x:Name="SearchBox" Width="270" Height="32" VerticalAlignment="Center" Padding="9,5" ToolTip="Search local projects" TextChanged="SearchBox_TextChanged"/>
+            <Grid Width="270" Height="32" VerticalAlignment="Center" DockPanel.Dock="Right">
+              <TextBox x:Name="SearchBox" Padding="28,5,8,5" ToolTip="Search local projects" TextChanged="SearchBox_TextChanged"/>
+              <TextBlock x:Name="SearchHint" Text="⌕  Search projects" Foreground="#8F9499" Margin="9,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+            </Grid>
           </DockPanel>
 
           <TextBlock Text="NEW PROJECT" FontSize="11" FontWeight="Bold" Foreground="#A3A6AA" Margin="0,0,0,10"/>

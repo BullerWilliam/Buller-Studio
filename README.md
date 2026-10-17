@@ -11,7 +11,7 @@ dotnet restore BullerStudio.csproj
 dotnet run --project BullerStudio.csproj
 ```
 
-The editor creates projects under `Documents/Buller Studio Projects/<project>/`. Each project contains `game.buller.json` and an `assets/` folder. Use the Projects screen to create/open projects, or its three-dot menu to build or delete one.
+The app opens to a dedicated Home screen; no editor is shown until you create or open a project. Home includes templates, recent local projects, search, and three-dot build/delete actions. Projects are stored under `Documents/Buller Studio Projects/<project>/` with `game.buller.json` and an `assets/` folder.
 
 ## Editing
 
@@ -21,7 +21,7 @@ The editor creates projects under `Documents/Buller Studio Projects/<project>/`.
 - Use right mouse drag to turn the editor camera, WASD/QE to move it, and the wheel to zoom. Camera controls only affect the editor camera; games have no built-in player or character.
 - Import PNG/JPEG/BMP/GIF images and Wavefront OBJ meshes into the local assets list. Assign an asset's relative path, such as `assets/tree.obj`, to a MeshPart or `assets/logo.png` to an ImageLabel. Lua X can also access imported asset paths.
 - `Ctrl+S` saves, `Ctrl+Z` undoes, `Ctrl+Shift+Z` redoes, and `Delete` removes a selected non-camera object.
-- Drag Explorer, Properties, or the lower panel header to snap that panel into a workspace region.
+- The editor uses a Studio-style ribbon and dock layout: Toolbox on the left, the 3D viewport in the center, Explorer and Properties on the right, and Output/Asset Manager/Lua X below. Drag panel headers to snap major docks to another workspace region.
 
 ## Lua X
 
