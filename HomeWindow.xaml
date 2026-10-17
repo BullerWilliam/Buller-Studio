@@ -1,8 +1,8 @@
 <Window x:Class="BullerStudio.HomeWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Buller Studio" Width="1460" Height="900" MinWidth="1050" MinHeight="680"
-        Background="#1B1C1E" Foreground="#E7E7E7">
+        Title="Buller Studio" Icon="{StaticResource BullerStudioIcon}" Width="1460" Height="900" MinWidth="980" MinHeight="620" WindowState="Maximized"
+        Background="#1F2022" Foreground="#F2F3F4">
   <Window.Resources>
     <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
       <Setter Property="Background" Value="Transparent"/>
@@ -18,14 +18,14 @@
       <Setter Property="BorderBrush" Value="#37393C"/>
       <Setter Property="Padding" Value="14"/>
       <Setter Property="Margin" Value="0,0,12,0"/>
-      <Setter Property="Height" Value="95"/>
+      <Setter Property="Height" Value="92"/>
       <Setter Property="HorizontalContentAlignment" Value="Left"/>
     </Style>
   </Window.Resources>
   <Grid>
     <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition Height="*"/><RowDefinition Height="24"/></Grid.RowDefinitions>
-    <Border Grid.Row="0" Background="#202123" BorderBrush="#111213" BorderThickness="0,0,0,1">
-      <DockPanel Margin="12,0">
+    <Border Grid.Row="0" Background="#222426" BorderBrush="#111213" BorderThickness="0,0,0,1">
+      <DockPanel Margin="12,0" LastChildFill="False">
         <Border Width="20" Height="20" Background="#00A2FF" CornerRadius="3" VerticalAlignment="Center" Margin="0,0,9,0"><TextBlock Text="B" FontSize="13" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="White"/></Border>
         <TextBlock Text="Buller Studio" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"/>
         <TextBlock Text="  •  Projects" Foreground="#96999D" VerticalAlignment="Center" Margin="9,0"/>
@@ -39,8 +39,8 @@
 
     <Grid Grid.Row="1">
       <Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-      <Border Grid.Column="0" Background="#222325" BorderBrush="#111213" BorderThickness="0,0,1,0">
-        <DockPanel>
+      <Border Grid.Column="0" Background="#222426" BorderBrush="#111213" BorderThickness="0,0,1,0">
+        <DockPanel LastChildFill="False">
           <StackPanel x:Name="WorkspaceNav" DockPanel.Dock="Top" Margin="0,18,0,0">
             <TextBlock Text="CREATE" FontSize="10" FontWeight="Bold" Foreground="#8F9499" Margin="18,0,0,8"/>
             <Button Content="＋  New project" Style="{StaticResource NavButton}" Background="#0878C9" Click="CreateProject_Click"/>
@@ -60,7 +60,7 @@
 
       <ScrollViewer x:Name="HomeScrollViewer" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="34,28,34,38">
-          <DockPanel Margin="0,0,0,22">
+          <DockPanel Margin="0,0,0,22" LastChildFill="False">
             <StackPanel><TextBlock Text="Start creating" FontSize="26" FontWeight="SemiBold"/><TextBlock Text="Choose a starting point or continue a recent project." Foreground="#A3A6AA" FontSize="12" Margin="0,5,0,0"/></StackPanel>
             <Grid Width="270" Height="32" VerticalAlignment="Center" DockPanel.Dock="Right">
               <TextBox x:Name="SearchBox" Padding="28,5,8,5" ToolTip="Search local projects" TextChanged="SearchBox_TextChanged"/>
@@ -71,17 +71,29 @@
           <TextBlock Text="NEW PROJECT" FontSize="11" FontWeight="Bold" Foreground="#A3A6AA" Margin="0,0,0,10"/>
           <UniformGrid Columns="3" Margin="0,0,0,28">
             <Button Style="{StaticResource CreateCardButton}" Tag="Baseplate" Click="CreateProject_Click">
-              <StackPanel Orientation="Horizontal"><Border Width="62" Height="62" Background="#293B4B" CornerRadius="4" Margin="0,0,13,0"><Grid><Rectangle Fill="#348AC2" Height="15" VerticalAlignment="Bottom"/><Rectangle Fill="#7CA453" Height="7" VerticalAlignment="Bottom" Margin="0,0,0,15"/></Grid></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="Baseplate" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="A clean 3D workspace" FontSize="11" Foreground="#A3A6AA" Margin="0,5,0,0"/></StackPanel></StackPanel>
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="62"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Border Width="62" Height="62" Background="#293B4B" CornerRadius="4"><Grid><Rectangle Fill="#348AC2" Height="15" VerticalAlignment="Bottom"/><Rectangle Fill="#7CA453" Height="7" VerticalAlignment="Bottom" Margin="0,0,0,15"/></Grid></Border>
+                <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"><TextBlock Text="Baseplate" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="A clean 3D workspace" FontSize="11" Foreground="#BDBEC0" Margin="0,5,0,0" TextTrimming="CharacterEllipsis"/></StackPanel>
+              </Grid>
             </Button>
             <Button Style="{StaticResource CreateCardButton}" Tag="Empty World" Click="CreateProject_Click">
-              <StackPanel Orientation="Horizontal"><Border Width="62" Height="62" Background="#353238" CornerRadius="4" Margin="0,0,13,0"><Grid><Ellipse Fill="#D49358" Width="24" Height="24"/><Rectangle Fill="#4C8060" Height="17" VerticalAlignment="Bottom"/></Grid></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="Empty world" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="Start with a simple scene" FontSize="11" Foreground="#A3A6AA" Margin="0,5,0,0"/></StackPanel></StackPanel>
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="62"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Border Width="62" Height="62" Background="#353238" CornerRadius="4"><Grid><Ellipse Fill="#D49358" Width="24" Height="24"/><Rectangle Fill="#4C8060" Height="17" VerticalAlignment="Bottom"/></Grid></Border>
+                <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"><TextBlock Text="Empty world" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="Start with a simple scene" FontSize="11" Foreground="#BDBEC0" Margin="0,5,0,0" TextTrimming="CharacterEllipsis"/></StackPanel>
+              </Grid>
             </Button>
             <Button Style="{StaticResource CreateCardButton}" Tag="Asset Playground" Click="CreateProject_Click">
-              <StackPanel Orientation="Horizontal"><Border Width="62" Height="62" Background="#344039" CornerRadius="4" Margin="0,0,13,0"><Grid><Rectangle Fill="#79A857" Width="27" Height="27"/><Rectangle Fill="#449DC4" Width="14" Height="20" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,6,6"/></Grid></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="Asset playground" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="Build a scene from local files" FontSize="11" Foreground="#A3A6AA" Margin="0,5,0,0"/></StackPanel></StackPanel>
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="62"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Border Width="62" Height="62" Background="#344039" CornerRadius="4"><Grid><Rectangle Fill="#79A857" Width="27" Height="27"/><Rectangle Fill="#449DC4" Width="14" Height="20" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,6,6"/></Grid></Border>
+                <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"><TextBlock Text="Asset playground" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock Text="Build a scene from local files" FontSize="11" Foreground="#BDBEC0" Margin="0,5,0,0" TextTrimming="CharacterEllipsis"/></StackPanel>
+              </Grid>
             </Button>
           </UniformGrid>
 
-          <DockPanel Margin="0,0,0,10"><TextBlock Text="RECENT PROJECTS" FontSize="11" FontWeight="Bold" Foreground="#A3A6AA" VerticalAlignment="Center"/><TextBlock x:Name="ProjectCount" DockPanel.Dock="Right" Foreground="#8F9499" FontSize="10" VerticalAlignment="Center"/></DockPanel>
+          <DockPanel Margin="0,0,0,10" LastChildFill="False"><TextBlock Text="RECENT PROJECTS" FontSize="11" FontWeight="Bold" Foreground="#A3A6AA" VerticalAlignment="Center"/><TextBlock x:Name="ProjectCount" DockPanel.Dock="Right" Foreground="#8F9499" FontSize="10" VerticalAlignment="Center"/></DockPanel>
           <TextBlock x:Name="EmptyState" Text="No projects yet. Create a project above to get started." Foreground="#A3A6AA" FontSize="13" Margin="0,18,0,18" Visibility="Collapsed"/>
           <ItemsControl x:Name="ProjectCards">
             <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="3"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
@@ -108,6 +120,6 @@
       </ScrollViewer>
     </Grid>
 
-    <Border Grid.Row="2" Background="#202123" BorderBrush="#111213" BorderThickness="0,1,0,0"><DockPanel Margin="10,0"><TextBlock x:Name="StatusText" Text="Ready" Foreground="#92969B" FontSize="10" VerticalAlignment="Center"/><TextBlock Text="Buller Studio  |  Local projects" Foreground="#73777B" FontSize="10" DockPanel.Dock="Right" VerticalAlignment="Center"/></DockPanel></Border>
+    <Border Grid.Row="2" Background="#222426" BorderBrush="#111213" BorderThickness="0,1,0,0"><DockPanel Margin="10,0" LastChildFill="False"><TextBlock x:Name="StatusText" Text="Ready" Foreground="#BDBEC0" FontSize="10" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><TextBlock Text="Buller Studio  |  Local projects" Foreground="#85898D" FontSize="10" DockPanel.Dock="Right" VerticalAlignment="Center"/></DockPanel></Border>
   </Grid>
 </Window>

@@ -17,6 +17,7 @@ public partial class HomeWindow : Window
     private readonly ICollectionView projectView;
     private readonly GameBuildService buildService = new();
     private string currentSection = "Home";
+    private bool includeAssets = true;
 
     public HomeWindow()
     {
@@ -36,7 +37,8 @@ public partial class HomeWindow : Window
             ProjectCount.Text = $"{projects.Count} project{(projects.Count == 1 ? "" : "s")}";
             projectView.Refresh();
             UpdateEmptyState();
-            StatusText.Text = $"Projects saved in {GameProjectStore.ProjectsRoot}";
+            StatusText.Text = "Ready";
+            StatusText.ToolTip = $"Projects saved in {GameProjectStore.ProjectsRoot}";
         }
         catch (Exception exception) { ShowError(exception); }
     }
@@ -118,13 +120,13 @@ public partial class HomeWindow : Window
         var menu = new ContextMenu();
         var open = new MenuItem { Header = "Open project" };
         open.Click += async (_, _) => { try { await OpenProjectAsync(await GameProjectStore.LoadAsync(path)); } catch (Exception exception) { ShowError(exception); } };
-        var buildIncluded = new MenuItem { Header = "Build game  ·  Included assets" };
-        buildIncluded.Click += async (_, _) => await BuildProjectAsync(path, true);
-        var buildExternal = new MenuItem { Header = "Build game  ·  External assets" };
-        buildExternal.Click += async (_, _) => await BuildProjectAsync(path, false);
+        var includeAssetsToggle = new MenuItem { Header = "Include assets in .exe", IsCheckable = true, IsChecked = includeAssets, StaysOpenOnClick = true };
+        includeAssetsToggle.Click += (_, _) => includeAssets = includeAssetsToggle.IsChecked;
+        var build = new MenuItem { Header = "Build game…" };
+        build.Click += async (_, _) => await BuildProjectAsync(path, includeAssets);
         var delete = new MenuItem { Header = "Delete project…" };
         delete.Click += async (_, _) => await DeleteProjectAsync(path);
-        menu.Items.Add(open); menu.Items.Add(new Separator()); menu.Items.Add(buildIncluded); menu.Items.Add(buildExternal); menu.Items.Add(new Separator()); menu.Items.Add(delete);
+        menu.Items.Add(open); menu.Items.Add(new Separator()); menu.Items.Add(includeAssetsToggle); menu.Items.Add(build); menu.Items.Add(new Separator()); menu.Items.Add(delete);
         menu.PlacementTarget = sender as UIElement;
         menu.IsOpen = true;
     }

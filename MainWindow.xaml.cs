@@ -7,6 +7,8 @@ using BullerStudio.Models;
 using BullerStudio.Services;
 using HelixToolkit.Wpf.SharpDX;
 using Microsoft.Win32;
+using AvalonDock.Layout;
+using AvalonDock.Themes;
 
 namespace BullerStudio;
 
@@ -14,6 +16,7 @@ public partial class MainWindow : Window
 {
     private readonly Stack<string> undo = new();
     private readonly Stack<string> redo = new();
+    private readonly Dictionary<string, TextBox> scriptEditors = new(StringComparer.Ordinal);
     private readonly GameBuildService buildService = new();
     private PlayerWindow? playerWindow;
     private GameProject? project;
@@ -22,6 +25,7 @@ public partial class MainWindow : Window
     private GameScript? selectedScript;
     private TextBox? scriptEditor;
     private TextBox? outputBox;
+    private StackPanel? propertyTarget;
     private bool included = true;
     private bool isRestoring;
     private string currentSnapshot = string.Empty;
@@ -29,35 +33,36 @@ public partial class MainWindow : Window
     private bool isTransformDragging;
     private bool transformChanged;
     private string selectedTool = "Select";
+    private string toolboxCategory = "All";
+    private string activeRibbonTab = "HOME";
     private Point lastPointer;
-    private Border? draggingPanel;
-    private Point dragStart;
-    private readonly Dictionary<Border, string> dockSlots = new();
 
     public MainWindow()
     {
         InitializeComponent();
+        DockManager.Theme = new Vs2013DarkTheme();
+        DockManager.ActiveContentChanged += (_, _) => HandleActiveDocumentChanged();
         IncludedButton.Background = (Brush)FindResource("Accent");
         ExcludedButton.Background = (Brush)FindResource("PanelRaised");
-        dockSlots[ToolboxPanel] = "left";
-        dockSlots[ScenePanel] = "centerTop";
-        dockSlots[RightDock] = "right";
-        dockSlots[BottomPanel] = "centerBottom";
-        ApplyRibbonTab("HOME");
-        if (RibbonTabBar.Children.OfType<Button>().FirstOrDefault() is { } homeTab) homeTab.Background = new SolidColorBrush(Color.FromRgb(48, 49, 52));
+        SelectRibbonTab("HOME");
         SetTool("Select");
     }
 
     public Task OpenProjectAsync(GameProject next)
     {
         project = next;
-        selected = null;
+        selected = next.Workspace;
         selectedScript = null;
+        scriptEditor = null;
+        scriptEditors.Clear();
         undo.Clear(); redo.Clear();
         currentSnapshot = JsonSerializer.Serialize(next, GameProjectStore.JsonOptions);
         Title = $"{next.Name} - Buller Studio";
-        ProjectDocumentName.Text = next.Name;
+        ViewportDocument.Title = next.Name;
         renderer = new SceneRenderService(SceneViewport, next.Workspace.Children.First(node => node.Type == "Camera"));
+        EnsureOutputBox();
+        BottomContent.Content = outputBox;
+        SelectBottomTab(showOutput: true);
         RefreshEditor();
         SetStatus($"Opened {next.Name}");
         return Task.CompletedTask;
@@ -81,14 +86,66 @@ public partial class MainWindow : Window
     {
         if (project is null) return;
         GameProjectStore.EnsureProject(project);
+        UpdateExplorerFilter(project.Workspace, ExplorerSearch.Text.Trim());
         ExplorerTree.ItemsSource = new[] { project.Workspace };
         ObjectCount.Text = GameProjectStore.Flatten(project.Workspace.Children).Count.ToString();
-        ToolboxAssetList.Items.Clear();
-        foreach (var asset in project.Assets) ToolboxAssetList.Items.Add($"▧  {asset.Name}");
+        RefreshToolboxAssets();
         renderer?.Refresh(project);
         RenderProperties();
-        ShowAssets();
         if (selected is not null) SelectTreeNode(selected.Id);
+    }
+
+    private void ExplorerSearch_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        ExplorerSearchHint.Visibility = string.IsNullOrEmpty(ExplorerSearch.Text) ? Visibility.Visible : Visibility.Collapsed;
+        if (project is null) return;
+        UpdateExplorerFilter(project.Workspace, ExplorerSearch.Text.Trim());
+        ExplorerTree.ItemsSource = null;
+        ExplorerTree.ItemsSource = new[] { project.Workspace };
+    }
+
+    private static bool UpdateExplorerFilter(SceneNode node, string filter)
+    {
+        var matchesNode = string.IsNullOrEmpty(filter) || node.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) || node.Type.Contains(filter, StringComparison.OrdinalIgnoreCase);
+        var matchesChild = false;
+        foreach (var child in node.Children) matchesChild |= UpdateExplorerFilter(child, filter);
+        node.IsExplorerVisible = matchesNode || matchesChild;
+        return node.IsExplorerVisible;
+    }
+
+    private void ToolboxSearch_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        ToolboxSearchHint.Visibility = string.IsNullOrEmpty(ToolboxSearch.Text) ? Visibility.Visible : Visibility.Collapsed;
+        RefreshToolboxAssets();
+    }
+
+    private void ToolboxCategory_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string category }) return;
+        toolboxCategory = category;
+        RefreshToolboxAssets();
+    }
+
+    private void RefreshToolboxAssets()
+    {
+        if (project is null || ToolboxAssetList is null) return;
+        var query = ToolboxSearch.Text.Trim();
+        ToolboxAssetList.Items.Clear();
+        foreach (var tab in ToolboxCategoryTabs.Children.OfType<Button>())
+            tab.Background = Equals(tab.Tag, toolboxCategory) ? new SolidColorBrush(Color.FromRgb(48, 90, 124)) : Brushes.Transparent;
+        var assets = project.Assets.Where(asset =>
+        {
+            var matchesCategory = toolboxCategory switch
+            {
+                "Images" => asset.Type is "png" or "jpg" or "jpeg" or "bmp" or "gif",
+                "Meshes" => asset.Type == "obj",
+                _ => true
+            };
+            return matchesCategory && (string.IsNullOrEmpty(query) || asset.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || asset.Type.Contains(query, StringComparison.OrdinalIgnoreCase));
+        }).ToArray();
+        foreach (var asset in assets) ToolboxAssetList.Items.Add(asset);
+        ToolboxEmptyState.Text = project.Assets.Count == 0 ? "No local assets yet. Import image or OBJ files to use them in this project." : "No assets match this search or category.";
+        ToolboxEmptyState.Visibility = assets.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ExplorerTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
@@ -100,62 +157,120 @@ public partial class MainWindow : Window
     private void RenderProperties()
     {
         PropertyEditor.Children.Clear();
+        propertyTarget = null;
         if (project is null || selected is null) return;
-        AddLabel($"{selected.Type}  ·  {selected.Name}");
+
+        var dataSection = AddPropertySection("Data");
+        propertyTarget = dataSection;
+        AddLabel($"Class: {selected.Type}", "Class");
         AddTextField("Name", selected.Name);
         if (selected.Type is "Part" or "MeshPart" or "ImageLabel" or "Camera")
         {
+            propertyTarget = AddPropertySection("Transform");
             AddTextField("Position", VectorText(selected.Position));
             AddTextField("Rotation", VectorText(selected.Rotation));
             if (selected.Type != "Camera")
             {
                 AddTextField("Size", VectorText(selected.Size));
+                propertyTarget = AddPropertySection("Appearance");
                 AddTextField("Color", selected.Color);
-                AddCheckField("Anchored", selected.Anchored);
                 AddCheckField("CastShadow", selected.CastShadow);
+                propertyTarget = AddPropertySection("Behavior");
+                AddCheckField("Anchored", selected.Anchored);
             }
-            if (selected.Type is "MeshPart" or "ImageLabel") AddTextField("Asset", selected.Asset);
+            if (selected.Type is "MeshPart" or "ImageLabel")
+            {
+                propertyTarget = dataSection;
+                AddTextField("Asset", selected.Asset);
+            }
             if (selected.Type == "Camera")
             {
+                propertyTarget = AddPropertySection("Camera");
                 AddComboField("Mode", ["Custom", "Subject"], selected.CameraMode);
                 var subjects = GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type is "Part" or "MeshPart").Select(node => $"{node.Id} | {node.Name}").Prepend("").ToArray();
                 AddComboField("Subject", subjects, subjects.FirstOrDefault(value => value.StartsWith(selected.Subject + " | ", StringComparison.Ordinal)) ?? "");
                 AddTextField("FieldOfView", selected.FieldOfView.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                AddLabel("The Workspace Camera is the only view camera.");
-                AddLabel("Subject mode orbits a BasePart; Custom uses Position and Rotation.");
+                AddLabel("The Workspace Camera is the only view camera.", "Camera");
+                AddLabel("Subject mode orbits a BasePart; Custom uses Position and Rotation.", "Subject");
             }
         }
         if (selected.Type == "Script")
         {
             var script = project.Scripts.FirstOrDefault(item => item.Id == selected.Id);
-            if (script is not null) ShowScript(script);
+            if (script is not null)
+            {
+                propertyTarget = AddPropertySection("Script");
+                AddLabel("Edit this Lua X script in its document tab.", "Source");
+                ShowScript(script);
+            }
         }
+        ApplyPropertyFilter(PropertySearch.Text.Trim());
     }
 
-    private void AddLabel(string text) => PropertyEditor.Children.Add(new TextBlock { Text = text, Margin = new Thickness(0, 6, 0, 3), Foreground = (Brush)FindResource("TextMuted"), TextWrapping = TextWrapping.Wrap });
+    private StackPanel AddPropertySection(string title)
+    {
+        var content = new StackPanel();
+        PropertyEditor.Children.Add(new Expander { Header = title, Content = content, IsExpanded = true, Margin = new Thickness(0, 1, 0, 3), Style = (Style)FindResource("PropertySectionExpander") });
+        return content;
+    }
+
+    private void AddLabel(string text, string? property = null) => (propertyTarget ?? PropertyEditor).Children.Add(new TextBlock { Text = text, Tag = property, Margin = new Thickness(0, 6, 0, 3), Foreground = (Brush)FindResource("TextMuted"), TextWrapping = TextWrapping.Wrap });
 
     private void AddTextField(string property, string value)
     {
-        var label = new TextBlock { Text = property, Margin = new Thickness(0, 8, 0, 3), Foreground = (Brush)FindResource("TextMuted"), FontSize = 11 };
+        var label = new TextBlock { Text = property, Tag = property, Margin = new Thickness(0, 8, 0, 3), Foreground = (Brush)FindResource("TextMuted"), FontSize = 11 };
         var box = new TextBox { Text = value, Tag = property, MinWidth = 170 };
         box.LostFocus += PropertyText_LostFocus;
         box.KeyDown += (_, args) => { if (args.Key == Key.Enter) { ApplyTextProperty(box); Keyboard.ClearFocus(); } };
-        PropertyEditor.Children.Add(label); PropertyEditor.Children.Add(box);
+        (propertyTarget ?? PropertyEditor).Children.Add(label); (propertyTarget ?? PropertyEditor).Children.Add(box);
     }
 
     private void AddCheckField(string property, bool value)
     {
         var box = new CheckBox { Content = property, IsChecked = value, Margin = new Thickness(0, 8, 0, 2), Tag = property, Foreground = (Brush)FindResource("TextPrimary") };
         box.Checked += PropertyCheck_Changed; box.Unchecked += PropertyCheck_Changed;
-        PropertyEditor.Children.Add(box);
+        (propertyTarget ?? PropertyEditor).Children.Add(box);
     }
 
     private void AddComboField(string property, IEnumerable<string> values, string selectedValue)
     {
-        PropertyEditor.Children.Add(new TextBlock { Text = property, Margin = new Thickness(0, 8, 0, 3), Foreground = (Brush)FindResource("TextMuted"), FontSize = 11 });
+        (propertyTarget ?? PropertyEditor).Children.Add(new TextBlock { Text = property, Tag = property, Margin = new Thickness(0, 8, 0, 3), Foreground = (Brush)FindResource("TextMuted"), FontSize = 11 });
         var combo = new ComboBox { ItemsSource = values, SelectedItem = selectedValue, Tag = property, Margin = new Thickness(0, 0, 0, 3) };
         combo.SelectionChanged += PropertyCombo_Changed;
-        PropertyEditor.Children.Add(combo);
+        (propertyTarget ?? PropertyEditor).Children.Add(combo);
+    }
+
+    private void PropertySearch_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        PropertySearchHint.Visibility = string.IsNullOrEmpty(PropertySearch.Text) ? Visibility.Visible : Visibility.Collapsed;
+        ApplyPropertyFilter(PropertySearch.Text.Trim());
+    }
+
+    private void ApplyPropertyFilter(string filter)
+    {
+        foreach (var section in PropertyEditor.Children.OfType<Expander>())
+        {
+            var sectionHasMatch = false;
+            if (section.Content is StackPanel content)
+            {
+                foreach (UIElement child in content.Children)
+                {
+                    var property = child switch
+                    {
+                        TextBlock { Tag: string label } => label,
+                        TextBox { Tag: string text } => text,
+                        ComboBox { Tag: string combo } => combo,
+                        CheckBox { Content: string check } => check,
+                        _ => null
+                    };
+                    var isVisible = string.IsNullOrEmpty(filter) || property is null || property.Contains(filter, StringComparison.OrdinalIgnoreCase);
+                    child.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+                    sectionHasMatch |= property is not null && isVisible;
+                }
+            }
+            section.Visibility = string.IsNullOrEmpty(filter) || sectionHasMatch ? Visibility.Visible : Visibility.Collapsed;
+            if (!string.IsNullOrEmpty(filter) && sectionHasMatch) section.IsExpanded = true;
+        }
     }
 
     private void PropertyText_LostFocus(object sender, RoutedEventArgs e) { if (!isRestoring && sender is TextBox box) ApplyTextProperty(box); }
@@ -243,31 +358,54 @@ public partial class MainWindow : Window
     private void ShowAssets()
     {
         if (project is null) return;
+        SetOutputPanelVisible(true);
         var list = new ListBox { Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = (Brush)FindResource("TextPrimary") };
-        foreach (var asset in project.Assets) list.Items.Add($"{asset.Name}   ·   {asset.Type}   ·   {asset.Size:N0} bytes");
+        foreach (var asset in project.Assets.Where(asset => string.IsNullOrEmpty(ToolboxSearch.Text.Trim()) || asset.Name.Contains(ToolboxSearch.Text.Trim(), StringComparison.OrdinalIgnoreCase) || asset.Type.Contains(ToolboxSearch.Text.Trim(), StringComparison.OrdinalIgnoreCase))) list.Items.Add($"{asset.Name}   ·   {asset.Type}   ·   {asset.Size:N0} bytes");
         BottomContent.Content = list;
-        AssetsTab.Background = (Brush)FindResource("PanelRaised");
+        SelectBottomTab(showOutput: false);
     }
 
     private void ShowScript(GameScript script)
     {
         CommitScriptEditor();
-        selectedScript = script;
-        var panel = new Grid { Margin = new Thickness(6) };
-        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
-        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var scripts = new ListBox { ItemsSource = project?.Scripts, DisplayMemberPath = "Name", Background = Brushes.Transparent, Foreground = (Brush)FindResource("TextPrimary") };
-        scripts.SelectedItem = script;
-        scripts.SelectionChanged += (_, args) => { if (args.AddedItems.Count > 0 && args.AddedItems[0] is GameScript item) ShowScript(item); };
-        Grid.SetColumn(scripts, 0); panel.Children.Add(scripts);
-        var editorPanel = new DockPanel { Margin = new Thickness(7, 0, 0, 0) };
-        var run = new Button { Content = "▶ Run Lua X", HorizontalAlignment = HorizontalAlignment.Right };
+        var document = DockManager.Layout.Descendents().OfType<LayoutDocument>().FirstOrDefault(item => item.ContentId == script.Id);
+        if (document is null)
+        {
+            document = new LayoutDocument { ContentId = script.Id, CanClose = true };
+            var documentPane = DockManager.Layout.Descendents().OfType<LayoutDocumentPane>().First();
+            documentPane.Children.Add(document);
+        }
+        if (!scriptEditors.ContainsKey(script.Id) || document.Content is null)
+            document.Content = CreateScriptEditorPanel(script);
+        document.Title = script.Name;
+        DockManager.ActiveContent = document;
+        SelectRibbonTab("SCRIPT");
+    }
+
+    private DockPanel CreateScriptEditorPanel(GameScript script)
+    {
+        var editorPanel = new DockPanel { Margin = new Thickness(6) };
+        var editorToolbar = new DockPanel { LastChildFill = false, Background = (Brush)FindResource("PanelRaised"), Margin = new Thickness(0, 0, 0, 1) };
+        var language = new TextBlock { Text = script.Name, Foreground = (Brush)FindResource("TextMuted"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(7, 0, 0, 0), FontSize = 10 };
+        var run = new Button { Content = "▶ Run Lua X", HorizontalAlignment = HorizontalAlignment.Right, Padding = new Thickness(10, 4, 10, 4) };
         run.Click += (_, _) => RunScript(script);
-        DockPanel.SetDock(run, Dock.Top); editorPanel.Children.Add(run);
-        scriptEditor = new TextBox { Text = script.Source, AcceptsReturn = true, AcceptsTab = true, FontFamily = new FontFamily("Consolas"), FontSize = 12, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, TextWrapping = TextWrapping.NoWrap, Background = new SolidColorBrush(Color.FromRgb(17, 24, 36)), Foreground = (Brush)FindResource("TextPrimary") };
-        editorPanel.Children.Add(scriptEditor);
-        Grid.SetColumn(editorPanel, 1); panel.Children.Add(editorPanel);
-        BottomContent.Content = panel;
+        DockPanel.SetDock(run, Dock.Right); editorToolbar.Children.Add(run); editorToolbar.Children.Add(language);
+        DockPanel.SetDock(editorToolbar, Dock.Top); editorPanel.Children.Add(editorToolbar);
+        var editor = new TextBox { Text = script.Source, AcceptsReturn = true, AcceptsTab = true, FontFamily = new FontFamily("Consolas"), FontSize = 13, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, TextWrapping = TextWrapping.NoWrap, Background = new SolidColorBrush(Color.FromRgb(17, 24, 36)), Foreground = (Brush)FindResource("TextPrimary"), BorderThickness = new Thickness(0), Padding = new Thickness(8) };
+        editorPanel.Children.Add(editor);
+        scriptEditors[script.Id] = editor;
+        return editorPanel;
+    }
+
+    private void HandleActiveDocumentChanged()
+    {
+        if (DockManager.ActiveContent is not LayoutDocument document) return;
+        var nextScript = project?.Scripts.FirstOrDefault(script => script.Id == document.ContentId);
+        if (selectedScript?.Id != nextScript?.Id) CommitScriptEditor();
+        selectedScript = nextScript;
+        scriptEditor = nextScript is not null && scriptEditors.TryGetValue(nextScript.Id, out var editor) ? editor : null;
+        if (nextScript is not null) SelectRibbonTab("SCRIPT");
+        else if (activeRibbonTab == "SCRIPT") SelectRibbonTab("HOME");
     }
 
     private void RunScript(GameScript script)
@@ -282,19 +420,31 @@ public partial class MainWindow : Window
     }
 
     private void AssetsTab_Click(object sender, RoutedEventArgs e) => ShowAssets();
-    private void LuaTab_Click(object sender, RoutedEventArgs e)
+    private void OpenScript_Click(object sender, RoutedEventArgs e)
     {
         if (project is null) return;
-        LuaTab.Background = (Brush)FindResource("PanelRaised");
         var script = selectedScript ?? project.Scripts.FirstOrDefault();
-        if (script is null) { BottomContent.Content = new TextBlock { Text = "Add a Script object to write Lua X scripts.", Margin = new Thickness(12), Foreground = (Brush)FindResource("TextMuted") }; return; }
+        if (script is null) { SetStatus("Add a Script object to open the Lua X editor."); return; }
         ShowScript(script);
     }
 
     private void OutputTab_Click(object sender, RoutedEventArgs e)
     {
-        outputBox = new TextBox { IsReadOnly = true, AcceptsReturn = true, Text = "Build and Lua X messages appear here.", Background = Brushes.Transparent, Foreground = (Brush)FindResource("TextPrimary"), FontFamily = new FontFamily("Consolas") };
+        SetOutputPanelVisible(true);
+        EnsureOutputBox();
         BottomContent.Content = outputBox;
+        SelectBottomTab(showOutput: true);
+    }
+
+    private void EnsureOutputBox()
+    {
+        outputBox ??= new TextBox { IsReadOnly = true, AcceptsReturn = true, Text = "Build and Lua X messages appear here.", Background = Brushes.Transparent, Foreground = (Brush)FindResource("TextPrimary"), FontFamily = new FontFamily("Consolas") };
+    }
+
+    private void SelectBottomTab(bool showOutput)
+    {
+        OutputTab.Background = showOutput ? (Brush)FindResource("PanelRaised") : Brushes.Transparent;
+        AssetsTab.Background = showOutput ? Brushes.Transparent : (Brush)FindResource("PanelRaised");
     }
 
     private void AppendOutput(string message)
@@ -358,12 +508,15 @@ public partial class MainWindow : Window
 
     private void RibbonTab_Click(object sender, RoutedEventArgs e)
     {
-        foreach (var child in RibbonTabBar.Children.OfType<Button>()) child.Background = Brushes.Transparent;
-        if (sender is Button selectedTab && selectedTab.Tag is string tab)
-        {
-            selectedTab.Background = new SolidColorBrush(Color.FromRgb(48, 49, 52));
-            ApplyRibbonTab(tab);
-        }
+        if (sender is Button { Tag: string tab }) SelectRibbonTab(tab);
+    }
+
+    private void SelectRibbonTab(string tab)
+    {
+        activeRibbonTab = tab;
+        foreach (var child in RibbonTabBar.Children.OfType<Button>())
+            child.Background = Equals(child.Tag, tab) ? new SolidColorBrush(Color.FromRgb(48, 49, 52)) : Brushes.Transparent;
+        ApplyRibbonTab(tab);
     }
 
     private void ApplyRibbonTab(string tab)
@@ -427,11 +580,110 @@ public partial class MainWindow : Window
         SetStatus($"{tool} tool selected. Choose an object in the Explorer or viewport.");
     }
 
-    private void Explorer_Click(object sender, RoutedEventArgs e) => ExplorerTree.Focus();
+    private void Explorer_Click(object sender, RoutedEventArgs e) => SetExplorerPanelVisible(!ExplorerDock.IsVisible);
+    private void Toolbox_Click(object sender, RoutedEventArgs e) => SetToolboxPanelVisible(!ToolboxDock.IsVisible);
     private void Properties_Click(object sender, RoutedEventArgs e)
     {
-        PropertyEditor.Focusable = true;
-        PropertyEditor.Focus();
+        SetPropertiesPanelVisible(!PropertiesDock.IsVisible);
+        if (PropertiesDock.IsVisible) PropertyEditor.Focus();
+    }
+
+    private void WindowMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu();
+        menu.Items.Add(CreateWindowMenuItem("Toolbox", ToolboxDock.IsVisible, SetToolboxPanelVisible));
+        menu.Items.Add(CreateWindowMenuItem("Explorer", ExplorerDock.IsVisible, SetExplorerPanelVisible));
+        menu.Items.Add(CreateWindowMenuItem("Properties", PropertiesDock.IsVisible, SetPropertiesPanelVisible));
+        menu.Items.Add(CreateWindowMenuItem("Output", OutputDock.IsVisible, SetOutputPanelVisible));
+        var assets = new MenuItem { Header = "Asset Manager" };
+        assets.Click += AssetsTab_Click;
+        menu.Items.Add(assets);
+        menu.Items.Add(new Separator());
+        var shadows = new MenuItem { Header = "Shadows", IsCheckable = true, IsChecked = project?.Settings.Shadows == true };
+        shadows.Click += ToggleShadows_Click;
+        menu.Items.Add(shadows);
+        var resetCamera = new MenuItem { Header = "Reset Camera" };
+        resetCamera.Click += ResetCamera_Click;
+        menu.Items.Add(resetCamera);
+        menu.Items.Add(new Separator());
+        var reset = new MenuItem { Header = "Reset Layout" };
+        reset.Click += (_, _) => ResetDockLayout();
+        menu.Items.Add(reset);
+        menu.PlacementTarget = sender as UIElement;
+        menu.IsOpen = true;
+    }
+
+    private MenuItem CreateWindowMenuItem(string title, bool isVisible, Action<bool> setVisibility)
+    {
+        var item = new MenuItem { Header = title, IsCheckable = true, IsChecked = isVisible };
+        item.Click += (_, _) => setVisibility(item.IsChecked);
+        return item;
+    }
+
+    private void ToolboxMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu();
+        var hide = new MenuItem { Header = "Hide Toolbox" };
+        hide.Click += (_, _) => SetToolboxPanelVisible(false);
+        menu.Items.Add(hide);
+        menu.PlacementTarget = sender as UIElement;
+        menu.IsOpen = true;
+    }
+
+    private void SetToolboxPanelVisible(bool isVisible)
+    {
+        ToolboxDock.IsVisible = isVisible;
+    }
+
+    private void SetExplorerPanelVisible(bool isVisible) => ExplorerDock.IsVisible = isVisible;
+
+    private void SetPropertiesPanelVisible(bool isVisible) => PropertiesDock.IsVisible = isVisible;
+
+    private void SetOutputPanelVisible(bool isVisible) => OutputDock.IsVisible = isVisible;
+
+    private void ResetDockLayout()
+    {
+        ResetDockLayoutStructure();
+        ToolboxDock.IsVisible = true;
+        ExplorerDock.IsVisible = true;
+        PropertiesDock.IsVisible = true;
+        OutputDock.IsVisible = true;
+    }
+
+    private void ResetDockLayoutStructure()
+    {
+        var documents = DockManager.Layout.Descendents().OfType<LayoutDocument>().ToArray();
+        foreach (var dock in new[] { ToolboxDock, ExplorerDock, PropertiesDock, OutputDock })
+            if (dock.Parent is LayoutAnchorablePane pane) pane.Children.Remove(dock);
+        foreach (var document in documents)
+            if (document.Parent is LayoutDocumentPane pane) pane.Children.Remove(document);
+
+        var toolboxPane = new LayoutAnchorablePane { DockWidth = new GridLength(220) };
+        toolboxPane.Children.Add(ToolboxDock);
+        var explorerPane = new LayoutAnchorablePane { DockHeight = new GridLength(1.12, GridUnitType.Star) };
+        explorerPane.Children.Add(ExplorerDock);
+        var propertiesPane = new LayoutAnchorablePane { DockHeight = new GridLength(.88, GridUnitType.Star) };
+        propertiesPane.Children.Add(PropertiesDock);
+        var rightPaneGroup = new LayoutAnchorablePaneGroup { Orientation = Orientation.Vertical, DockWidth = new GridLength(310) };
+        rightPaneGroup.Children.Add(explorerPane);
+        rightPaneGroup.Children.Add(propertiesPane);
+
+        var documentPane = new LayoutDocumentPane();
+        foreach (var document in documents) documentPane.Children.Add(document);
+        var documentPaneGroup = new LayoutDocumentPaneGroup();
+        documentPaneGroup.Children.Add(documentPane);
+        var outputPane = new LayoutAnchorablePane { DockHeight = new GridLength(164) };
+        outputPane.Children.Add(OutputDock);
+        var centerPaneGroup = new LayoutPanel { Orientation = Orientation.Vertical };
+        centerPaneGroup.Children.Add(documentPaneGroup);
+        centerPaneGroup.Children.Add(outputPane);
+
+        var rootPanel = new LayoutPanel { Orientation = Orientation.Horizontal };
+        rootPanel.Children.Add(toolboxPane);
+        rootPanel.Children.Add(centerPaneGroup);
+        rootPanel.Children.Add(rightPaneGroup);
+        DockManager.Layout.RootPanel = rootPanel;
+        DockManager.ActiveContent = ViewportDocument;
     }
 
     private void Play_Click(object sender, RoutedEventArgs e)
@@ -529,60 +781,22 @@ public partial class MainWindow : Window
         RenderProperties();
     }
 
-    private void DockHeader_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        draggingPanel = FindPanel(sender as DependencyObject);
-        if (draggingPanel is null) return;
-        dragStart = e.GetPosition(WorkspaceGrid); draggingPanel.CaptureMouse();
-    }
-    private void DockHeader_MouseMove(object sender, MouseEventArgs e)
-    {
-        if (draggingPanel is null || e.LeftButton != MouseButtonState.Pressed) return;
-        var point = e.GetPosition(WorkspaceGrid);
-        if (Math.Abs(point.X - dragStart.X) + Math.Abs(point.Y - dragStart.Y) > 18) draggingPanel.Opacity = .65;
-    }
-    private void DockHeader_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (draggingPanel is null) return;
-        var point = e.GetPosition(WorkspaceGrid);
-        var slot = point.X < WorkspaceGrid.ActualWidth * .23 ? "left" : point.X > WorkspaceGrid.ActualWidth * .78 ? "right" : point.Y > WorkspaceGrid.ActualHeight * .72 ? "centerBottom" : "centerTop";
-        var occupied = dockSlots.FirstOrDefault(entry => entry.Value == slot).Key;
-        if (occupied is not null && occupied != draggingPanel)
-        {
-            dockSlots[occupied] = dockSlots[draggingPanel];
-            dockSlots[draggingPanel] = slot;
-            ApplyDockSlots();
-        }
-        draggingPanel.Opacity = 1; draggingPanel.ReleaseMouseCapture(); draggingPanel = null;
-    }
-
-    private void ApplyDockSlots()
-    {
-        foreach (var (panel, slot) in dockSlots)
-        {
-            var column = slot == "left" ? 0 : slot == "right" ? 2 : 1;
-            var row = slot == "centerBottom" ? 1 : 0;
-            Grid.SetColumn(panel, column); Grid.SetRow(panel, row); Grid.SetRowSpan(panel, slot is "left" or "right" ? 2 : 1);
-        }
-    }
-
-    private static Border? FindPanel(DependencyObject? element)
-    {
-        while (element is not null)
-        {
-            if (element is Border { Tag: "DockPanel" } panel) return panel;
-            element = VisualTreeHelper.GetParent(element);
-        }
-        return null;
-    }
-
     private void DeleteSelected()
     {
-        if (project is null || selected is null || selected.Type == "Camera") return;
+        if (project is null || selected is null || selected.Type is "Camera" or "Workspace") return;
         if (MessageBox.Show(this, $"Delete {selected.Name}?", "Delete object", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         var removeId = selected.Id;
+        if (selected.Type == "Script") CommitScriptEditor();
         GameProjectStore.RemoveNode(project.Workspace.Children, removeId);
         project.Scripts.RemoveAll(script => script.Id == removeId);
+        var scriptDocument = DockManager.Layout.Descendents().OfType<LayoutDocument>().FirstOrDefault(item => item.ContentId == removeId.ToString());
+        if (scriptDocument is not null)
+        {
+            var isActive = ReferenceEquals(DockManager.ActiveContent, scriptDocument);
+            if (scriptDocument.Parent is LayoutDocumentPane pane) pane.Children.Remove(scriptDocument);
+            scriptEditors.Remove(removeId);
+            if (isActive) DockManager.ActiveContent = ViewportDocument;
+        }
         selected = null;
         RecordEdit(); RefreshEditor();
     }

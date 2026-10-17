@@ -11,6 +11,7 @@ namespace BullerStudio.Services;
 public sealed class SceneRenderService
 {
     private readonly Viewport3DX viewport;
+    private readonly DefaultEffectsManager effectsManager = new();
     private readonly Dictionary<string, MeshGeometryModel3D> visuals = new(StringComparer.Ordinal);
     private readonly SceneNode cameraNode;
     private float orbitYaw = 35;
@@ -21,6 +22,7 @@ public sealed class SceneRenderService
     {
         this.viewport = viewport;
         this.cameraNode = cameraNode;
+        viewport.EffectsManager = effectsManager;
         viewport.Camera = new HelixToolkit.Wpf.SharpDX.PerspectiveCamera { Position = new Point3D(0, 0, 0), LookDirection = new Vector3D(0, 0, -1), UpDirection = new Vector3D(0, 1, 0), FieldOfView = cameraNode.FieldOfView };
         viewport.Items.Add(new AmbientLight3D { Color = Colors.Gray });
         viewport.Items.Add(new DirectionalLight3D { Color = Colors.White, Direction = new Vector3D(-.5, -1, -.7) });
@@ -161,7 +163,7 @@ public sealed class SceneRenderService
     private static Vector3 LookDirection(float pitch, float yaw)
     {
         var p = Degrees(pitch); var y = Degrees(yaw);
-        return new Vector3((float)(Math.Cos(p) * Math.Sin(y)), (float)Math.Sin(p), (float)(-Math.Cos(p) * Math.Cos(y)));
+        return new Vector3((float)(-Math.Cos(p) * Math.Sin(y)), (float)Math.Sin(p), (float)(-Math.Cos(p) * Math.Cos(y)));
     }
 
     private static MeshBuilder ReadObj(string path)

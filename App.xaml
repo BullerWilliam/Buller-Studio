@@ -3,13 +3,21 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              Startup="OnStartup" ShutdownMode="OnLastWindowClose">
   <Application.Resources>
-    <SolidColorBrush x:Key="AppBackground" Color="#101522" />
-    <SolidColorBrush x:Key="PanelBackground" Color="#171E2C" />
-    <SolidColorBrush x:Key="PanelRaised" Color="#1C2535" />
-    <SolidColorBrush x:Key="PanelBorder" Color="#293549" />
-    <SolidColorBrush x:Key="TextPrimary" Color="#DCE3EF" />
-    <SolidColorBrush x:Key="TextMuted" Color="#8492A8" />
-    <SolidColorBrush x:Key="Accent" Color="#65A4FF" />
+    <SolidColorBrush x:Key="AppBackground" Color="#1F2022" />
+    <SolidColorBrush x:Key="PanelBackground" Color="#252628" />
+    <SolidColorBrush x:Key="PanelRaised" Color="#303235" />
+    <SolidColorBrush x:Key="PanelBorder" Color="#3A3D40" />
+    <SolidColorBrush x:Key="TextPrimary" Color="#F2F3F4" />
+    <SolidColorBrush x:Key="TextMuted" Color="#BDBEC0" />
+    <SolidColorBrush x:Key="Accent" Color="#00A2FF" />
+    <DrawingImage x:Key="BullerStudioIcon">
+      <DrawingImage.Drawing>
+        <DrawingGroup>
+          <GeometryDrawing Brush="{StaticResource Accent}" Geometry="M0,0 H32 V32 H0 Z" />
+          <GeometryDrawing Brush="#FFFFFF" Geometry="M8,6 H12 V26 H8 Z M12,6 H20 V10 H12 Z M12,14 H20 V18 H12 Z M12,22 H20 V26 H12 Z M18,10 H22 V14 H18 Z M18,18 H22 V22 H18 Z" />
+        </DrawingGroup>
+      </DrawingImage.Drawing>
+    </DrawingImage>
     <Style TargetType="Button">
       <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
       <Setter Property="Background" Value="#303235" />
@@ -22,7 +30,7 @@
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="3" SnapsToDevicePixels="True">
+            <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" SnapsToDevicePixels="True">
               <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}" RecognizesAccessKey="True"/>
             </Border>
             <ControlTemplate.Triggers>
@@ -37,8 +45,8 @@
     </Style>
     <Style TargetType="TextBox">
       <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-      <Setter Property="Background" Value="#111824" />
-      <Setter Property="BorderBrush" Value="#34435A" />
+      <Setter Property="Background" Value="#1B1C1E" />
+      <Setter Property="BorderBrush" Value="#414347" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="Padding" Value="5,4" />
       <Setter Property="FontSize" Value="12" />
@@ -63,6 +71,33 @@
               <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#0067A8"/></Trigger>
             </Style.Triggers>
           </Style>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="ListBox">
+      <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+      <Setter Property="Background" Value="#252628" />
+      <Setter Property="BorderBrush" Value="{StaticResource PanelBorder}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="2" />
+    </Style>
+    <Style TargetType="ListBoxItem">
+      <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Padding" Value="5,3" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="ItemChrome" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsSelected" Value="True"><Setter TargetName="ItemChrome" Property="Background" Value="#005A9E"/><Setter Property="Foreground" Value="#FFFFFF"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ItemChrome" Property="Background" Value="#34373A"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="ItemChrome" Property="Opacity" Value="0.5"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>

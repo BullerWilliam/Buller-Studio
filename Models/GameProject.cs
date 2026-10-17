@@ -36,6 +36,7 @@ public sealed class SceneNode
     public string Subject { get; set; } = string.Empty;
     public float FieldOfView { get; set; } = 55;
     public List<SceneNode> Children { get; set; } = [];
+    [JsonIgnore] public bool IsExplorerVisible { get; set; } = true;
 }
 
 public sealed class ProjectAsset
