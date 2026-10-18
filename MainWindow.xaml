@@ -33,6 +33,9 @@
         <DataTrigger Binding="{Binding Type}" Value="SurfaceLight"><Setter TargetName="NodeIcon" Property="Text" Value="◐"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#F2D587"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Decal"><Setter TargetName="NodeIcon" Property="Text" Value="▧"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E4C699"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="ProximityPrompt"><Setter TargetName="NodeIcon" Property="Text" Value="Ⓔ"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#9DD5EC"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="ClickDetector"><Setter TargetName="NodeIcon" Property="Text" Value="◎"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#9DD5EC"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Highlight"><Setter TargetName="NodeIcon" Property="Text" Value="✦"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#FFE4A0"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="WeldConstraint"><Setter TargetName="NodeIcon" Property="Text" Value="⊟"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#C9B9F3"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="ImageLabel"><Setter TargetName="NodeIcon" Property="Text" Value="▧"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D9B67A"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Folder"><Setter TargetName="NodeIcon" Property="Text" Value="▱"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D4BD75"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Script"><Setter TargetName="NodeIcon" Property="Text" Value="{}"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#B5A1DA"/></DataTrigger>

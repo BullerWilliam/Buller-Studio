@@ -6,9 +6,10 @@
         Background="#101522" Foreground="#DCE3EF" PreviewKeyDown="Window_PreviewKeyDown">
   <Grid>
     <hx:Viewport3DX x:Name="GameViewport" BackgroundColor="#101522" MSAA="Maximum"
+                    MouseDown3D="Viewport_MouseDown3D"
                     PreviewMouseRightButtonDown="Viewport_RightButtonDown"
                     PreviewMouseRightButtonUp="Viewport_RightButtonUp"
-                    PreviewMouseMove="Viewport_MouseMove" PreviewMouseWheel="Viewport_MouseWheel"
+                    PreviewMouseMove="Viewport_MouseMove" MouseLeave="Viewport_MouseLeave" PreviewMouseWheel="Viewport_MouseWheel"
                     Focusable="True" />
     <Canvas x:Name="GameGuiCanvas"/>
     <Border VerticalAlignment="Top" HorizontalAlignment="Left" Margin="12" Padding="10,7"

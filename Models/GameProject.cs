@@ -32,8 +32,16 @@ public sealed class SceneNode
     public float[] Size { get; set; } = [2, 2, 2];
     public float[] SizeScale { get; set; } = [0, 0];
     public string Color { get; set; } = "#4E9DFF";
+    public string FillColor { get; set; } = "#00BFFF";
+    public string OutlineColor { get; set; } = "#FFFFFF";
+    public float FillTransparency { get; set; } = .5f;
+    public float OutlineTransparency { get; set; }
     public string Shape { get; set; } = "Block";
     public string Face { get; set; } = "Front";
+    public float StudsPerTileU { get; set; } = 2;
+    public float StudsPerTileV { get; set; } = 2;
+    public float OffsetStudsU { get; set; }
+    public float OffsetStudsV { get; set; }
     public string Material { get; set; } = "Plastic";
     public float Transparency { get; set; }
     public bool Enabled { get; set; } = true;
@@ -43,6 +51,13 @@ public sealed class SceneNode
     public string ActionText { get; set; } = "Interact";
     public string ObjectText { get; set; } = string.Empty;
     public float MaxActivationDistance { get; set; } = 10;
+    public float Volume { get; set; } = .5f;
+    public bool Looped { get; set; }
+    public bool Playing { get; set; }
+    public float RollOffMinDistance { get; set; } = 10;
+    public float RollOffMaxDistance { get; set; } = 100;
+    public string Part0 { get; set; } = string.Empty;
+    public string Part1 { get; set; } = string.Empty;
     public string Text { get; set; } = "Text";
     public string TextColor { get; set; } = "#FFFFFF";
     public string StrokeColor { get; set; } = "#FFFFFF";

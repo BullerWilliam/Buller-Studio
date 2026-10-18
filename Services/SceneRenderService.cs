@@ -14,6 +14,8 @@ public sealed class SceneRenderService
     private readonly Viewport3DX viewport;
     private readonly DefaultEffectsManager effectsManager = new();
     private readonly Dictionary<string, MeshGeometryModel3D> visuals = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MeshGeometryModel3D> highlightFills = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SceneNode> highlightSources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> renderedAssetSources = new(StringComparer.Ordinal);
     private readonly List<Light3D> objectLights = [];
     private readonly List<(MeshGeometryModel3D Model, Vector3 Direction, float Pitch, float Yaw)> skyboxVisuals = [];
@@ -38,6 +40,7 @@ public sealed class SceneRenderService
     }
 
     public IReadOnlyDictionary<string, MeshGeometryModel3D> Visuals => visuals;
+    public IReadOnlyDictionary<string, MeshGeometryModel3D> HighlightFills => highlightFills;
     public float CameraYaw => orbitYaw;
 
     public void SetSelection(string? selectedId)
@@ -50,7 +53,12 @@ public sealed class SceneRenderService
         foreach (var entry in visuals)
         {
             if (entry.Value is not OutLineMeshGeometryModel3D visual) continue;
-            visual.EnableOutline = entry.Key == selectedId || selectedParts?.Contains(entry.Key) == true;
+            var isSelected = entry.Key == selectedId || selectedParts?.Contains(entry.Key) == true
+                || selectedNode?.Type == "Highlight" && highlightSources.TryGetValue(entry.Key, out var selectedHighlight) && selectedHighlight.Id == selectedId;
+            highlightSources.TryGetValue(entry.Key, out var highlight);
+            visual.EnableOutline = isSelected || highlight is not null && highlight.Enabled && highlight.OutlineTransparency < 1;
+            visual.OutlineColor = isSelected ? Colors.Orange : highlight is null
+                ? Colors.Orange : ParseHighlightColor(highlight.OutlineColor, highlight.OutlineTransparency, Colors.White);
         }
     }
 
@@ -65,16 +73,20 @@ public sealed class SceneRenderService
             orbitPitch = cameraNode.Rotation[0];
         }
         foreach (var visual in visuals.Values) viewport.Items.Remove(visual);
+        foreach (var fill in highlightFills.Values) viewport.Items.Remove(fill);
         visuals.Clear();
+        highlightFills.Clear();
+        highlightSources.Clear();
         renderedAssetSources.Clear();
         viewport.IsShadowMappingEnabled = project.Settings.Shadows;
-        foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type != "Decal" || FindPartParent(project, node) is not null)))
+        foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type is not ("Decal" or "Texture") || FindPartParent(project, node) is not null)))
         {
             var model = CreateVisual(node, project);
             visuals[node.Id] = model;
             viewport.Items.Add(model);
         }
         RefreshObjectLights(project);
+        RefreshHighlights(project);
         RefreshSkybox(project.Workspace, project);
         UpdateCamera(project);
         SetSelection(selectedId);
@@ -83,9 +95,16 @@ public sealed class SceneRenderService
     public void UpdateNode(SceneNode node, GameProject project)
     {
         if (SceneNodeTypes.IsLight(node) || SceneNodeTypes.IsBasePart(node) && node.Children.Any(SceneNodeTypes.IsLight)) RefreshObjectLights(project);
-        if (node.Type == "Decal" && FindPartParent(project, node) is null) return;
+        if (node.Type == "Highlight")
+        {
+            RefreshHighlights(project);
+            SetSelection(selectedId);
+            return;
+        }
+        if (node.Type is "Decal" or "Texture" && FindPartParent(project, node) is null) return;
         if (!IsRenderable(node) || !GameProjectStore.Flatten(project.Workspace.Children).Any(item => item.Id == node.Id)) return;
         var assetSource = GetAssetSource(node, project);
+        var refreshSelection = false;
         if (visuals.TryGetValue(node.Id, out var existingModel)
             && (!renderedAssetSources.TryGetValue(node.Id, out var renderedAssetSource)
                 || !string.Equals(renderedAssetSource, assetSource, StringComparison.OrdinalIgnoreCase)))
@@ -93,21 +112,31 @@ public sealed class SceneRenderService
             viewport.Items.Remove(existingModel);
             visuals.Remove(node.Id);
             renderedAssetSources.Remove(node.Id);
+            refreshSelection = true;
         }
         if (!visuals.TryGetValue(node.Id, out var model))
         {
             model = CreateVisual(node, project);
             visuals[node.Id] = model;
             viewport.Items.Add(model);
+            refreshSelection = true;
         }
-        model.Transform = node.Type == "Decal" && FindPartParent(project, node) is { } parent ? TransformFor(parent) : TransformFor(node);
-        model.IsThrowingShadow = node.Type != "Decal" && node.CastShadow;
-        if (node.Type is "Decal" or "ImageLabel")
-            model.Visibility = node.Visible && (node.Type != "Decal" || model.Material is PhongMaterial { DiffuseMap: not null })
+        model.Transform = node.Type is "Decal" or "Texture" && FindPartParent(project, node) is { } parent ? TransformFor(parent) : TransformFor(node);
+        model.IsThrowingShadow = node.Type is not ("Decal" or "Texture") && node.CastShadow;
+        if (node.Type is "Decal" or "Texture" or "ImageLabel")
+            model.Visibility = node.Visible && (node.Type is not ("Decal" or "Texture") || model.Material is PhongMaterial { DiffuseMap: not null })
                 ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
-        if (node.Type is not ("ImageLabel" or "Decal") && !(node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture))) model.Material = MakeMaterial(node);
+        if (node.Type is not ("ImageLabel" or "Decal" or "Texture") && !(node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture))) model.Material = MakeMaterial(node);
         if (SceneNodeTypes.IsBasePart(node))
-            foreach (var decal in node.Children.Where(child => child.Type == "Decal")) UpdateNode(decal, project);
+        {
+            foreach (var decal in node.Children.Where(child => child.Type is "Decal" or "Texture")) UpdateNode(decal, project);
+            if (highlightFills.TryGetValue(node.Id, out var fill))
+            {
+                fill.Geometry = model.Geometry;
+                fill.Transform = HighlightTransformFor(node);
+            }
+        }
+        if (refreshSelection) SetSelection(selectedId);
         UpdateCamera(project);
     }
 
@@ -193,7 +222,7 @@ public sealed class SceneRenderService
             const float halfX = .5f; const float halfY = .5f;
             builder.AddQuad(new Vector3(-halfX, -halfY, 0), new Vector3(halfX, -halfY, 0), new Vector3(halfX, halfY, 0), new Vector3(-halfX, halfY, 0));
         }
-        else if (node.Type == "Decal") AddDecalFace(builder, node.Face);
+        else if (node.Type is "Decal" or "Texture") AddDecalFace(builder, node.Face);
         else if (node.Type == "MeshPart" && !string.IsNullOrWhiteSpace(node.Asset) && File.Exists(ResolveAsset(project, node.Asset)))
         {
             try { builder = ReadObj(ResolveAsset(project, node.Asset)); }
@@ -206,12 +235,14 @@ public sealed class SceneRenderService
         else if (node.Type == "SpawnLocation") AddSpawnLocation(builder);
         else if (node.Type == "TrussPart") AddTruss(builder);
         else builder.AddBox(Vector3.Zero, 1, 1, 1);
-        var decalParent = node.Type == "Decal" ? FindPartParent(project, node) : null;
-        var visual = new OutLineMeshGeometryModel3D { Geometry = builder.ToMeshGeometry3D(), Material = MakeMaterial(node), Transform = decalParent is null ? TransformFor(node) : TransformFor(decalParent), IsThrowingShadow = node.Type != "Decal" && node.CastShadow, IsHitTestVisible = node.Type != "Decal", IsTransparent = node.Type is ("ImageLabel" or "Decal") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "ImageLabel") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
+        var decalParent = node.Type is "Decal" or "Texture" ? FindPartParent(project, node) : null;
+        var geometry = builder.ToMeshGeometry3D();
+        if (node.Type == "Texture" && decalParent is not null) ApplyTextureTiling(geometry, node, decalParent);
+        var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = decalParent is null ? TransformFor(node) : TransformFor(decalParent), IsThrowingShadow = node.Type is not ("Decal" or "Texture") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
         if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
-        if (node.Type == "Decal" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
+        if (node.Type is "Decal" or "Texture" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture)) LoadImageAsset(visual, ResolveTexture(project, node.Texture), node);
-        if (node.Type == "Decal" && visual.Material is not PhongMaterial { DiffuseMap: not null })
+        if (node.Type is "Decal" or "Texture" && visual.Material is not PhongMaterial { DiffuseMap: not null })
             visual.Visibility = System.Windows.Visibility.Collapsed;
         renderedAssetSources[node.Id] = GetAssetSource(node, project);
         return visual;
@@ -221,6 +252,7 @@ public sealed class SceneRenderService
     {
         "ImageLabel" => ResolveAsset(project, node.Asset),
         "Decal" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+        "Texture" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency}|{node.StudsPerTileU}|{node.StudsPerTileV}|{node.OffsetStudsU}|{node.OffsetStudsV}|{string.Join(',', FindPartParent(project, node)?.Size ?? [])}",
         "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}",
         "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}",
         "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" => MaterialKey(node),
@@ -231,10 +263,26 @@ public sealed class SceneRenderService
 
     private static float EffectiveTransparency(SceneNode node) => Math.Clamp(Math.Max(node.Transparency, node.Material == "Glass" ? .55f : 0), 0, 1);
 
-    private static bool IsRenderable(SceneNode node) => SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Decal";
+    private static bool IsRenderable(SceneNode node) => SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Decal" or "Texture";
 
     private static SceneNode? FindPartParent(GameProject project, SceneNode child) =>
         GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(parent => SceneNodeTypes.IsBasePart(parent) && parent.Children.Contains(child));
+
+    private static void ApplyTextureTiling(HelixToolkit.SharpDX.Core.MeshGeometry3D geometry, SceneNode texture, SceneNode parent)
+    {
+        if (geometry.TextureCoordinates is null) return;
+        var width = texture.Face is "Left" or "Right" ? Math.Abs(parent.Size[2]) : Math.Abs(parent.Size[0]);
+        var height = texture.Face is "Top" or "Bottom" ? Math.Abs(parent.Size[2]) : Math.Abs(parent.Size[1]);
+        var uScale = width / texture.StudsPerTileU;
+        var vScale = height / texture.StudsPerTileV;
+        var uOffset = texture.OffsetStudsU / texture.StudsPerTileU;
+        var vOffset = texture.OffsetStudsV / texture.StudsPerTileV;
+        for (var index = 0; index < geometry.TextureCoordinates.Count; index++)
+        {
+            var uv = geometry.TextureCoordinates[index];
+            geometry.TextureCoordinates[index] = new Vector2(uv.X * uScale + uOffset, uv.Y * vScale + vOffset);
+        }
+    }
 
     private static void AddDecalFace(MeshBuilder builder, string face)
     {
@@ -384,6 +432,55 @@ public sealed class SceneRenderService
                 viewport.Items.Add(light);
             }
         }
+    }
+
+    private void RefreshHighlights(GameProject project)
+    {
+        foreach (var fill in highlightFills.Values) viewport.Items.Remove(fill);
+        highlightFills.Clear();
+        highlightSources.Clear();
+
+        void Visit(SceneNode node, SceneNode? inheritedHighlight)
+        {
+            var highlight = node.Children.FirstOrDefault(child => child.Type == "Highlight" && child.Enabled)
+                ?? inheritedHighlight;
+            if (SceneNodeTypes.IsBasePart(node) && highlight is not null && visuals.TryGetValue(node.Id, out var target))
+            {
+                highlightSources[node.Id] = highlight;
+                var color = ParseHighlightColor(highlight.FillColor, highlight.FillTransparency, Colors.DeepSkyBlue);
+                var fill = new MeshGeometryModel3D
+                {
+                    Geometry = target.Geometry,
+                    Material = new PhongMaterial { DiffuseColor = new Color4(color.R / 255f, color.G / 255f, color.B / 255f, color.A / 255f) },
+                    Transform = HighlightTransformFor(node),
+                    IsTransparent = true,
+                    IsHitTestVisible = false,
+                    IsThrowingShadow = false,
+                    Visibility = color.A == 0 ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible
+                };
+                highlightFills[node.Id] = fill;
+                viewport.Items.Add(fill);
+            }
+            foreach (var child in node.Children.Where(child => child.Type != "Highlight")) Visit(child, highlight);
+        }
+
+        Visit(project.Workspace, null);
+    }
+
+    private static System.Windows.Media.Color ParseHighlightColor(string value, float transparency, System.Windows.Media.Color fallback)
+    {
+        System.Windows.Media.Color color;
+        try { color = (System.Windows.Media.Color)ColorConverter.ConvertFromString(value); }
+        catch { color = fallback; }
+        return System.Windows.Media.Color.FromArgb((byte)Math.Round(color.A * (1 - Math.Clamp(transparency, 0, 1))), color.R, color.G, color.B);
+    }
+
+    private static Transform3D HighlightTransformFor(SceneNode node)
+    {
+        var transform = new Transform3DGroup();
+        transform.Children.Add(new ScaleTransform3D(1.005, 1.005, 1.005));
+        transform.Children.Add(TransformFor(node));
+        return transform;
     }
 
     private void RefreshSkybox(SceneNode workspace, GameProject project)

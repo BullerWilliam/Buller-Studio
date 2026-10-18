@@ -30,6 +30,7 @@ public static class ProjectTemplateService
                 ball.Shape = "Ball";
                 ball.Material = "Neon";
                 ball.Children.Add(new SceneNode { Type = "PointLight", Name = "Glow", Color = "#809BE2", Range = 14 });
+                ball.Children.Add(new SceneNode { Type = "Highlight", Name = "Neon Highlight", FillColor = "#809BE2", OutlineColor = "#C6D2FF", FillTransparency = .8f });
                 showcase.Children.Add(new SceneNode { Type = "WedgePart", Name = "Wedge", Position = [4, .5f, 2], Size = [2, 1, 2], Color = "#D6866A" });
                 showcase.Children.Add(new SceneNode { Type = "TrussPart", Name = "Truss", Position = [-5, 3, 2], Size = [2, 6, 2], Color = "#AD9682", Material = "Metal" });
                 showcase.Children.Add(new SceneNode { Type = "SpawnLocation", Name = "Spawn Pad", Position = [5, .5f, -4], Size = [6, 1, 6], Color = "#72BF9D", Material = "Metal" });

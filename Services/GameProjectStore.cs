@@ -264,14 +264,27 @@ public static class GameProjectStore
             node.SizeScale = EnsurePair(node.SizeScale);
             if (node.Shape is not ("Block" or "Ball" or "Cylinder")) node.Shape = "Block";
             if (!SceneNodeTypes.IsFace(node.Face)) node.Face = "Front";
+            node.StudsPerTileU = float.IsFinite(node.StudsPerTileU) ? Math.Clamp(node.StudsPerTileU, .05f, 1000) : 2;
+            node.StudsPerTileV = float.IsFinite(node.StudsPerTileV) ? Math.Clamp(node.StudsPerTileV, .05f, 1000) : 2;
+            node.OffsetStudsU = float.IsFinite(node.OffsetStudsU) ? Math.Clamp(node.OffsetStudsU, -10000, 10000) : 0;
+            node.OffsetStudsV = float.IsFinite(node.OffsetStudsV) ? Math.Clamp(node.OffsetStudsV, -10000, 10000) : 0;
             if (node.Material is not ("Plastic" or "Metal" or "Neon" or "Glass" or "Wood" or "Concrete")) node.Material = "Plastic";
             node.Transparency = float.IsFinite(node.Transparency) ? Math.Clamp(node.Transparency, 0, 1) : 0;
+            node.FillColor ??= "#00BFFF";
+            node.OutlineColor ??= "#FFFFFF";
+            node.FillTransparency = float.IsFinite(node.FillTransparency) ? Math.Clamp(node.FillTransparency, 0, 1) : .5f;
+            node.OutlineTransparency = float.IsFinite(node.OutlineTransparency) ? Math.Clamp(node.OutlineTransparency, 0, 1) : 0;
             node.Brightness = float.IsFinite(node.Brightness) ? Math.Clamp(node.Brightness, 0, 8) : 1;
             node.Range = float.IsFinite(node.Range) ? Math.Clamp(node.Range, 1, 1000) : 16;
             node.Angle = float.IsFinite(node.Angle) ? Math.Clamp(node.Angle, 1, 175) : 45;
             node.ActionText ??= "Interact";
             node.ObjectText ??= string.Empty;
             node.MaxActivationDistance = float.IsFinite(node.MaxActivationDistance) ? Math.Clamp(node.MaxActivationDistance, 1, 100) : 10;
+            node.Volume = float.IsFinite(node.Volume) ? Math.Clamp(node.Volume, 0, 1) : .5f;
+            node.RollOffMinDistance = float.IsFinite(node.RollOffMinDistance) ? Math.Clamp(node.RollOffMinDistance, 0, 1000) : 10;
+            node.RollOffMaxDistance = float.IsFinite(node.RollOffMaxDistance) ? Math.Clamp(node.RollOffMaxDistance, node.RollOffMinDistance + .01f, 10000) : 100;
+            node.Part0 ??= string.Empty;
+            node.Part1 ??= string.Empty;
         }
         var scriptNames = Flatten(project.Workspace.Children).Concat(Flatten(project.Gui.Children))
             .Where(node => node.Type == "Script")
@@ -425,10 +438,16 @@ public static class GameProjectStore
 
     private static bool IsWorkspaceSubtreeCompatible(SceneNode node, string? parentType)
     {
-        if (node.Type == "Decal")
+        if (node.Type is "Decal" or "Texture")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
-        if (node.Type == "ProximityPrompt")
+        if (node.Type is "ProximityPrompt" or "ClickDetector")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
+        if (node.Type == "Sound")
+            return (parentType is "Workspace" or "Folder" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
+        if (node.Type == "Highlight")
+            return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Model") && node.Children.Count == 0;
+        if (node.Type == "WeldConstraint")
+            return (parentType is "Workspace" or "Folder" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
         if (SceneNodeTypes.IsLight(node))
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.Count == 0;

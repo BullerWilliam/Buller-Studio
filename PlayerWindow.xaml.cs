@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using HelixToolkit.Wpf.SharpDX;
 using BullerStudio.Models;
 using BullerStudio.Services;
 
@@ -181,16 +182,41 @@ public partial class PlayerWindow : Window
 
     private void Viewport_MouseMove(object sender, MouseEventArgs e)
     {
-        if (!isDragging) return;
+        if (!isDragging)
+        {
+            GameViewport.Cursor = FindPointedClickDetector() is null ? Cursors.Arrow : Cursors.Hand;
+            return;
+        }
         var point = e.GetPosition(GameViewport);
         renderer.SetCameraOrbit(-(float)(point.X - lastPointer.X) * .25f, -(float)(point.Y - lastPointer.Y) * .25f, 0, project);
         lastPointer = point;
         e.Handled = true;
     }
 
+    private void Viewport_MouseLeave(object sender, MouseEventArgs e) => GameViewport.Cursor = Cursors.Arrow;
+
     private void Viewport_MouseWheel(object sender, MouseWheelEventArgs e)
     {
         renderer.SetCameraOrbit(0, 0, e.Delta > 0 ? -1 : 1, project);
         e.Handled = true;
+    }
+
+    private void Viewport_MouseDown3D(object sender, RoutedEventArgs e)
+    {
+        if (Mouse.LeftButton != MouseButtonState.Pressed) return;
+        var detector = FindPointedClickDetector();
+        if (detector is null) return;
+        runtime?.InvokeClickDetector(detector.Id, character.Model.Id);
+        e.Handled = true;
+    }
+
+    private SceneNode? FindPointedClickDetector()
+    {
+        var hit = GameViewport.FindHits(Mouse.GetPosition(GameViewport)).FirstOrDefault()?.ModelHit;
+        if (hit is not MeshGeometryModel3D model) return null;
+        var partId = renderer.Visuals.FirstOrDefault(entry => ReferenceEquals(entry.Value, model)).Key;
+        if (partId is null) return null;
+        var part = GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(node => node.Id == partId);
+        return part is null ? null : ClickDetectorService.FindActive(part, character.Root);
     }
 }
