@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using Microsoft.Win32;
 using BullerStudio.Models;
 
 namespace BullerStudio.Services;
@@ -10,10 +11,9 @@ public sealed class GameBuildService
     public async Task<string> BuildAsync(GameProject project, bool included, Action<string>? report)
     {
         await GameProjectStore.SaveAsync(project);
-        var downloads = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        downloads = Path.Combine(downloads, "Downloads");
+        var downloads = GetDownloadsFolder();
         Directory.CreateDirectory(downloads);
-        var buildFolderName = $"{GameProjectStore.SanitizeName(project.Name)}-Build-{DateTime.Now:yyyyMMdd-HHmmss}";
+        var buildFolderName = $"{GameProjectStore.SanitizeName(project.Name)}-Build-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
         var output = Path.Combine(downloads, buildFolderName);
         Directory.CreateDirectory(output);
         var assemblyName = GameProjectStore.SanitizeName(project.Name).Replace(' ', '-');
@@ -54,8 +54,17 @@ public sealed class GameBuildService
 
     private static void CopyDirectory(string source, string destination)
     {
+        var sourceInfo = new DirectoryInfo(source);
+        if (!sourceInfo.Exists) return;
+        if ((sourceInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Build assets cannot include symbolic links or junctions.");
         Directory.CreateDirectory(destination);
-        foreach (var file in Directory.EnumerateFiles(source)) File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
+        foreach (var file in Directory.EnumerateFiles(source))
+        {
+            if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Build assets cannot include symbolic links or junctions.");
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
+        }
         foreach (var folder in Directory.EnumerateDirectories(source)) CopyDirectory(folder, Path.Combine(destination, Path.GetFileName(folder)));
     }
 
@@ -72,5 +81,19 @@ public sealed class GameBuildService
             }
         }
         throw new FileNotFoundException("Could not locate BullerStudio.csproj. Install the build tools or run the editor from its source distribution.");
+    }
+
+    private static string GetDownloadsFolder()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders");
+            if (key?.GetValue("{374DE290-123F-4565-9164-39C4925E467B}") is string downloads && !string.IsNullOrWhiteSpace(downloads))
+            {
+                var expanded = Environment.ExpandEnvironmentVariables(downloads);
+                if (Path.IsPathRooted(expanded)) return expanded;
+            }
+        }
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
     }
 }

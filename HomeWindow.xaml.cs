@@ -14,6 +14,7 @@ namespace BullerStudio;
 public partial class HomeWindow : Window
 {
     private readonly ObservableCollection<ProjectSummary> projects = [];
+    private readonly List<SceneRenderService> templatePreviewRenderers = [];
     private readonly ICollectionView projectView;
     private readonly GameBuildService buildService = new();
     private string currentSection = "Home";
@@ -27,7 +28,29 @@ public partial class HomeWindow : Window
         projectView = CollectionViewSource.GetDefaultView(projects);
         projectView.Filter = FilterProject;
         ProjectCards.ItemsSource = projectView;
-        Loaded += async (_, _) => await RefreshProjectsAsync();
+        Loaded += async (_, _) =>
+        {
+            InitializeTemplatePreviews();
+            await RefreshProjectsAsync();
+        };
+    }
+
+    private void InitializeTemplatePreviews()
+    {
+        if (templatePreviewRenderers.Count > 0) return;
+        foreach (var (viewport, template) in new[]
+        {
+            (BaseplatePreview, "Baseplate"),
+            (EmptyWorldPreview, "Empty World"),
+            (AssetPlaygroundPreview, "Asset Playground")
+        })
+        {
+            var project = ProjectTemplateService.CreatePreview(template);
+            var camera = project.Workspace.Children.First(node => node.Type == "Camera");
+            var renderer = new SceneRenderService(viewport, camera);
+            renderer.Refresh(project);
+            templatePreviewRenderers.Add(renderer);
+        }
     }
 
     private async Task RefreshProjectsAsync()
@@ -113,7 +136,7 @@ public partial class HomeWindow : Window
         var details = topic switch
         {
             "Lua X" => "Create a Script object and use Lua X for property changes, WaitForChild, and Touched events.",
-            "Local assets" => "Import images and OBJ meshes into the project assets folder, then reference them from the Toolbox or scripts.",
+            "Local assets" => "Import images and OBJ meshes into the project assets folder, then reference them from the Asset Manager or scripts.",
             "Workspace camera" => "Every project includes a Workspace Camera. Use Custom mode for position and rotation, or Subject mode to orbit a BasePart.",
             _ => "Explore the editor tools and local project workflow."
         };
@@ -143,11 +166,8 @@ public partial class HomeWindow : Window
         try
         {
             var project = await GameProjectStore.CreateAsync(name);
-            if (template == "Empty World")
-            {
-                project.Workspace.Children.RemoveAll(node => node.Type == "Part");
-                await GameProjectStore.SaveAsync(project);
-            }
+            ProjectTemplateService.Apply(project, template ?? "Baseplate");
+            await GameProjectStore.SaveAsync(project);
             await OpenProjectAsync(project);
         }
         catch (Exception exception) { ShowError(exception); }

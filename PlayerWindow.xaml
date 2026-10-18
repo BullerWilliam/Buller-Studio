@@ -10,6 +10,7 @@
                     PreviewMouseRightButtonUp="Viewport_RightButtonUp"
                     PreviewMouseMove="Viewport_MouseMove" PreviewMouseWheel="Viewport_MouseWheel"
                     Focusable="True" />
+    <Canvas x:Name="GameGuiCanvas"/>
     <Border VerticalAlignment="Top" HorizontalAlignment="Left" Margin="12" Padding="10,7"
             Background="#BB111725" IsHitTestVisible="False">
       <TextBlock x:Name="GameTitle" FontSize="13" FontWeight="SemiBold" />

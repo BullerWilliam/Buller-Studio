@@ -14,6 +14,7 @@
     <BooleanToVisibilityConverter x:Key="BooleanToVisibility"/>
     <HierarchicalDataTemplate DataType="{x:Type models:SceneNode}" ItemsSource="{Binding Children}">
       <DockPanel LastChildFill="True" Margin="2,1">
+        <Button DockPanel.Dock="Right" Content="+" Tag="{Binding}" Width="20" Height="18" Padding="0" Margin="2,0,0,0" FontSize="12" Click="ExplorerAddObject_Click" ToolTip="Insert an object under this node"/>
         <TextBlock x:Name="NodeIcon" Text="▰" Foreground="#8B9CAD" Margin="2,0,7,0"/>
         <TextBlock Text="{Binding Name}"/>
       </DockPanel>
@@ -202,7 +203,6 @@
         <Button Content="Home" Tag="HOME" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Button Content="Model" Tag="MODEL" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Button Content="Camera" Tag="CAMERA" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
-        <Button Content="UI" Tag="UI" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Button Content="Script" Tag="SCRIPT" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
         <Button Content="Plugins" Tag="PLUGINS" Style="{StaticResource RibbonTab}" Click="RibbonTab_Click" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
       </StackPanel>
@@ -220,30 +220,13 @@
             </StackPanel><TextBlock Text="Tools" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
           <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="HOME,MODEL"/>
-          <StackPanel x:Name="InsertGroup" Tag="HOME,MODEL" Style="{StaticResource RibbonGroup}">
-            <StackPanel Orientation="Horizontal">
-              <Button Style="{StaticResource RibbonTool}" Click="AddPart_Click"><StackPanel><TextBlock Text="▰" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Part ▾" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button Style="{StaticResource RibbonTool}" Click="AddMesh_Click"><StackPanel><TextBlock Text="◈" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Mesh" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button Style="{StaticResource RibbonTool}" Click="AddImage_Click"><StackPanel><TextBlock Text="▧" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Image" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button Style="{StaticResource RibbonTool}" Click="AddFolder_Click"><StackPanel><TextBlock Text="▱" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Folder" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button Style="{StaticResource RibbonTool}" Click="AddScript_Click"><StackPanel><TextBlock Text="{}" FontSize="17" HorizontalAlignment="Center"/><TextBlock Text="Script" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-            </StackPanel><TextBlock Text="Insert" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
-          </StackPanel>
-          <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="HOME,MODEL"/>
           <StackPanel x:Name="WindowsGroup" Tag="HOME" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
-              <Button Style="{StaticResource RibbonTool}" Click="Toolbox_Click" ToolTip="Show Toolbox"><StackPanel><TextBlock Text="&#xE71D;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Toolbox" FontSize="9" HorizontalAlignment="Center"/></StackPanel></Button>
               <Button Style="{StaticResource RibbonTool}" Click="Explorer_Click" ToolTip="Show Explorer"><StackPanel><TextBlock Text="&#xE8FD;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Explorer" FontSize="9" HorizontalAlignment="Center"/></StackPanel></Button>
               <Button Style="{StaticResource RibbonTool}" Click="Properties_Click" ToolTip="Show Properties"><StackPanel><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Properties" FontSize="8" HorizontalAlignment="Center"/></StackPanel></Button>
               <Button Style="{StaticResource RibbonTool}" Click="OutputTab_Click"><StackPanel><TextBlock Text="&#xE756;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Output" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
               <Button Style="{StaticResource RibbonTool}" Click="AssetsTab_Click"><StackPanel><TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Assets" FontSize="9" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Windows" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
-          </StackPanel>
-          <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="HOME"/>
-          <StackPanel x:Name="AssetsGroup" Tag="HOME" Style="{StaticResource RibbonGroup}">
-            <StackPanel Orientation="Horizontal">
-              <Button Style="{StaticResource RibbonTool}" Click="ImportAssets_Click"><StackPanel><TextBlock Text="↥" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Import" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-            </StackPanel><TextBlock Text="Assets" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
           <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="HOME"/>
           <StackPanel x:Name="BuildGroup" Tag="HOME" Style="{StaticResource RibbonGroup}">
@@ -277,15 +260,9 @@
             </StackPanel>
             <TextBlock Text="Camera" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
-          <StackPanel x:Name="UIGroup" Tag="UI" Style="{StaticResource RibbonGroup}">
-            <StackPanel Orientation="Horizontal"><Button Content="ImageLabel" Style="{StaticResource RibbonTool}" Click="AddImage_Click"/><Button Content="Import Image" Style="{StaticResource RibbonTool}" Click="ImportAssets_Click"/></StackPanel>
-            <TextBlock Text="UI" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
-          </StackPanel>
           <StackPanel x:Name="ScriptGroup" Tag="SCRIPT" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
-              <Button Style="{StaticResource RibbonTool}" Click="AddScript_Click" ToolTip="Create a Lua X script"><StackPanel><TextBlock Text="＋" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Script" FontSize="9" HorizontalAlignment="Center"/></StackPanel></Button>
               <Button Style="{StaticResource RibbonTool}" Click="RunSelectedScript_Click" ToolTip="Run the selected Lua X script"><StackPanel><TextBlock Text="▶" FontSize="16" HorizontalAlignment="Center"/><TextBlock Text="Run" FontSize="9" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button Style="{StaticResource RibbonTool}" Click="OpenScript_Click" ToolTip="Open the selected Lua X script"><StackPanel><TextBlock Text="{}" FontSize="16" HorizontalAlignment="Center"/><TextBlock Text="Open" FontSize="9" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel>
             <TextBlock Text="Lua X" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
@@ -301,30 +278,6 @@
       <ad:DockingManager.Layout>
         <ad:LayoutRoot>
           <ad:LayoutPanel Orientation="Horizontal">
-            <ad:LayoutAnchorablePane DockWidth="220">
-              <ad:LayoutAnchorable x:Name="ToolboxDock" Title="Toolbox" ContentId="Toolbox" CanClose="False" CanHide="True">
-                <Border x:Name="ToolboxPanel" Background="#252628" BorderBrush="#111213" BorderThickness="0,0,1,0">
-                  <Grid>
-                    <Grid.RowDefinitions><RowDefinition Height="30"/><RowDefinition Height="30"/><RowDefinition Height="*"/><RowDefinition Height="36"/></Grid.RowDefinitions>
-                    <Grid Grid.Row="0" Margin="7,4">
-                      <TextBox x:Name="ToolboxSearch" Padding="6,3" ToolTip="Search project assets" TextChanged="ToolboxSearch_TextChanged"/>
-                      <TextBlock x:Name="ToolboxSearchHint" Text="⌕  Search assets" Foreground="#85898D" Margin="7,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
-                    </Grid>
-                    <StackPanel x:Name="ToolboxCategoryTabs" Grid.Row="1" Orientation="Horizontal" Margin="6,1">
-                      <Button Content="All" Tag="All" Click="ToolboxCategory_Click" Padding="8,3" Margin="0,0,3,0"/>
-                      <Button Content="Images" Tag="Images" Click="ToolboxCategory_Click" Padding="8,3" Margin="0,0,3,0"/>
-                      <Button Content="Meshes" Tag="Meshes" Click="ToolboxCategory_Click" Padding="8,3" Margin="0"/>
-                    </StackPanel>
-                    <Grid Grid.Row="2" Margin="5,3">
-                      <ListBox x:Name="ToolboxAssetList" Background="Transparent" BorderThickness="0" Foreground="#D7D7D7">
-                      </ListBox>
-                      <TextBlock x:Name="ToolboxEmptyState" Text="No local assets yet. Import image or OBJ files to use them in this project." Foreground="#9DA0A4" FontSize="11" TextWrapping="Wrap" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12" IsHitTestVisible="False"/>
-                    </Grid>
-                    <Button Grid.Row="3" Content="＋ Import files" Click="ImportAssets_Click" Margin="7,3"/>
-                  </Grid>
-                </Border>
-              </ad:LayoutAnchorable>
-            </ad:LayoutAnchorablePane>
             <ad:LayoutPanel Orientation="Vertical">
               <ad:LayoutDocumentPaneGroup>
                 <ad:LayoutDocumentPane>
@@ -332,6 +285,7 @@
                     <Border x:Name="ScenePanel" Background="#101214" BorderBrush="#111213" BorderThickness="0,0,0,1">
             <Grid>
               <hx:Viewport3DX x:Name="SceneViewport" BackgroundColor="#101522" IsShadowMappingEnabled="True" MSAA="Maximum" ShowCoordinateSystem="True" ShowViewCube="True" MouseDown3D="SceneViewport_MouseDown3D" PreviewMouseLeftButtonDown="SceneViewport_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="SceneViewport_PreviewMouseLeftButtonUp" PreviewMouseRightButtonDown="SceneViewport_PreviewMouseRightButtonDown" PreviewMouseRightButtonUp="SceneViewport_PreviewMouseRightButtonUp" PreviewMouseMove="SceneViewport_PreviewMouseMove" PreviewMouseWheel="SceneViewport_PreviewMouseWheel" Focusable="True"/>
+              <Canvas x:Name="GuiPreviewCanvas" Focusable="True" PreviewMouseLeftButtonDown="GuiPreviewCanvas_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="GuiPreviewCanvas_PreviewMouseLeftButtonUp" PreviewMouseMove="GuiPreviewCanvas_PreviewMouseMove"/>
               <Border VerticalAlignment="Top" Background="#EE252628" Padding="8,5">
                 <DockPanel LastChildFill="False">
                   <TextBlock Text="◉  Workspace" FontSize="11" FontWeight="SemiBold"/>
@@ -371,7 +325,7 @@
                         </Grid>
                         <TextBlock x:Name="ObjectCount" Grid.Column="1" Margin="7,0,0,0" Foreground="#9DA0A4" FontSize="10" VerticalAlignment="Center" IsHitTestVisible="False"/>
                       </Grid>
-                      <TreeView x:Name="ExplorerTree" Grid.Row="1" Margin="5" Background="Transparent" BorderThickness="0" Foreground="#D7D7D7" SelectedItemChanged="ExplorerTree_SelectedItemChanged">
+                      <TreeView x:Name="ExplorerTree" Grid.Row="1" Margin="5" Background="Transparent" BorderThickness="0" Foreground="#D7D7D7" AllowDrop="True" SelectedItemChanged="ExplorerTree_SelectedItemChanged" PreviewMouseLeftButtonDown="ExplorerTree_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="ExplorerTree_PreviewMouseLeftButtonUp" PreviewMouseMove="ExplorerTree_PreviewMouseMove" DragOver="ExplorerTree_DragOver" DragLeave="ExplorerTree_DragLeave" Drop="ExplorerTree_Drop" MouseDoubleClick="ExplorerTree_MouseDoubleClick">
                         <TreeView.ItemContainerStyle>
                           <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
                             <Setter Property="Visibility" Value="{Binding IsExplorerVisible, Converter={StaticResource BooleanToVisibility}}"/>

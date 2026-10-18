@@ -15,17 +15,19 @@ The app opens to a dedicated Home screen; no editor is shown until you create or
 
 ## Editing
 
-- Create `Part`, `MeshPart`, `ImageLabel`, `Folder`, and `Script` objects from the toolbar. The Workspace always keeps one Camera.
+- Create objects from the `+` button on a compatible Explorer object; search the insert menu to filter object types. The Workspace always keeps one Camera.
 - Edit Position, Rotation (degrees), Size, Color, Anchored, and CastShadow in Properties. Transform values are separate vectors; there is no CFrame type.
 - The Workspace Camera has `Mode` (`Custom` or `Subject`), `Position`, `Rotation`, `Subject`, and `FieldOfView` properties. Custom mode uses Position and Rotation. Subject mode orbits the selected Part or MeshPart. The scene view uses this same camera.
 - Use right mouse drag to turn the editor camera, WASD/QE to move it, and the wheel to zoom. Camera controls only affect the editor camera; games have no built-in player or character.
 - Import PNG/JPEG/BMP/GIF images and Wavefront OBJ meshes into the local assets list. Assign an asset's relative path, such as `assets/tree.obj`, to a MeshPart or `assets/logo.png` to an ImageLabel. Lua X can also access imported asset paths.
 - `Ctrl+S` saves, `Ctrl+Z` undoes, `Ctrl+Shift+Z` redoes, and `Delete` removes a selected non-camera object.
-- The editor uses a Studio-style ribbon and dock layout: Toolbox on the left, the 3D viewport in the center, Explorer and Properties on the right, and Output/Asset Manager/Lua X below. Drag panel headers to snap major docks to another workspace region.
+- The editor uses a Studio-style ribbon and dock layout: the 3D viewport in the center, Explorer and Properties on the right, and Output/Asset Manager below. Manage assets only in Asset Manager. Drag panel headers to snap major docks to another workspace region.
 
 ## Lua X
 
 Scripts use a sandboxed Lua interpreter. Instances are available by name and under `game.Workspace`. Useful APIs include:
+
+Lua X completion suggests object members, `WaitForChild` names from the current hierarchy, asset paths, service names, camera modes, and property names for `SetProperty`/`GetProperty`.
 
 ```lua
 local part = game.Workspace:WaitForChild("Part")
