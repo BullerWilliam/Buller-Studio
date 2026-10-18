@@ -32,6 +32,17 @@ public sealed class SceneNode
     public float[] Size { get; set; } = [2, 2, 2];
     public float[] SizeScale { get; set; } = [0, 0];
     public string Color { get; set; } = "#4E9DFF";
+    public string Shape { get; set; } = "Block";
+    public string Face { get; set; } = "Front";
+    public string Material { get; set; } = "Plastic";
+    public float Transparency { get; set; }
+    public bool Enabled { get; set; } = true;
+    public float Brightness { get; set; } = 1;
+    public float Range { get; set; } = 16;
+    public float Angle { get; set; } = 45;
+    public string ActionText { get; set; } = "Interact";
+    public string ObjectText { get; set; } = string.Empty;
+    public float MaxActivationDistance { get; set; } = 10;
     public string Text { get; set; } = "Text";
     public string TextColor { get; set; } = "#FFFFFF";
     public string StrokeColor { get; set; } = "#FFFFFF";
@@ -50,7 +61,11 @@ public sealed class SceneNode
     public string SkyboxTop { get; set; } = string.Empty;
     public string SkyboxBottom { get; set; } = string.Empty;
     public bool Anchored { get; set; } = true;
+    public bool CanCollide { get; set; } = true;
+    public bool CanTouch { get; set; } = true;
+    public float[] Velocity { get; set; } = [0, 0, 0];
     public bool CastShadow { get; set; } = true;
+    public float Gravity { get; set; } = 24;
     public string Asset { get; set; } = string.Empty;
     public string Texture { get; set; } = string.Empty;
     public string CameraMode { get; set; } = "Custom";

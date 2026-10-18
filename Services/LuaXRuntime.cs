@@ -15,6 +15,7 @@ public sealed class LuaXRuntime
     private readonly Dictionary<string, List<ScriptCallback>> touchedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> guiActivatedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> guiTextChangedCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<ScriptCallback>> promptTriggeredCallbacks = new(StringComparer.Ordinal);
     private readonly HashSet<string> activeContacts = new(StringComparer.Ordinal);
     private readonly List<ScriptExecution> activeScripts = [];
     private readonly ConditionalWeakTable<Table, LuaXTypeTag> runtimeTypeTags = new();
@@ -34,7 +35,7 @@ public sealed class LuaXRuntime
         Initialize();
     }
 
-    public IReadOnlyCollection<SceneNode> Parts => GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type is "Part" or "MeshPart").ToArray();
+    public IReadOnlyCollection<SceneNode> Parts => GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
     public bool HasPendingScripts => activeScripts.Count > 0;
 
     public void RunAll()
@@ -104,11 +105,11 @@ public sealed class LuaXRuntime
         }
     }
 
-    public void UpdateTouched()
+    public void UpdateTouched(float elapsedSeconds = .05f)
     {
-        ResumePendingScripts(.05f);
+        ResumePendingScripts(Math.Clamp(elapsedSeconds, .001f, .25f));
         SynchronizeInstances();
-        var nodes = Parts.ToDictionary(node => node.Id, StringComparer.Ordinal);
+        var nodes = Parts.Where(node => node.CanTouch).ToDictionary(node => node.Id, StringComparer.Ordinal);
         var touchingNow = new HashSet<string>(StringComparer.Ordinal);
         var parts = nodes.Values.ToArray();
         for (var first = 0; first < parts.Length; first++)
@@ -123,6 +124,12 @@ public sealed class LuaXRuntime
         }
         activeContacts.Clear();
         activeContacts.UnionWith(touchingNow);
+    }
+
+    public void SynchronizeExternalProperty(SceneNode node, string property)
+    {
+        if (instances.TryGetValue(node.Id, out var instance))
+            WriteInstanceProperty(node, instance, property.ToLowerInvariant());
     }
 
     private void Initialize()
@@ -315,6 +322,17 @@ public sealed class LuaXRuntime
         instance.Set("Rotation", VectorValue(node.Rotation));
         instance.Set("Size", IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size));
         instance.Set("Color", ColorValue(node.Color));
+        instance.Set("Shape", DynValue.NewString(node.Shape));
+        instance.Set("Face", DynValue.NewString(node.Face));
+        instance.Set("Material", DynValue.NewString(node.Material));
+        instance.Set("Transparency", DynValue.NewNumber(node.Transparency));
+        instance.Set("Enabled", DynValue.NewBoolean(node.Enabled));
+        instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
+        instance.Set("Range", DynValue.NewNumber(node.Range));
+        instance.Set("Angle", DynValue.NewNumber(node.Angle));
+        instance.Set("ActionText", DynValue.NewString(node.ActionText));
+        instance.Set("ObjectText", DynValue.NewString(node.ObjectText));
+        instance.Set("MaxActivationDistance", DynValue.NewNumber(node.MaxActivationDistance));
         instance.Set("Texture", DynValue.NewString(node.Texture));
         instance.Set("Text", DynValue.NewString(node.Text));
         instance.Set("TextColor", DynValue.NewString(node.TextColor));
@@ -334,7 +352,12 @@ public sealed class LuaXRuntime
         instance.Set("SkyboxTop", DynValue.NewString(node.SkyboxTop));
         instance.Set("SkyboxBottom", DynValue.NewString(node.SkyboxBottom));
         instance.Set("Anchored", DynValue.NewBoolean(node.Anchored));
+        instance.Set("CanCollide", DynValue.NewBoolean(node.CanCollide));
+        instance.Set("CanTouch", DynValue.NewBoolean(node.CanTouch));
+        instance.Set("Velocity", VectorValue(node.Velocity));
+        instance.Set("AssemblyLinearVelocity", VectorValue(node.Velocity));
         instance.Set("CastShadow", DynValue.NewBoolean(node.CastShadow));
+        instance.Set("Gravity", DynValue.NewNumber(node.Gravity));
         instance.Set("Asset", DynValue.NewString(node.Asset));
         instance.Set("CameraMode", DynValue.NewString(node.CameraMode));
         instance.Set("Mode", DynValue.NewString(node.CameraMode));
@@ -398,7 +421,27 @@ public sealed class LuaXRuntime
             }));
             instance.Set("TextChanged", DynValue.NewTable(textChanged));
         }
+        if (node.Type == "ProximityPrompt")
+        {
+            var triggered = new Table(script);
+            triggered.Set("Connect", DynValue.NewCallback((_, args) =>
+            {
+                var index = args.Count > 0 && args[0].Type == DataType.Table ? 1 : 0;
+                return args.Count > index && args[index].Type == DataType.Function
+                    ? RegisterPromptTriggered(node.Id, args[index])
+                    : DynValue.Nil;
+            }));
+            instance.Set("Triggered", DynValue.NewTable(triggered));
+        }
         return instance;
+    }
+
+    public void InvokePromptTriggered(string promptId, string playerCharacterId)
+    {
+        if (!promptTriggeredCallbacks.TryGetValue(promptId, out var callbacks)) return;
+        var player = instances.TryGetValue(playerCharacterId, out var character)
+            ? DynValue.NewTable(character) : DynValue.Nil;
+        foreach (var callback in callbacks.ToArray()) StartCallback(callback, player);
     }
 
     public void InvokeGuiActivated(string nodeId)
@@ -524,6 +567,12 @@ public sealed class LuaXRuntime
 
     private void WriteInstanceProperty(SceneNode node, Table instance, string normalizedProperty)
     {
+        if (normalizedProperty is "velocity" or "assemblylinearvelocity")
+        {
+            instance.Set("Velocity", VectorValue(node.Velocity));
+            instance.Set("AssemblyLinearVelocity", VectorValue(node.Velocity));
+            return;
+        }
         if (normalizedProperty is "mode" or "cameramode")
         {
             var cameraMode = DynValue.NewString(node.CameraMode);
@@ -538,12 +587,26 @@ public sealed class LuaXRuntime
             "rotation" => "Rotation",
             "size" => "Size",
             "color" => "Color",
+            "shape" => "Shape",
+            "face" => "Face",
+            "material" => "Material",
+            "transparency" => "Transparency",
+            "enabled" => "Enabled",
+            "brightness" => "Brightness",
+            "range" => "Range",
+            "angle" => "Angle",
+            "actiontext" => "ActionText",
+            "objecttext" => "ObjectText",
+            "maxactivationdistance" => "MaxActivationDistance",
             "texture" => "Texture",
             "text" => "Text",
             "textcolor" => "TextColor",
             "visible" => "Visible",
             "anchored" => "Anchored",
+            "cancollide" => "CanCollide",
+            "cantouch" => "CanTouch",
             "castshadow" => "CastShadow",
+            "gravity" => "Gravity",
             "asset" => "Asset",
             "subject" => "Subject",
             "fieldofview" => "FieldOfView",
@@ -595,12 +658,49 @@ public sealed class LuaXRuntime
                 case "rotation": node.Rotation = ReadVector(value, node.Rotation); break;
                 case "size": SetSizeProperty(node, value); break;
                 case "color": node.Color = ReadColor(value, node.Color); break;
+                case "shape":
+                    if (node.Type != "Part" || value.CastToString() is not { } shape || shape is not ("Block" or "Ball" or "Cylinder")) return DynValue.Nil;
+                    node.Shape = shape;
+                    break;
+                case "face":
+                    if (node.Type is not ("Decal" or "SurfaceLight") || !SceneNodeTypes.IsFace(value.CastToString())) return DynValue.Nil;
+                    node.Face = value.String;
+                    break;
+                case "material":
+                    if (!IsBasePart(node) || value.CastToString() is not { } material || material is not ("Plastic" or "Metal" or "Neon" or "Glass" or "Wood" or "Concrete")) return DynValue.Nil;
+                    node.Material = material;
+                    break;
+                case "transparency":
+                    if ((!IsBasePart(node) && node.Type != "Decal") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.Transparency = (float)Math.Clamp(value.Number, 0, 1);
+                    break;
+                case "enabled": node.Enabled = value.CastToBool(); break;
+                case "brightness": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Brightness = (float)Math.Clamp(value.Number, 0, 8); break;
+                case "range": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Range = (float)Math.Clamp(value.Number, 1, 1000); break;
+                case "angle": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Angle = (float)Math.Clamp(value.Number, 1, 175); break;
+                case "actiontext": if (node.Type != "ProximityPrompt") return DynValue.Nil; node.ActionText = value.CastToString() ?? node.ActionText; break;
+                case "objecttext": if (node.Type != "ProximityPrompt") return DynValue.Nil; node.ObjectText = value.CastToString() ?? node.ObjectText; break;
+                case "maxactivationdistance":
+                    if (node.Type != "ProximityPrompt" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.MaxActivationDistance = (float)Math.Clamp(value.Number, 1, 100);
+                    break;
                 case "texture": node.Texture = value.CastToString() ?? string.Empty; break;
                 case "text": node.Text = value.CastToString() ?? node.Text; break;
                 case "textcolor": node.TextColor = value.CastToString() ?? node.TextColor; break;
                 case "visible": node.Visible = value.CastToBool(); break;
                 case "anchored": node.Anchored = value.CastToBool(); break;
+                case "cancollide": node.CanCollide = value.CastToBool(); break;
+                case "cantouch": node.CanTouch = value.CastToBool(); break;
+                case "velocity":
+                case "assemblylinearvelocity":
+                    if (!IsBasePart(node) || value.Type != DataType.Table) return DynValue.Nil;
+                    node.Velocity = ReadVector(value, node.Velocity);
+                    break;
                 case "castshadow": node.CastShadow = value.CastToBool(); break;
+                case "gravity":
+                    if (node.Type != "Workspace" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.Gravity = (float)Math.Clamp(value.Number, 0, 1000);
+                    break;
                 case "asset": node.Asset = value.CastToString() ?? string.Empty; break;
                 case "name": SetNodeName(node, value.CastToString() ?? node.Name); break;
                 case "cameramode":
@@ -617,7 +717,7 @@ public sealed class LuaXRuntime
                         break;
                     }
                     var cameraSubject = ReadNodeArgument(value);
-                    if (cameraSubject is not { Type: "Part" or "MeshPart" }) return DynValue.Nil;
+                    if (cameraSubject is null || !IsBasePart(cameraSubject)) return DynValue.Nil;
                     node.Subject = cameraSubject.Id;
                     break;
                 case "fieldofview": node.FieldOfView = (float)Math.Clamp(value.Number, 10, 120); break;
@@ -683,12 +783,27 @@ public sealed class LuaXRuntime
         "rotation" => VectorValue(node.Rotation),
         "size" => IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
         "color" => ColorValue(node.Color),
+        "shape" => DynValue.NewString(node.Shape),
+        "face" => DynValue.NewString(node.Face),
+        "material" => DynValue.NewString(node.Material),
+        "transparency" => DynValue.NewNumber(node.Transparency),
+        "enabled" => DynValue.NewBoolean(node.Enabled),
+        "brightness" => DynValue.NewNumber(node.Brightness),
+        "range" => DynValue.NewNumber(node.Range),
+        "angle" => DynValue.NewNumber(node.Angle),
+        "actiontext" => DynValue.NewString(node.ActionText),
+        "objecttext" => DynValue.NewString(node.ObjectText),
+        "maxactivationdistance" => DynValue.NewNumber(node.MaxActivationDistance),
         "texture" => DynValue.NewString(node.Texture),
         "text" => DynValue.NewString(node.Text),
         "textcolor" => DynValue.NewString(node.TextColor),
         "visible" => DynValue.NewBoolean(node.Visible),
         "anchored" => DynValue.NewBoolean(node.Anchored),
+        "cancollide" => DynValue.NewBoolean(node.CanCollide),
+        "cantouch" => DynValue.NewBoolean(node.CanTouch),
+        "velocity" or "assemblylinearvelocity" => VectorValue(node.Velocity),
         "castshadow" => DynValue.NewBoolean(node.CastShadow),
+        "gravity" => DynValue.NewNumber(node.Gravity),
         "asset" => DynValue.NewString(node.Asset),
         "name" => DynValue.NewString(node.Name),
         "children" => GetChildren(node),
@@ -761,13 +876,15 @@ public sealed class LuaXRuntime
     {
         "Instance" => true,
         "BasePart" => IsBasePart(node),
+        "Light" => SceneNodeTypes.IsLight(node),
+        "FaceInstance" => node.Type == "Decal",
         "GuiObject" => node.Type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox",
         "GuiBase2d" => node.Type is "ScreenGui" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox",
         "LayerCollector" => node.Type == "ScreenGui",
         _ => node.Type == className
     };
 
-    private static bool IsBasePart(SceneNode? node) => node is { Type: "Part" or "MeshPart" };
+    private static bool IsBasePart(SceneNode? node) => SceneNodeTypes.IsBasePart(node);
 
     private DynValue GetAssetPath(CallbackArguments args)
     {
@@ -814,6 +931,14 @@ public sealed class LuaXRuntime
         if (currentGameScript is null) return DynValue.Nil;
         if (!guiTextChangedCallbacks.TryGetValue(id, out var callbacks)) guiTextChangedCallbacks[id] = callbacks = [];
         callbacks.Add(new ScriptCallback(currentGameScript, callback, "TextChanged"));
+        return DynValue.Nil;
+    }
+
+    private DynValue RegisterPromptTriggered(string id, DynValue callback)
+    {
+        if (currentGameScript is null) return DynValue.Nil;
+        if (!promptTriggeredCallbacks.TryGetValue(id, out var callbacks)) promptTriggeredCallbacks[id] = callbacks = [];
+        callbacks.Add(new ScriptCallback(currentGameScript, callback, "Triggered"));
         return DynValue.Nil;
     }
 
@@ -877,6 +1002,25 @@ public sealed class LuaXRuntime
                 }
             }
             Assign(node, "Color", node.Color, ReadColor(instance.Get("Color"), node.Color), value => node.Color = value);
+            if (node.Type == "Part" && instance.Get("Shape").CastToString() is "Block" or "Ball" or "Cylinder")
+                Assign(node, "Shape", node.Shape, instance.Get("Shape").String, value => node.Shape = value);
+            if (node.Type is ("Decal" or "SurfaceLight") && SceneNodeTypes.IsFace(instance.Get("Face").CastToString()))
+                Assign(node, "Face", node.Face, instance.Get("Face").String, value => node.Face = value);
+            if (IsBasePart(node) && instance.Get("Material").CastToString() is "Plastic" or "Metal" or "Neon" or "Glass" or "Wood" or "Concrete")
+                Assign(node, "Material", node.Material, instance.Get("Material").String, value => node.Material = value);
+            if ((IsBasePart(node) || node.Type == "Decal") && instance.Get("Transparency").Type == DataType.Number && double.IsFinite(instance.Get("Transparency").Number))
+                Assign(node, "Transparency", node.Transparency, (float)Math.Clamp(instance.Get("Transparency").Number, 0, 1), value => node.Transparency = value);
+            if (instance.Get("Enabled").Type == DataType.Boolean) Assign(node, "Enabled", node.Enabled, instance.Get("Enabled").Boolean, value => node.Enabled = value);
+            if (instance.Get("Brightness").Type == DataType.Number && double.IsFinite(instance.Get("Brightness").Number)) Assign(node, "Brightness", node.Brightness, (float)Math.Clamp(instance.Get("Brightness").Number, 0, 8), value => node.Brightness = value);
+            if (instance.Get("Range").Type == DataType.Number && double.IsFinite(instance.Get("Range").Number)) Assign(node, "Range", node.Range, (float)Math.Clamp(instance.Get("Range").Number, 1, 1000), value => node.Range = value);
+            if (instance.Get("Angle").Type == DataType.Number && double.IsFinite(instance.Get("Angle").Number)) Assign(node, "Angle", node.Angle, (float)Math.Clamp(instance.Get("Angle").Number, 1, 175), value => node.Angle = value);
+            if (node.Type == "ProximityPrompt")
+            {
+                if (instance.Get("ActionText").CastToString() is { } actionText) Assign(node, "ActionText", node.ActionText, actionText, value => node.ActionText = value);
+                if (instance.Get("ObjectText").CastToString() is { } objectText) Assign(node, "ObjectText", node.ObjectText, objectText, value => node.ObjectText = value);
+                if (instance.Get("MaxActivationDistance").Type == DataType.Number && double.IsFinite(instance.Get("MaxActivationDistance").Number))
+                    Assign(node, "MaxActivationDistance", node.MaxActivationDistance, (float)Math.Clamp(instance.Get("MaxActivationDistance").Number, 1, 100), value => node.MaxActivationDistance = value);
+            }
             if (instance.Get("Texture").CastToString() is { } texture) Assign(node, "Texture", node.Texture, texture, value => node.Texture = value);
             if (instance.Get("Text").CastToString() is { } text) Assign(node, "Text", node.Text, text, value => node.Text = value);
             if (instance.Get("TextColor").CastToString() is { } textColor) Assign(node, "TextColor", node.TextColor, textColor, value => node.TextColor = value);
@@ -890,6 +1034,24 @@ public sealed class LuaXRuntime
             if (instance.Get("AspectRatio").Type == DataType.Number) Assign(node, "AspectRatio", node.AspectRatio, (float)Math.Max(.001, instance.Get("AspectRatio").Number), value => node.AspectRatio = value);
             if (instance.Get("LayoutDirection").CastToString() is { } layoutDirection) Assign(node, "LayoutDirection", node.LayoutDirection, layoutDirection == "Horizontal" ? "Horizontal" : "Vertical", value => node.LayoutDirection = value);
             if (instance.Get("CastShadow").Type == DataType.Boolean) Assign(node, "CastShadow", node.CastShadow, instance.Get("CastShadow").Boolean, value => node.CastShadow = value);
+            if (instance.Get("Anchored").Type == DataType.Boolean) Assign(node, "Anchored", node.Anchored, instance.Get("Anchored").Boolean, value => node.Anchored = value);
+            if (instance.Get("CanCollide").Type == DataType.Boolean) Assign(node, "CanCollide", node.CanCollide, instance.Get("CanCollide").Boolean, value => node.CanCollide = value);
+            if (instance.Get("CanTouch").Type == DataType.Boolean) Assign(node, "CanTouch", node.CanTouch, instance.Get("CanTouch").Boolean, value => node.CanTouch = value);
+            if (IsBasePart(node))
+            {
+                var assemblyVelocity = ReadVector(instance.Get("AssemblyLinearVelocity"), node.Velocity);
+                var directVelocity = ReadVector(instance.Get("Velocity"), node.Velocity);
+                var requestedVelocity = node.Velocity.SequenceEqual(assemblyVelocity) ? directVelocity : assemblyVelocity;
+                if (!node.Velocity.SequenceEqual(requestedVelocity))
+                {
+                    node.Velocity = requestedVelocity;
+                    instance.Set("Velocity", VectorValue(requestedVelocity));
+                    instance.Set("AssemblyLinearVelocity", VectorValue(requestedVelocity));
+                    MarkChanged(node, "Velocity");
+                }
+            }
+            if (node.Type == "Workspace" && instance.Get("Gravity").Type == DataType.Number && double.IsFinite(instance.Get("Gravity").Number))
+                Assign(node, "Gravity", node.Gravity, (float)Math.Clamp(instance.Get("Gravity").Number, 0, 1000), value => node.Gravity = value);
             if (instance.Get("Name").CastToString() is { } name) Assign(node, "Name", node.Name, name, value => SetNodeName(node, value));
             if (node.Type == "Workspace")
             {
@@ -918,7 +1080,7 @@ public sealed class LuaXRuntime
                 var subjectForMode = IsBasePart(requestedSubject) ? requestedSubject : FindNode(node.Subject);
                 if (mode == "Subject" && !IsBasePart(subjectForMode)) mode = node.CameraMode;
                 if (mode is "Custom" or "Subject") Assign(node, "Mode", node.CameraMode, mode, value => node.CameraMode = value);
-                if (requestedSubject is { Type: "Part" or "MeshPart" } validSubject) Assign(node, "Subject", node.Subject, validSubject.Id, value => node.Subject = value);
+                if (IsBasePart(requestedSubject)) Assign(node, "Subject", node.Subject, requestedSubject!.Id, value => node.Subject = value);
                 else if (subjectValue.Type == DataType.Nil && mode != "Subject") Assign(node, "Subject", node.Subject, string.Empty, value => node.Subject = value);
                 instance.Set("Mode", DynValue.NewString(node.CameraMode));
                 instance.Set("CameraMode", DynValue.NewString(node.CameraMode));
@@ -1179,7 +1341,8 @@ public sealed class LuaXRuntime
     {
         var value = table.Get(key);
         if (value.Type != DataType.Number) value = table.Get(index);
-        return value.Type == DataType.Number ? (float)value.Number : fallback;
+        return value.Type == DataType.Number && double.IsFinite(value.Number) && Math.Abs(value.Number) <= float.MaxValue
+            ? (float)value.Number : fallback;
     }
 
     private SceneNode? FindNode(string id) => GameProjectStore.Flatten(project).FirstOrDefault(node => node.Id == id || node.Name == id);

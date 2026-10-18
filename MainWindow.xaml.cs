@@ -194,6 +194,46 @@ public partial class MainWindow : Window
         RenderProperties();
     }
 
+    private void ExplorerTree_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (project is null || propertyPickerTargetId is not null) return;
+        var item = GetTreeItem(e.OriginalSource as DependencyObject);
+        if (item?.DataContext is not SceneNode node) return;
+        item.IsSelected = true;
+        selected = node;
+        renderer?.SetSelection(node.Id);
+        RenderProperties();
+        var menu = new ContextMenu { PlacementTarget = item };
+        var insert = new MenuItem { Header = "Insert Object" };
+        insert.Click += (_, _) => ShowInsertMenu(node, item);
+        menu.Items.Add(insert);
+        var canEdit = node.Type is not ("Workspace" or "Gui" or "Camera");
+        var duplicate = new MenuItem { Header = "Duplicate    Ctrl+D", IsEnabled = canEdit };
+        duplicate.Click += (_, _) => DuplicateSelected();
+        menu.Items.Add(duplicate);
+        if (!IsGuiNode(node))
+        {
+            var group = new MenuItem { Header = "Group in Model    Ctrl+G", IsEnabled = CanGroupSelected() };
+            group.Click += (_, _) => GroupSelected();
+            menu.Items.Add(group);
+            if (node.Type == "Model")
+            {
+                var ungroup = new MenuItem { Header = "Ungroup    Ctrl+Shift+G" };
+                ungroup.Click += (_, _) => UngroupSelected();
+                menu.Items.Add(ungroup);
+            }
+        }
+        var rename = new MenuItem { Header = "Rename    F2", IsEnabled = node.Type is not ("Workspace" or "Gui") };
+        rename.Click += (_, _) => RenameSelected();
+        menu.Items.Add(rename);
+        menu.Items.Add(new Separator());
+        var delete = new MenuItem { Header = "Delete", IsEnabled = canEdit };
+        delete.Click += (_, _) => DeleteSelected();
+        menu.Items.Add(delete);
+        menu.IsOpen = true;
+        e.Handled = true;
+    }
+
     private void ExplorerTree_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         var source = e.OriginalSource as DependencyObject;
@@ -437,8 +477,16 @@ public partial class MainWindow : Window
         AddLabel($"Class: {selected.Type}", "Class");
         AddTextField("Name", selected.Name);
         AddObjectReferenceField("Parent", selected, FindParentNode(selected));
+        if (selected.Type == "Model" && !IsGuiNode(selected))
+        {
+            propertyTarget = AddPropertySection("Transform");
+            AddTextField("Position", VectorText(SceneModelService.GetPivot(selected)));
+            AddLabel("Moving the model moves all of its parts together.", "Position");
+        }
         if (selected.Type == "Workspace")
         {
+            propertyTarget = AddPropertySection("Physics");
+            AddTextField("Gravity", selected.Gravity.ToString(System.Globalization.CultureInfo.InvariantCulture));
             propertyTarget = AddPropertySection("Skybox");
             AddTextField("SkyboxFront", selected.SkyboxFront);
             AddTextField("SkyboxBack", selected.SkyboxBack);
@@ -448,7 +496,7 @@ public partial class MainWindow : Window
             AddTextField("SkyboxBottom", selected.SkyboxBottom);
             AddLabel("Image paths are relative to the project assets folder.", "Skybox");
         }
-        if (!IsGuiNode(selected) && selected.Type is ("Part" or "MeshPart" or "ImageLabel" or "Camera"))
+        if (!IsGuiNode(selected) && (SceneNodeTypes.IsBasePart(selected) || selected.Type is "ImageLabel" or "Camera"))
         {
             propertyTarget = AddPropertySection("Transform");
             AddTextField("Position", VectorText(selected.Position));
@@ -458,10 +506,24 @@ public partial class MainWindow : Window
                 AddTextField("Size", VectorText(selected.Size));
                 propertyTarget = AddPropertySection("Appearance");
                 AddTextField("Color", selected.Color);
+                if (SceneNodeTypes.IsBasePart(selected))
+                {
+                    AddComboField("Material", ["Plastic", "Metal", "Neon", "Glass", "Wood", "Concrete"], selected.Material);
+                    AddTextField("Transparency", selected.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
+                if (selected.Type == "Part") AddComboField("Shape", ["Block", "Ball", "Cylinder"], selected.Shape);
                 if (selected.Type == "Part") AddTextField("Texture", selected.Texture);
                 AddCheckField("CastShadow", selected.CastShadow);
                 propertyTarget = AddPropertySection("Behavior");
                 AddCheckField("Anchored", selected.Anchored);
+                if (selected.Type == "ImageLabel") AddCheckField("Visible", selected.Visible);
+                if (SceneNodeTypes.IsBasePart(selected))
+                {
+                    AddCheckField("CanCollide", selected.CanCollide);
+                    AddCheckField("CanTouch", selected.CanTouch);
+                    if (selected.Type == "SpawnLocation") AddCheckField("Enabled", selected.Enabled);
+                    AddTextField("Velocity", VectorText(selected.Velocity));
+                }
             }
             if (selected.Type is "MeshPart" or "ImageLabel")
             {
@@ -473,11 +535,44 @@ public partial class MainWindow : Window
                 propertyTarget = AddPropertySection("Camera");
                 AddComboField("Mode", ["Custom", "Subject"], selected.CameraMode);
                 var subject = FindSceneNode(selected.Subject);
-                AddObjectReferenceField("Subject", selected, subject is { Type: "Part" or "MeshPart" } ? subject : null);
+                AddObjectReferenceField("Subject", selected, SceneNodeTypes.IsBasePart(subject) ? subject : null);
                 AddTextField("FieldOfView", selected.FieldOfView.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 AddLabel("The Workspace Camera is the only view camera.", "Camera");
                 AddLabel("Subject mode orbits a BasePart; Custom uses Position and Rotation.", "Subject");
             }
+        }
+        if (SceneNodeTypes.IsLight(selected))
+        {
+            propertyTarget = AddPropertySection("Light");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("Color", selected.Color);
+            AddTextField("Brightness", selected.Brightness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Range", selected.Range.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Position", VectorText(selected.Position));
+            if (selected.Type is "SpotLight" or "SurfaceLight")
+            {
+                AddTextField("Angle", selected.Angle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                if (selected.Type == "SpotLight") AddTextField("Rotation", VectorText(selected.Rotation));
+            }
+            if (selected.Type == "SurfaceLight") AddComboField("Face", ["Front", "Back", "Left", "Right", "Top", "Bottom"], selected.Face);
+        }
+        if (selected.Type == "Decal")
+        {
+            propertyTarget = AddPropertySection("Appearance");
+            AddCheckField("Visible", selected.Visible);
+            AddComboField("Face", ["Front", "Back", "Left", "Right", "Top", "Bottom"], selected.Face);
+            AddTextField("Asset", selected.Asset);
+            AddTextField("Transparency", selected.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddLabel("Use an image from Asset Manager for this face.", "Asset");
+        }
+        if (selected.Type == "ProximityPrompt")
+        {
+            propertyTarget = AddPropertySection("Prompt");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("ActionText", selected.ActionText);
+            AddTextField("ObjectText", selected.ObjectText);
+            AddTextField("MaxActivationDistance", selected.MaxActivationDistance.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddLabel("Press E near this part during play to fire Triggered.", "Triggered");
         }
         if (IsGuiNode(selected) && selected.Type != "Gui") RenderGuiProperties(selected);
         if (selected.Type == "Script")
@@ -666,6 +761,35 @@ public partial class MainWindow : Window
     {
         if (project is null || box.Tag is not string property || box.DataContext is not string targetId || FindSceneNode(targetId) is not { } target) return;
         var text = box.Text.Trim();
+        var currentNumber = NumericPropertyText(target, property);
+        if (currentNumber is not null)
+        {
+            var valid = property == "TableColumns"
+                ? int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _)
+                : float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var number) && float.IsFinite(number);
+            if (!valid)
+            {
+                SetStatus($"Enter a valid number for {property}.");
+                box.Text = currentNumber;
+                return;
+            }
+        }
+        if (target.Type == "Model" && property == "Position" && !IsGuiNode(target))
+        {
+            var pivot = SceneModelService.GetPivot(target);
+            var position = ParseVector(text);
+            if (position is null)
+            {
+                SetStatus("Enter three comma-separated numbers.");
+                box.Text = VectorText(pivot);
+                return;
+            }
+            if (!SceneModelService.MoveTo(target, position)) return;
+            renderer?.Refresh(project);
+            RecordEdit();
+            RenderProperties();
+            return;
+        }
         if ((property is "Position" or "Size") && IsGuiNode(target))
         {
             var values = ParseGuiUDim2(text);
@@ -686,17 +810,26 @@ public partial class MainWindow : Window
                 target.Size = [values[1], values[3], target.Size[2]];
             }
         }
-        else if (property is "Position" or "Rotation" or "Size")
+        else if (property is "Position" or "Rotation" or "Size" or "Velocity")
         {
             var values = ParseVector(text);
-            if (values is null) { SetStatus("Enter three comma-separated numbers."); box.Text = property switch { "Position" => VectorText(target.Position), "Rotation" => VectorText(target.Rotation), _ => VectorText(target.Size) }; return; }
+            if (values is null) { SetStatus("Enter three comma-separated numbers."); box.Text = property switch { "Position" => VectorText(target.Position), "Rotation" => VectorText(target.Rotation), "Velocity" => VectorText(target.Velocity), _ => VectorText(target.Size) }; return; }
             if (property == "Position") target.Position = values;
             if (property == "Rotation") target.Rotation = values;
             if (property == "Size") target.Size = values.Select(value => Math.Max(.01f, Math.Abs(value))).ToArray();
+            if (property == "Velocity" && SceneNodeTypes.IsBasePart(target)) target.Velocity = values;
         }
         else if (property == "FieldOfView" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fov)) target.FieldOfView = Math.Clamp(fov, 10, 120);
         else if (property == "Color") target.Color = text;
+        else if (property == "Transparency" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var transparency) && float.IsFinite(transparency)) target.Transparency = Math.Clamp(transparency, 0, 1);
+        else if (property == "Gravity" && target.Type == "Workspace" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gravity) && float.IsFinite(gravity)) target.Gravity = Math.Clamp(gravity, 0, 1000);
+        else if (property == "Brightness" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var brightness) && float.IsFinite(brightness)) target.Brightness = Math.Clamp(brightness, 0, 8);
+        else if (property == "Range" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var range) && float.IsFinite(range)) target.Range = Math.Clamp(range, 1, 1000);
+        else if (property == "Angle" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var angle) && float.IsFinite(angle)) target.Angle = Math.Clamp(angle, 1, 175);
+        else if (property == "MaxActivationDistance" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var maxActivationDistance) && float.IsFinite(maxActivationDistance)) target.MaxActivationDistance = Math.Clamp(maxActivationDistance, 1, 100);
         else if (property == "Asset") target.Asset = text;
+        else if (property == "ActionText") target.ActionText = text;
+        else if (property == "ObjectText") target.ObjectText = text;
         else if (property == "Texture" && target.Type == "Part") target.Texture = text;
         else if (property == "Text") target.Text = text;
         else if (property == "TextColor") target.TextColor = text;
@@ -736,6 +869,7 @@ public partial class MainWindow : Window
             }
         }
         else return;
+        if (currentNumber is not null) box.Text = NumericPropertyText(target, property) ?? box.Text;
         if (IsGuiNode(target)) RefreshGuiPreview();
         if (target.Type == "Camera")
         {
@@ -746,12 +880,37 @@ public partial class MainWindow : Window
         if (property == "Name") RefreshEditor();
     }
 
+    private static string? NumericPropertyText(SceneNode node, string property)
+    {
+        var value = property switch
+        {
+            "FieldOfView" => node.FieldOfView,
+            "Transparency" => node.Transparency,
+            "Gravity" => node.Gravity,
+            "Brightness" => node.Brightness,
+            "Range" => node.Range,
+            "Angle" => node.Angle,
+            "MaxActivationDistance" => node.MaxActivationDistance,
+            "LayoutSpacing" => node.LayoutSpacing,
+            "TableColumns" => node.TableColumns,
+            "AspectRatio" => node.AspectRatio,
+            "CornerRadius" => node.CornerRadius,
+            "StrokeThickness" => node.StrokeThickness,
+            "TextSize" => node.TextSize,
+            _ => (float?)null
+        };
+        return value?.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     private void PropertyCheck_Changed(object sender, RoutedEventArgs e)
     {
         if (project is null || sender is not CheckBox box || box.Tag is not string property || box.DataContext is not string targetId || FindSceneNode(targetId) is not { } target) return;
         if (property == "Anchored") target.Anchored = box.IsChecked == true;
+        if (property == "CanCollide") target.CanCollide = box.IsChecked == true;
+        if (property == "CanTouch") target.CanTouch = box.IsChecked == true;
         if (property == "CastShadow") target.CastShadow = box.IsChecked == true;
         if (property == "Visible") target.Visible = box.IsChecked == true;
+        if (property == "Enabled") target.Enabled = box.IsChecked == true;
         if (IsGuiNode(target)) RefreshGuiPreview();
         renderer?.UpdateNode(target, project);
         RecordEdit();
@@ -760,15 +919,19 @@ public partial class MainWindow : Window
     private void PropertyCombo_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (project is null || sender is not ComboBox combo || combo.Tag is not string property || combo.DataContext is not string targetId || FindSceneNode(targetId) is not { } target || combo.SelectedItem is not string value) return;
-        if (property == "Mode" && value == "Subject" && FindSceneNode(target.Subject) is not { Type: "Part" or "MeshPart" })
+        if (property == "Mode" && value == "Subject" && !SceneNodeTypes.IsBasePart(FindSceneNode(target.Subject)))
         {
             SetStatus("Select a BasePart for the camera subject first.");
             RenderProperties();
             return;
         }
         if (property == "Mode") target.CameraMode = value;
+        if (property == "Shape" && target.Type == "Part") target.Shape = value;
+        if (property == "Material" && SceneNodeTypes.IsBasePart(target)) target.Material = value;
+        if (property == "Face" && target.Type is ("Decal" or "SurfaceLight") && SceneNodeTypes.IsFace(value)) target.Face = value;
         if (property == "LayoutDirection") target.LayoutDirection = value;
         if (property == "Mode") renderer?.UpdateCamera(project);
+        if (property is "Shape" or "Material" or "Face") renderer?.UpdateNode(target, project);
         if (IsGuiNode(target)) RefreshGuiPreview();
         RecordEdit();
         RenderProperties();
@@ -818,9 +981,9 @@ public partial class MainWindow : Window
         }
         else if (property == "Subject")
         {
-            if (value.Type is not ("Part" or "MeshPart"))
+            if (!SceneNodeTypes.IsBasePart(value))
             {
-                SetStatus("Camera Subject must be a Part or MeshPart.");
+                SetStatus("Camera Subject must be a BasePart.");
                 return true;
             }
             propertyPickerTargetId = null;
@@ -934,8 +1097,14 @@ public partial class MainWindow : Window
             await GameProjectStore.SaveAsync(project);
             return;
         }
-        var node = new SceneNode { Type = type, Name = name };
-        if (type == "Part") node.Position = [0, 1, 0];
+        var node = new SceneNode { Type = type is "Ball" or "Cylinder" ? "Part" : type, Name = name };
+        if (type is "Ball" or "Cylinder") node.Shape = type;
+        if (SceneNodeTypes.IsBasePart(node)) node.Position = [0, 1, 0];
+        if (type == "SpawnLocation") { node.Size = [6, 1, 6]; node.Position = [0, .5f, 0]; node.Color = "#72BF9D"; node.Material = "Metal"; }
+        if (type == "TrussPart") { node.Size = [2, 6, 2]; node.Position = [0, 3, 0]; node.Color = "#AD9682"; node.Material = "Metal"; }
+        if (type == "Decal") node.Color = "#FFFFFF";
+        if (type == "SurfaceLight") node.Angle = 120;
+        if (SceneNodeTypes.IsLight(node)) node.Color = "#FFFFFF";
         if (type is "Frame" or "ScrollingFrame") { node.Size = [320, 180, 1]; node.Color = "#303235"; }
         if (type is "TextLabel" or "TextButton" or "TextBox") { node.Size = [180, 36, 1]; node.Color = "#303235"; }
         if (type is "ImageLabel" or "ImageButton") { node.Size = [128, 128, 1]; node.Color = "#FFFFFF"; }
@@ -953,13 +1122,19 @@ public partial class MainWindow : Window
     private void ExplorerAddObject_Click(object sender, RoutedEventArgs e)
     {
         if (project is null || sender is not Button { Tag: SceneNode parent } button) return;
+        ShowInsertMenu(parent, button);
+    }
+
+    private void ShowInsertMenu(SceneNode parent, UIElement placementTarget)
+    {
+        if (project is null) return;
         var choices = IsGuiNode(parent)
             ? (parent.Type == "Gui"
                 ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") }
                 : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIListLayout", "UIListLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
-            : new (string Type, string Name)[] { ("Part", "Part"), ("MeshPart", "MeshPart"), ("ImageLabel", "ImageLabel"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") };
-        choices = choices.Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type, Name = choice.Name }, parent)).ToArray();
-        var menu = new ContextMenu { PlacementTarget = button, StaysOpen = true };
+            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("MeshPart", "MeshPart"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("ProximityPrompt", "ProximityPrompt"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") };
+        choices = choices.Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
+        var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
         var search = new TextBox { Width = 190, Margin = new Thickness(5), Padding = new Thickness(5, 3, 5, 3), ToolTip = "Search objects" };
         var searchItem = new MenuItem { Header = search, StaysOpenOnClick = true, Padding = new Thickness(0) };
         menu.Items.Add(searchItem);
@@ -1248,7 +1423,7 @@ public partial class MainWindow : Window
         {
             "Part" when imageAsset => "Texture",
             "MeshPart" when asset.Type == "obj" => "Asset",
-            "ImageLabel" or "ImageButton" when imageAsset => "Asset",
+            "ImageLabel" or "ImageButton" or "Decal" when imageAsset => "Asset",
             _ => null
         };
         if (property is null)
@@ -2004,7 +2179,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "Model", "Camera", "Workspace", "DataModel", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "ProximityPrompt", "Model", "Camera", "Workspace", "DataModel", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -2056,7 +2231,7 @@ public partial class MainWindow : Window
         if (receiver == "UDim") return ["new"];
         if (receiver == "UDim2") return ["fromOffset", "fromScale", "new", "zero"];
         if (LuaXStandardLibraryMembers.TryGetValue(receiver, out var libraryMembers)) return libraryMembers;
-        if (receiver.EndsWith(".Touched", StringComparison.Ordinal) || receiver == "Touched") return ["Connect"];
+        if (receiver.EndsWith(".Touched", StringComparison.Ordinal) || receiver == "Touched" || receiver.EndsWith(".Triggered", StringComparison.Ordinal) || receiver == "Triggered") return ["Connect"];
         var node = ResolveLuaXNode(receiver);
         if (node is null)
         {
@@ -2074,11 +2249,18 @@ public partial class MainWindow : Window
         }
 
         var members = new List<string> { "Name", "Parent", "ClassName", "Id", "Children", "SetProperty", "GetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA" };
-        if (node.Type is "BasePart" or "Part" or "MeshPart") members.AddRange(["Position", "Rotation", "Size", "Color", "Anchored", "CastShadow", "Touched", "touched"]);
-        if (node.Type == "Part") members.Add("Texture");
+        if (node.Type == "BasePart" || SceneNodeTypes.IsBasePart(node)) members.AddRange(["Position", "Rotation", "Size", "Color", "Material", "Transparency", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Touched", "touched"]);
+        if (node.Type == "Part") members.AddRange(["Shape", "Texture"]);
+        if (node.Type == "SpawnLocation") members.Add("Enabled");
         if (node.Type == "MeshPart") members.Add("Asset");
+        if (node.Type == "Light" || SceneNodeTypes.IsLight(node)) members.AddRange(["Enabled", "Color", "Brightness", "Range", "Position"]);
+        if (node.Type is "SpotLight" or "SurfaceLight") members.Add("Angle");
+        if (node.Type == "SpotLight") members.Add("Rotation");
+        if (node.Type is "FaceInstance" or "Decal" or "SurfaceLight") members.Add("Face");
+        if (node.Type == "Decal") members.AddRange(["Asset", "Transparency", "Visible"]);
+        if (node.Type == "ProximityPrompt") members.AddRange(["Enabled", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
-        if (node.Type == "Workspace") members.AddRange(["SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
+        if (node.Type == "Workspace") members.AddRange(["Gravity", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
         if (node.Type is "GuiBase2d" or "GuiObject" or "ScreenGui" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Visible", "Position", "Size"]);
         if (node.Type is "GuiObject" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Color", "Rotation"]);
         if (node.Type is "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Text", "TextColor", "TextSize"]);
@@ -2098,7 +2280,7 @@ public partial class MainWindow : Window
         if (receiver == "game") return ["GetService"];
         if (receiver.Equals("Touched", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Touched", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".Activated", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".MouseButton1Click", StringComparison.OrdinalIgnoreCase)
-            || receiver.EndsWith(".TextChanged", StringComparison.OrdinalIgnoreCase)) return ["Connect"];
+            || receiver.EndsWith(".TextChanged", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Triggered", StringComparison.OrdinalIgnoreCase)) return ["Connect"];
         var inferredType = InferLuaXReceiverType(receiver, editor);
         if (inferredType is "Vector3Constructor" or "Color3Constructor" or "UDimConstructor" or "UDim2Constructor" or "UDim" or "UDim2") return [];
         if (inferredType == "Vector3") return ["Cross", "Dot", "Lerp"];
@@ -2251,12 +2433,13 @@ public partial class MainWindow : Window
                 "position" => IsLuaXGuiObject(node) || node.Type is "GuiBase2d" or "GuiObject" ? "UDim2" : "Vector3",
                 "rotation" => "Vector3",
                 "size" => IsLuaXGuiObject(node) || node.Type is "GuiBase2d" or "GuiObject" ? "UDim2" : "Vector3",
+                "velocity" or "assemblylinearvelocity" => "Vector3",
                 "color" => "Color3",
                 "parent" or "subject" => "Instance",
-                "touched" or "activated" or "mousebutton1click" or "textchanged" => "RBXScriptSignal",
-                "fieldofview" or "textsize" or "strokethickness" or "cornerradius" or "layoutspacing" or "tablecolumns" or "aspectratio" => "number",
-                "anchored" or "castshadow" or "visible" => "boolean",
-                "name" or "id" or "classname" or "type" or "texture" or "asset" or "text" or "textcolor" or "strokecolor" or "layoutdirection" or "cameramode" or "mode" or "skyboxfront" or "skyboxback" or "skyboxleft" or "skyboxright" or "skyboxtop" or "skyboxbottom" => "string",
+                "touched" or "activated" or "mousebutton1click" or "textchanged" or "triggered" => "RBXScriptSignal",
+                "fieldofview" or "textsize" or "strokethickness" or "cornerradius" or "layoutspacing" or "tablecolumns" or "aspectratio" or "transparency" or "brightness" or "range" or "angle" or "maxactivationdistance" => "number",
+                "anchored" or "cancollide" or "cantouch" or "castshadow" or "visible" or "enabled" => "boolean",
+                "name" or "id" or "classname" or "type" or "texture" or "asset" or "face" or "text" or "textcolor" or "strokecolor" or "layoutdirection" or "cameramode" or "mode" or "skyboxfront" or "skyboxback" or "skyboxleft" or "skyboxright" or "skyboxtop" or "skyboxbottom" or "actiontext" or "objecttext" => "string",
                 _ => null
             };
             if (propertyType is not null) return propertyType;
@@ -2264,9 +2447,9 @@ public partial class MainWindow : Window
 
         return (receiverType, member.ToLowerInvariant()) switch
         {
-            ("BasePart", "position" or "rotation" or "size") => "Vector3",
+            ("BasePart", "position" or "rotation" or "size" or "velocity" or "assemblylinearvelocity") => "Vector3",
             ("BasePart", "color") => "Color3",
-            ("BasePart", "anchored" or "castshadow") => "boolean",
+            ("BasePart", "anchored" or "cancollide" or "cantouch" or "castshadow") => "boolean",
             ("Part", "texture") => "string",
             ("MeshPart", "asset") => "string",
             ("GuiObject" or "GuiBase2d", "position" or "size") => "UDim2",
@@ -2420,11 +2603,11 @@ public partial class MainWindow : Window
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Position", "Rotation", "Size", "Color", "Texture", "Asset", "Anchored", "CastShadow", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA"
+        "Name", "Parent", "Position", "Rotation", "Size", "Color", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "Enabled", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA"
     ];
 
     private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Camera", "BasePart", "Part", "MeshPart", "Model", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "ProximityPrompt", "Model", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -2755,9 +2938,23 @@ public partial class MainWindow : Window
 
     private void AnchorSelection_Click(object sender, RoutedEventArgs e)
     {
-        if (selected is null || selected.Type is not ("Part" or "MeshPart")) return;
-        selected.Anchored = !selected.Anchored;
+        if (selected is null) return;
+        var parts = selected.Type == "Model"
+            ? GameProjectStore.Flatten(selected.Children).Where(SceneNodeTypes.IsBasePart).ToArray()
+            : SceneNodeTypes.IsBasePart(selected) ? [selected] : [];
+        if (parts.Length == 0) return;
+        var anchor = !parts.All(part => part.Anchored);
+        foreach (var part in parts) part.Anchored = anchor;
         RecordEdit(); RenderProperties();
+    }
+
+    private void InsertModel_Click(object sender, RoutedEventArgs e)
+    {
+        if (project is null || sender is not Button button) return;
+        var parent = selected is not null && !IsGuiNode(selected)
+            && (SceneNodeTypes.IsBasePart(selected) || selected.Type is "Workspace" or "Folder" or "Model")
+            ? selected : project.Workspace;
+        ShowInsertMenu(parent, button);
     }
 
     private void CameraCustom_Click(object sender, RoutedEventArgs e)
@@ -2774,7 +2971,7 @@ public partial class MainWindow : Window
     private void FocusSelection_Click(object sender, RoutedEventArgs e)
     {
         if (project is null) return;
-        if (selected is null || selected.Type is not ("Part" or "MeshPart"))
+        if (selected is null || !SceneNodeTypes.IsBasePart(selected))
         {
             SetStatus("Select a BasePart to use Subject camera mode.");
             return;
@@ -2933,10 +3130,17 @@ public partial class MainWindow : Window
     private void Play_Click(object sender, RoutedEventArgs e)
     {
         if (project is null) return;
+        if (playerWindow is { IsVisible: true }) { playerWindow.Activate(); return; }
         CommitScriptEditor();
-        playerWindow = new PlayerWindow(project);
-        playerWindow.Closed += (_, _) => playerWindow = null;
-        playerWindow.Show();
+        var playProject = JsonSerializer.Deserialize<GameProject>(JsonSerializer.Serialize(project, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions);
+        if (playProject is null) return;
+        playProject.ProjectPath = project.ProjectPath;
+        playProject.BuildIncluded = project.BuildIncluded;
+        GameProjectStore.EnsureProject(playProject);
+        var player = new PlayerWindow(playProject);
+        playerWindow = player;
+        player.Closed += (_, _) => { if (ReferenceEquals(playerWindow, player)) playerWindow = null; };
+        player.Show();
     }
 
     private void StopPlayer_Click(object sender, RoutedEventArgs e) => playerWindow?.Close();
@@ -2957,10 +3161,17 @@ public partial class MainWindow : Window
         {
             if (e.Key == Key.Space && scriptEditor?.IsKeyboardFocusWithin == true) { ShowLuaXCompletions(scriptEditor, string.Empty); e.Handled = true; }
             else if (e.Key == Key.S) { _ = SaveProjectAsync(); e.Handled = true; }
+            else if (e.Key == Key.D && !textInputHasFocus) { DuplicateSelected(); e.Handled = true; }
+            else if (e.Key == Key.G && !textInputHasFocus && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) { UngroupSelected(); e.Handled = true; }
+            else if (e.Key == Key.G && !textInputHasFocus) { GroupSelected(); e.Handled = true; }
             else if (e.Key == Key.Z && textInputHasFocus) return;
             else if (e.Key == Key.Z && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) { RedoEdit(); e.Handled = true; }
             else if (e.Key == Key.Z) { UndoEdit(); e.Handled = true; }
             return;
+        }
+        if (e.Key == Key.F2 && !textInputHasFocus && Keyboard.FocusedElement is not ComboBox)
+        {
+            RenameSelected(); e.Handled = true; return;
         }
         if (e.Key == Key.Delete && !textInputHasFocus && Keyboard.FocusedElement is not ComboBox)
         {
@@ -3007,7 +3218,9 @@ public partial class MainWindow : Window
 
     private void SceneViewport_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (propertyPickerTargetId is not null || selectedTool == "Select" || isRightDragging || selected is null || selected.Type is not ("Part" or "MeshPart")) return;
+        if (propertyPickerTargetId is not null || selectedTool == "Select" || isRightDragging || selected is null || !SceneNodeTypes.IsBasePart(selected) || renderer is null) return;
+        var hit = SceneViewport.FindHits(e.GetPosition(SceneViewport)).FirstOrDefault()?.ModelHit;
+        if (hit is not MeshGeometryModel3D hitModel || !renderer.Visuals.TryGetValue(selected.Id, out var selectedModel) || !ReferenceEquals(hitModel, selectedModel)) return;
         isTransformDragging = true;
         transformChanged = false;
         lastPointer = e.GetPosition(SceneViewport);
@@ -3092,11 +3305,118 @@ public partial class MainWindow : Window
         RecordEdit(); RefreshEditor();
     }
 
+    private void DuplicateSelected_Click(object sender, RoutedEventArgs e) => DuplicateSelected();
+
+    private void GroupSelected_Click(object sender, RoutedEventArgs e) => GroupSelected();
+    private void UngroupSelected_Click(object sender, RoutedEventArgs e) => UngroupSelected();
+
+    private bool CanGroupSelected() => project is not null && selected is not null
+        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Gui" or "Camera" or "Decal" or "ProximityPrompt")
+        && !SceneNodeTypes.IsLight(selected)
+        && FindParentNode(selected) is not null;
+
+    private void GroupSelected()
+    {
+        if (!CanGroupSelected() || project is null || selected is null) return;
+        var source = selected;
+        var parent = FindParentNode(source);
+        if (parent is null) return;
+        var index = parent.Children.IndexOf(source);
+        if (index < 0) return;
+        var model = new SceneNode { Type = "Model", Name = source.Name + " Model" };
+        parent.Children.Insert(index, model);
+        if (!GameProjectStore.MoveNodeToParent(project, source, model))
+        {
+            parent.Children.Remove(model);
+            return;
+        }
+        selected = model;
+        RecordEdit();
+        RefreshEditor();
+        SelectTreeNode(model.Id);
+    }
+
+    private void UngroupSelected()
+    {
+        if (project is null || selected?.Type != "Model" || IsGuiNode(selected)) return;
+        var model = selected;
+        var parent = FindParentNode(model);
+        if (parent is null) return;
+        var index = parent.Children.IndexOf(model);
+        if (index < 0) return;
+        parent.Children.RemoveAt(index);
+        var children = model.Children.ToArray();
+        model.Children.Clear();
+        parent.Children.InsertRange(index, children);
+        selected = children.FirstOrDefault() ?? parent;
+        RecordEdit();
+        RefreshEditor();
+        SelectTreeNode(selected.Id);
+    }
+
+    private void RenameSelected()
+    {
+        if (selected is null || selected.Type is "Workspace" or "Gui") return;
+        var name = StudioDialog.Prompt(this, "Rename object", "Name", selected.Name, "Rename");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var id = selected.Id;
+        ApplyTextProperty(new TextBox { Tag = "Name", DataContext = id, Text = name });
+        SelectTreeNode(id);
+    }
+
+    private void DuplicateSelected()
+    {
+        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Gui") return;
+        var parent = FindParentNode(selected);
+        if (parent is null) return;
+        var original = selected;
+        var clone = JsonSerializer.Deserialize<SceneNode>(JsonSerializer.Serialize(original, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions);
+        if (clone is null) return;
+        var newIds = new Dictionary<string, string>(StringComparer.Ordinal);
+        void RenewIds(SceneNode node)
+        {
+            var oldId = node.Id;
+            node.Id = Guid.NewGuid().ToString("N");
+            newIds[oldId] = node.Id;
+            foreach (var child in node.Children) RenewIds(child);
+        }
+        RenewIds(clone);
+        clone.Name += " Copy";
+        if (!IsGuiNode(original))
+        {
+            foreach (var part in new[] { clone }.Concat(GameProjectStore.Flatten(clone.Children)).Where(SceneNodeTypes.IsBasePart))
+                part.Position[0] += 1;
+        }
+        else if (IsGuiNode(original))
+        {
+            clone.Position[0] += 20;
+            clone.Position[1] += 20;
+        }
+        if (!GameProjectStore.CanParentNode(project, clone, parent)) return;
+        foreach (var oldNode in new[] { original }.Concat(GameProjectStore.Flatten(original.Children)).Where(node => node.Type == "Script"))
+        {
+            if (!newIds.TryGetValue(oldNode.Id, out var newId)) continue;
+            var oldScript = project.Scripts.FirstOrDefault(script => script.Id == oldNode.Id);
+            if (oldScript is null) continue;
+            var newNode = new[] { clone }.Concat(GameProjectStore.Flatten(clone.Children)).First(node => node.Id == newId);
+            project.Scripts.Add(new GameScript { Id = newId, Name = newNode.Name, Source = oldScript.Source });
+        }
+        var index = parent.Children.IndexOf(original);
+        parent.Children.Insert(index + 1, clone);
+        selected = clone;
+        RecordEdit();
+        RefreshEditor();
+        SelectTreeNode(clone.Id);
+        SetStatus($"Duplicated {original.Name}");
+    }
+
     private void RecordEdit()
     {
         if (project is null || isRestoring) return;
+        var nextSnapshot = JsonSerializer.Serialize(project, GameProjectStore.JsonOptions);
+        if (nextSnapshot == currentSnapshot) return;
         if (!string.IsNullOrEmpty(currentSnapshot)) undo.Push(currentSnapshot);
-        currentSnapshot = JsonSerializer.Serialize(project, GameProjectStore.JsonOptions);
+        currentSnapshot = nextSnapshot;
         redo.Clear();
         SetStatus("Modified");
     }

@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Diagnostics;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -12,19 +13,29 @@ public partial class PlayerWindow : Window
 {
     private readonly GameProject project;
     private readonly SceneRenderService renderer;
+    private readonly PhysicsSimulationService physics;
+    private readonly PlayerCharacterService character;
     private LuaXRuntime? runtime;
     private readonly DispatcherTimer updateTimer;
     private bool isDragging;
     private Point lastPointer;
+    private long lastUpdateTimestamp;
+    private bool jumpRequested;
+    private bool promptRequested;
 
     public PlayerWindow(GameProject project)
     {
         InitializeComponent();
         GameGuiCanvas.SizeChanged += (_, _) => RefreshGameGui();
         this.project = project;
+        GameProjectStore.EnsureProject(project);
+        character = new PlayerCharacterService(project);
+        var camera = project.Workspace.Children.First(node => node.Type == "Camera");
+        camera.CameraMode = "Subject";
+        camera.Subject = character.Root.Id;
         GameTitle.Text = project.Name;
         Title = project.Name;
-        renderer = new SceneRenderService(GameViewport, project.Workspace.Children.First(node => node.Type == "Camera"));
+        renderer = new SceneRenderService(GameViewport, camera);
         renderer.Refresh(project);
         var gameRuntime = new LuaXRuntime(project,
             (node, property, _) => Dispatcher.Invoke(() =>
@@ -38,11 +49,75 @@ public partial class PlayerWindow : Window
             message => Dispatcher.Invoke(() => Title = $"{project.Name} — {message}"));
         runtime = gameRuntime;
         gameRuntime.RunAll();
+        physics = new PhysicsSimulationService(project, node =>
+        {
+            runtime?.SynchronizeExternalProperty(node, "Position");
+            runtime?.SynchronizeExternalProperty(node, "Velocity");
+            renderer.UpdateNode(node, project);
+            renderer.UpdateCamera(project);
+        });
         RefreshGameGui();
-        updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
-        updateTimer.Tick += (_, _) => runtime?.UpdateTouched();
+        updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
+        lastUpdateTimestamp = Stopwatch.GetTimestamp();
+        updateTimer.Tick += UpdateTimer_Tick;
         updateTimer.Start();
         Closed += (_, _) => updateTimer.Stop();
+        Loaded += (_, _) => GameViewport.Focus();
+        Deactivated += (_, _) =>
+        {
+            isDragging = false;
+            if (Mouse.Captured == GameViewport) Mouse.Capture(null);
+        };
+    }
+
+    private void UpdateTimer_Tick(object? sender, EventArgs e)
+    {
+        var now = Stopwatch.GetTimestamp();
+        var elapsed = Math.Clamp((float)Stopwatch.GetElapsedTime(lastUpdateTimestamp, now).TotalSeconds, .001f, .25f);
+        lastUpdateTimestamp = now;
+        var canMove = IsActive && Keyboard.FocusedElement is not TextBox && Keyboard.FocusedElement is not Button;
+        var forward = canMove ? (Keyboard.IsKeyDown(Key.W) ? 1 : 0) - (Keyboard.IsKeyDown(Key.S) ? 1 : 0) : 0;
+        var strafe = canMove ? (Keyboard.IsKeyDown(Key.D) ? 1 : 0) - (Keyboard.IsKeyDown(Key.A) ? 1 : 0) : 0;
+        character.ApplyInput(physics, renderer.CameraYaw, forward, strafe, canMove && jumpRequested);
+        jumpRequested = false;
+        runtime?.SynchronizeExternalProperty(character.Root, "Velocity");
+        physics.Step(elapsed);
+        if (character.NeedsRespawn)
+        {
+            foreach (var node in character.Respawn()) SyncCharacterNode(node);
+        }
+        else
+        {
+            foreach (var node in character.UpdatePose()) SyncCharacterNode(node);
+        }
+        runtime?.UpdateTouched(elapsed);
+        var nearbyPrompt = ProximityPromptService.FindNearest(project, character.Root);
+        PromptBorder.Visibility = nearbyPrompt is null ? Visibility.Collapsed : Visibility.Visible;
+        if (nearbyPrompt is not null)
+        {
+            PromptObjectText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ObjectText)
+                ? nearbyPrompt.Parent.Name : nearbyPrompt.Prompt.ObjectText;
+            PromptActionText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ActionText)
+                ? "Interact" : nearbyPrompt.Prompt.ActionText;
+            if (promptRequested) runtime?.InvokePromptTriggered(nearbyPrompt.Prompt.Id, character.Model.Id);
+        }
+        promptRequested = false;
+    }
+
+    private void SyncCharacterNode(SceneNode node)
+    {
+        runtime?.SynchronizeExternalProperty(node, "Position");
+        runtime?.SynchronizeExternalProperty(node, "Rotation");
+        runtime?.SynchronizeExternalProperty(node, "Velocity");
+        renderer.UpdateNode(node, project);
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (Keyboard.FocusedElement is TextBox or Button) return;
+        if (e.Key == Key.Space && !e.IsRepeat) jumpRequested = true;
+        if (e.Key == Key.E && !e.IsRepeat) promptRequested = true;
+        if (e.Key is Key.W or Key.A or Key.S or Key.D or Key.Space or Key.E) e.Handled = true;
     }
 
     private void RefreshGameGui()
@@ -110,10 +185,12 @@ public partial class PlayerWindow : Window
         var point = e.GetPosition(GameViewport);
         renderer.SetCameraOrbit(-(float)(point.X - lastPointer.X) * .25f, -(float)(point.Y - lastPointer.Y) * .25f, 0, project);
         lastPointer = point;
+        e.Handled = true;
     }
 
     private void Viewport_MouseWheel(object sender, MouseWheelEventArgs e)
     {
         renderer.SetCameraOrbit(0, 0, e.Delta > 0 ? -1 : 1, project);
+        e.Handled = true;
     }
 }

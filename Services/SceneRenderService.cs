@@ -15,8 +15,10 @@ public sealed class SceneRenderService
     private readonly DefaultEffectsManager effectsManager = new();
     private readonly Dictionary<string, MeshGeometryModel3D> visuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> renderedAssetSources = new(StringComparer.Ordinal);
+    private readonly List<Light3D> objectLights = [];
     private readonly List<(MeshGeometryModel3D Model, Vector3 Direction, float Pitch, float Yaw)> skyboxVisuals = [];
     private SceneNode cameraNode;
+    private GameProject? activeProject;
     private string? selectedId;
     private float orbitYaw = 35;
     private float orbitPitch = -24;
@@ -36,19 +38,25 @@ public sealed class SceneRenderService
     }
 
     public IReadOnlyDictionary<string, MeshGeometryModel3D> Visuals => visuals;
+    public float CameraYaw => orbitYaw;
 
     public void SetSelection(string? selectedId)
     {
         this.selectedId = selectedId;
+        var selectedNode = activeProject is null ? null : GameProjectStore.Flatten(activeProject.Workspace.Children).FirstOrDefault(node => node.Id == selectedId);
+        var selectedParts = selectedNode?.Type == "Model"
+            ? GameProjectStore.Flatten(selectedNode.Children).Where(IsRenderable).Select(node => node.Id).ToHashSet(StringComparer.Ordinal)
+            : null;
         foreach (var entry in visuals)
         {
             if (entry.Value is not OutLineMeshGeometryModel3D visual) continue;
-            visual.EnableOutline = entry.Key == selectedId;
+            visual.EnableOutline = entry.Key == selectedId || selectedParts?.Contains(entry.Key) == true;
         }
     }
 
     public void Refresh(GameProject project)
     {
+        activeProject = project;
         var currentCamera = project.Workspace.Children.First(node => node.Type == "Camera");
         if (!ReferenceEquals(cameraNode, currentCamera))
         {
@@ -60,12 +68,13 @@ public sealed class SceneRenderService
         visuals.Clear();
         renderedAssetSources.Clear();
         viewport.IsShadowMappingEnabled = project.Settings.Shadows;
-        foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(IsRenderable))
+        foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type != "Decal" || FindPartParent(project, node) is not null)))
         {
             var model = CreateVisual(node, project);
             visuals[node.Id] = model;
             viewport.Items.Add(model);
         }
+        RefreshObjectLights(project);
         RefreshSkybox(project.Workspace, project);
         UpdateCamera(project);
         SetSelection(selectedId);
@@ -73,6 +82,8 @@ public sealed class SceneRenderService
 
     public void UpdateNode(SceneNode node, GameProject project)
     {
+        if (SceneNodeTypes.IsLight(node) || SceneNodeTypes.IsBasePart(node) && node.Children.Any(SceneNodeTypes.IsLight)) RefreshObjectLights(project);
+        if (node.Type == "Decal" && FindPartParent(project, node) is null) return;
         if (!IsRenderable(node) || !GameProjectStore.Flatten(project.Workspace.Children).Any(item => item.Id == node.Id)) return;
         var assetSource = GetAssetSource(node, project);
         if (visuals.TryGetValue(node.Id, out var existingModel)
@@ -89,9 +100,14 @@ public sealed class SceneRenderService
             visuals[node.Id] = model;
             viewport.Items.Add(model);
         }
-        model.Transform = TransformFor(node);
-        model.IsThrowingShadow = node.CastShadow;
-        if (node.Type != "ImageLabel" && !(node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture))) model.Material = MakeMaterial(node.Color);
+        model.Transform = node.Type == "Decal" && FindPartParent(project, node) is { } parent ? TransformFor(parent) : TransformFor(node);
+        model.IsThrowingShadow = node.Type != "Decal" && node.CastShadow;
+        if (node.Type is "Decal" or "ImageLabel")
+            model.Visibility = node.Visible && (node.Type != "Decal" || model.Material is PhongMaterial { DiffuseMap: not null })
+                ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+        if (node.Type is not ("ImageLabel" or "Decal") && !(node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture))) model.Material = MakeMaterial(node);
+        if (SceneNodeTypes.IsBasePart(node))
+            foreach (var decal in node.Children.Where(child => child.Type == "Decal")) UpdateNode(decal, project);
         UpdateCamera(project);
     }
 
@@ -145,7 +161,7 @@ public sealed class SceneRenderService
         if (cameraNode.CameraMode == "Subject")
         {
             if (project is null) return;
-            var subject = GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(node => node.Id == cameraNode.Subject && (node.Type is "Part" or "MeshPart"));
+            var subject = GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(node => node.Id == cameraNode.Subject && SceneNodeTypes.IsBasePart(node));
             if (subject is not null)
             {
                 var target = ToVector(subject.Position);
@@ -177,27 +193,198 @@ public sealed class SceneRenderService
             const float halfX = .5f; const float halfY = .5f;
             builder.AddQuad(new Vector3(-halfX, -halfY, 0), new Vector3(halfX, -halfY, 0), new Vector3(halfX, halfY, 0), new Vector3(-halfX, halfY, 0));
         }
+        else if (node.Type == "Decal") AddDecalFace(builder, node.Face);
         else if (node.Type == "MeshPart" && !string.IsNullOrWhiteSpace(node.Asset) && File.Exists(ResolveAsset(project, node.Asset)))
         {
             try { builder = ReadObj(ResolveAsset(project, node.Asset)); }
             catch { builder.AddBox(Vector3.Zero, 1, 1, 1); }
         }
+        else if (node.Type == "Part" && node.Shape == "Ball") builder.AddSphere(Vector3.Zero, .5, 24, 16);
+        else if (node.Type == "Part" && node.Shape == "Cylinder") builder.AddCylinder(new Vector3(0, -.5f, 0), new Vector3(0, .5f, 0), .5, 24, true, true);
+        else if (node.Type == "WedgePart") AddWedge(builder);
+        else if (node.Type == "CornerWedgePart") AddCornerWedge(builder);
+        else if (node.Type == "SpawnLocation") AddSpawnLocation(builder);
+        else if (node.Type == "TrussPart") AddTruss(builder);
         else builder.AddBox(Vector3.Zero, 1, 1, 1);
-        var visual = new OutLineMeshGeometryModel3D { Geometry = builder.ToMeshGeometry3D(), Material = MakeMaterial(node.Color), Transform = TransformFor(node), IsThrowingShadow = node.CastShadow, IsHitTestVisible = true, EnableOutline = false, OutlineColor = Colors.Orange };
-        if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset));
-        if (node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture)) LoadImageAsset(visual, ResolveTexture(project, node.Texture));
+        var decalParent = node.Type == "Decal" ? FindPartParent(project, node) : null;
+        var visual = new OutLineMeshGeometryModel3D { Geometry = builder.ToMeshGeometry3D(), Material = MakeMaterial(node), Transform = decalParent is null ? TransformFor(node) : TransformFor(decalParent), IsThrowingShadow = node.Type != "Decal" && node.CastShadow, IsHitTestVisible = node.Type != "Decal", IsTransparent = node.Type is ("ImageLabel" or "Decal") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "ImageLabel") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
+        if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
+        if (node.Type == "Decal" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
+        if (node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture)) LoadImageAsset(visual, ResolveTexture(project, node.Texture), node);
+        if (node.Type == "Decal" && visual.Material is not PhongMaterial { DiffuseMap: not null })
+            visual.Visibility = System.Windows.Visibility.Collapsed;
         renderedAssetSources[node.Id] = GetAssetSource(node, project);
         return visual;
     }
 
     private static string GetAssetSource(SceneNode node, GameProject project) => node.Type switch
     {
-        "MeshPart" or "ImageLabel" => ResolveAsset(project, node.Asset),
-        "Part" => ResolveTexture(project, node.Texture),
+        "ImageLabel" => ResolveAsset(project, node.Asset),
+        "Decal" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+        "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}",
+        "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}",
+        "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" => MaterialKey(node),
         _ => string.Empty
     };
 
-    private static bool IsRenderable(SceneNode node) => node.Type is "Part" or "MeshPart" or "ImageLabel";
+    private static string MaterialKey(SceneNode node) => $"{node.Material}|{node.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+
+    private static float EffectiveTransparency(SceneNode node) => Math.Clamp(Math.Max(node.Transparency, node.Material == "Glass" ? .55f : 0), 0, 1);
+
+    private static bool IsRenderable(SceneNode node) => SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Decal";
+
+    private static SceneNode? FindPartParent(GameProject project, SceneNode child) =>
+        GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(parent => SceneNodeTypes.IsBasePart(parent) && parent.Children.Contains(child));
+
+    private static void AddDecalFace(MeshBuilder builder, string face)
+    {
+        const float edge = .5f;
+        const float surface = .502f;
+        switch (face)
+        {
+            case "Back":
+                builder.AddQuad(new Vector3(-edge, -edge, surface), new Vector3(edge, -edge, surface), new Vector3(edge, edge, surface), new Vector3(-edge, edge, surface));
+                break;
+            case "Left":
+                builder.AddQuad(new Vector3(-surface, -edge, -edge), new Vector3(-surface, -edge, edge), new Vector3(-surface, edge, edge), new Vector3(-surface, edge, -edge));
+                break;
+            case "Right":
+                builder.AddQuad(new Vector3(surface, -edge, edge), new Vector3(surface, -edge, -edge), new Vector3(surface, edge, -edge), new Vector3(surface, edge, edge));
+                break;
+            case "Top":
+                builder.AddQuad(new Vector3(-edge, surface, edge), new Vector3(edge, surface, edge), new Vector3(edge, surface, -edge), new Vector3(-edge, surface, -edge));
+                break;
+            case "Bottom":
+                builder.AddQuad(new Vector3(-edge, -surface, -edge), new Vector3(edge, -surface, -edge), new Vector3(edge, -surface, edge), new Vector3(-edge, -surface, edge));
+                break;
+            default:
+                builder.AddQuad(new Vector3(edge, -edge, -surface), new Vector3(-edge, -edge, -surface), new Vector3(-edge, edge, -surface), new Vector3(edge, edge, -surface));
+                break;
+        }
+    }
+
+    private static Point3D FaceCenter(string face) => face switch
+    {
+        "Back" => new Point3D(0, 0, .501),
+        "Left" => new Point3D(-.501, 0, 0),
+        "Right" => new Point3D(.501, 0, 0),
+        "Top" => new Point3D(0, .501, 0),
+        "Bottom" => new Point3D(0, -.501, 0),
+        _ => new Point3D(0, 0, -.501)
+    };
+
+    private static Vector3D FaceNormal(string face) => face switch
+    {
+        "Back" => new Vector3D(0, 0, 1),
+        "Left" => new Vector3D(-1, 0, 0),
+        "Right" => new Vector3D(1, 0, 0),
+        "Top" => new Vector3D(0, 1, 0),
+        "Bottom" => new Vector3D(0, -1, 0),
+        _ => new Vector3D(0, 0, -1)
+    };
+
+    private static void AddWedge(MeshBuilder builder)
+    {
+        var a = new Vector3(-.5f, -.5f, -.5f);
+        var b = new Vector3(.5f, -.5f, -.5f);
+        var c = new Vector3(.5f, -.5f, .5f);
+        var d = new Vector3(-.5f, -.5f, .5f);
+        var e = new Vector3(-.5f, .5f, .5f);
+        var f = new Vector3(.5f, .5f, .5f);
+        builder.AddQuad(a, b, c, d);
+        builder.AddQuad(d, c, f, e);
+        builder.AddQuad(a, e, f, b);
+        builder.AddTriangle(a, d, e);
+        builder.AddTriangle(b, f, c);
+    }
+
+    private static void AddCornerWedge(MeshBuilder builder)
+    {
+        var a = new Vector3(-.5f, -.5f, -.5f);
+        var b = new Vector3(.5f, -.5f, -.5f);
+        var c = new Vector3(.5f, -.5f, .5f);
+        var d = new Vector3(-.5f, -.5f, .5f);
+        var e = new Vector3(-.5f, .5f, .5f);
+        builder.AddQuad(a, b, c, d);
+        builder.AddTriangle(a, d, e);
+        builder.AddTriangle(d, c, e);
+        builder.AddTriangle(c, b, e);
+        builder.AddTriangle(b, a, e);
+    }
+
+    private static void AddSpawnLocation(MeshBuilder builder)
+    {
+        builder.AddBox(new Vector3(0, -.06f, 0), 1, .88, 1);
+        builder.AddBox(new Vector3(0, .41f, 0), .65, .06, .13);
+        builder.AddBox(new Vector3(0, .41f, 0), .13, .06, .65);
+    }
+
+    private static void AddTruss(MeshBuilder builder)
+    {
+        foreach (var x in new[] { -.42f, .42f })
+        foreach (var z in new[] { -.42f, .42f })
+            builder.AddBox(new Vector3(x, 0, z), .12, 1, .12);
+        foreach (var y in new[] { -.42f, 0, .42f })
+        {
+            builder.AddBox(new Vector3(0, y, -.42f), .9, .1, .1);
+            builder.AddBox(new Vector3(0, y, .42f), .9, .1, .1);
+            builder.AddBox(new Vector3(-.42f, y, 0), .1, .1, .9);
+            builder.AddBox(new Vector3(.42f, y, 0), .1, .1, .9);
+        }
+        builder.AddCylinder(new Vector3(-.42f, -.42f, -.42f), new Vector3(.42f, .42f, -.42f), .045, 8, true, true);
+        builder.AddCylinder(new Vector3(.42f, -.42f, .42f), new Vector3(-.42f, .42f, .42f), .045, 8, true, true);
+    }
+
+    private void RefreshObjectLights(GameProject project)
+    {
+        foreach (var light in objectLights) viewport.Items.Remove(light);
+        objectLights.Clear();
+        foreach (var parent in GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart))
+        {
+            foreach (var node in parent.Children.Where(SceneNodeTypes.IsLight))
+            {
+                if (!node.Enabled) continue;
+                System.Windows.Media.Color color;
+                try { color = (System.Windows.Media.Color)ColorConverter.ConvertFromString(node.Color); }
+                catch { color = Colors.White; }
+                var strength = Math.Clamp(node.Brightness, 0, 8);
+                color = System.Windows.Media.Color.FromRgb(
+                    (byte)Math.Clamp(color.R * strength, 0, 255),
+                    (byte)Math.Clamp(color.G * strength, 0, 255),
+                    (byte)Math.Clamp(color.B * strength, 0, 255));
+                var rotation = TransformFor(parent, includeScale: false);
+                var offset = new Vector3D(node.Position[0], node.Position[1], node.Position[2]);
+                Light3D light;
+                if (node.Type == "SurfaceLight")
+                {
+                    var position = TransformFor(parent).Transform(FaceCenter(node.Face)) + rotation.Transform(offset);
+                    var direction = rotation.Transform(FaceNormal(node.Face));
+                    direction.Normalize();
+                    light = new SpotLight3D
+                    {
+                        Color = color, Position = position, Range = Math.Clamp(node.Range, 1, 1000),
+                        Direction = direction,
+                        InnerAngle = Math.Clamp(node.Angle * .65f, 1, 170), OuterAngle = Math.Clamp(node.Angle, 1, 175)
+                    };
+                }
+                else
+                {
+                    var position = rotation.Transform(new Point3D(node.Position[0], node.Position[1], node.Position[2]));
+                    var direction = LookDirection(parent.Rotation[0] + node.Rotation[0], parent.Rotation[1] + node.Rotation[1]);
+                    light = node.Type == "SpotLight"
+                        ? new SpotLight3D
+                        {
+                            Color = color, Position = position, Range = Math.Clamp(node.Range, 1, 1000),
+                            Direction = new Vector3D(direction.X, direction.Y, direction.Z),
+                            InnerAngle = Math.Clamp(node.Angle * .65f, 1, 170), OuterAngle = Math.Clamp(node.Angle, 1, 175)
+                        }
+                        : new PointLight3D { Color = color, Position = position, Range = Math.Clamp(node.Range, 1, 1000) };
+                }
+                objectLights.Add(light);
+                viewport.Items.Add(light);
+            }
+        }
+    }
 
     private void RefreshSkybox(SceneNode workspace, GameProject project)
     {
@@ -263,20 +450,31 @@ public sealed class SceneRenderService
         ("SkyboxBottom", new Vector3(0, -1, 0), 90, 0)
     ];
 
-    private static PhongMaterial MakeMaterial(string color)
+    private static PhongMaterial MakeMaterial(SceneNode node)
     {
+        System.Windows.Media.Color parsed;
         try
         {
-            var parsed = (System.Windows.Media.Color)ColorConverter.ConvertFromString(color);
-            return new PhongMaterial { DiffuseColor = new Color4(parsed.R / 255f, parsed.G / 255f, parsed.B / 255f, parsed.A / 255f), SpecularColor = new Color4(.14f, .14f, .14f, 1), SpecularShininess = 24 };
+            parsed = (System.Windows.Media.Color)ColorConverter.ConvertFromString(node.Color);
         }
-        catch { return PhongMaterials.Blue; }
+        catch { parsed = Colors.CornflowerBlue; }
+        var red = parsed.R / 255f;
+        var green = parsed.G / 255f;
+        var blue = parsed.B / 255f;
+        var specular = node.Material switch { "Metal" => .8f, "Glass" => .65f, "Plastic" => .14f, _ => .03f };
+        return new PhongMaterial
+        {
+            DiffuseColor = new Color4(red, green, blue, parsed.A / 255f * (1 - EffectiveTransparency(node))),
+            SpecularColor = new Color4(specular, specular, specular, 1),
+            SpecularShininess = node.Material is "Metal" or "Glass" ? 100 : 24,
+            EmissiveColor = node.Material == "Neon" ? new Color4(red * .5f, green * .5f, blue * .5f, 1) : new Color4(0, 0, 0, 1)
+        };
     }
 
-    private static Transform3D TransformFor(SceneNode node)
+    private static Transform3D TransformFor(SceneNode node, bool includeScale = true)
     {
         var transform = new Transform3DGroup();
-        transform.Children.Add(new ScaleTransform3D(node.Size[0], node.Size[1], node.Size[2]));
+        if (includeScale) transform.Children.Add(new ScaleTransform3D(node.Size[0], node.Size[1], node.Size[2]));
         transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 0, 1), node.Rotation[2])));
         transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), node.Rotation[1])));
         transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(1, 0, 0), node.Rotation[0])));
@@ -324,13 +522,16 @@ public sealed class SceneRenderService
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return string.Empty; }
     }
 
-    private static void LoadImageAsset(MeshGeometryModel3D model, string path)
+    private static void LoadImageAsset(MeshGeometryModel3D model, string path, SceneNode node)
     {
         if (!File.Exists(path)) return;
         try
         {
             ValidateImageFile(path);
-            model.Material = new PhongMaterial { DiffuseMap = TextureModel.Create(path), DiffuseColor = new Color4(1, 1, 1, 1), SpecularColor = new Color4(0, 0, 0, 1) };
+            var material = MakeMaterial(node);
+            material.DiffuseMap = TextureModel.Create(path);
+            material.DiffuseColor = new Color4(1, 1, 1, 1 - EffectiveTransparency(node));
+            model.Material = material;
         }
         catch { }
     }

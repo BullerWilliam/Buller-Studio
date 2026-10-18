@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
         Title="Buller Game" Width="1280" Height="800" MinWidth="640" MinHeight="400"
-        Background="#101522" Foreground="#DCE3EF">
+        Background="#101522" Foreground="#DCE3EF" PreviewKeyDown="Window_PreviewKeyDown">
   <Grid>
     <hx:Viewport3DX x:Name="GameViewport" BackgroundColor="#101522" MSAA="Maximum"
                     PreviewMouseRightButtonDown="Viewport_RightButtonDown"
@@ -14,6 +14,24 @@
     <Border VerticalAlignment="Top" HorizontalAlignment="Left" Margin="12" Padding="10,7"
             Background="#BB111725" IsHitTestVisible="False">
       <TextBlock x:Name="GameTitle" FontSize="13" FontWeight="SemiBold" />
+    </Border>
+    <Border VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="12" Padding="10,7"
+            Background="#BB111725" IsHitTestVisible="False">
+      <TextBlock Text="WASD Move  ·  Space Jump  ·  Right drag Look  ·  Wheel Zoom" FontSize="12" />
+    </Border>
+    <Border x:Name="PromptBorder" VerticalAlignment="Bottom" HorizontalAlignment="Center"
+            Margin="12,12,12,62" Padding="14,10" Background="#E6111725"
+            BorderBrush="#6689B9FF" BorderThickness="1" CornerRadius="7"
+            IsHitTestVisible="False" Visibility="Collapsed">
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <Border Width="35" Height="35" CornerRadius="5" Background="#344766" Margin="0,0,12,0">
+          <TextBlock Text="E" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold" FontSize="17" />
+        </Border>
+        <StackPanel VerticalAlignment="Center">
+          <TextBlock x:Name="PromptObjectText" FontSize="11" Foreground="#9EB1D2" />
+          <TextBlock x:Name="PromptActionText" FontSize="15" FontWeight="SemiBold" />
+        </StackPanel>
+      </StackPanel>
     </Border>
   </Grid>
 </Window>

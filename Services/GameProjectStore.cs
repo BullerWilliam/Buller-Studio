@@ -245,6 +245,7 @@ public static class GameProjectStore
         project.Settings ??= new ProjectSettings();
         project.Workspace ??= new SceneNode { Id = "workspace", Type = "Workspace", Name = "Workspace" };
         project.Workspace.Children ??= [];
+        project.Workspace.Gravity = float.IsFinite(project.Workspace.Gravity) ? Math.Clamp(project.Workspace.Gravity, 0, 1000) : 24;
         project.Gui ??= new SceneNode { Id = "gui", Type = "Gui", Name = "Gui" };
         project.Gui.Id = "gui";
         project.Gui.Type = "Gui";
@@ -255,8 +256,22 @@ public static class GameProjectStore
         foreach (var node in Flatten(project.Workspace.Children).Concat(Flatten(project.Gui.Children)))
         {
             node.Children ??= [];
+            node.Position = EnsureVector(node.Position, [0, 0, 0]);
+            node.Rotation = EnsureVector(node.Rotation, [0, 0, 0]);
+            node.Size = EnsureVector(node.Size, [2, 2, 2]);
+            node.Velocity = EnsureVector(node.Velocity, [0, 0, 0]);
             node.PositionScale = EnsurePair(node.PositionScale);
             node.SizeScale = EnsurePair(node.SizeScale);
+            if (node.Shape is not ("Block" or "Ball" or "Cylinder")) node.Shape = "Block";
+            if (!SceneNodeTypes.IsFace(node.Face)) node.Face = "Front";
+            if (node.Material is not ("Plastic" or "Metal" or "Neon" or "Glass" or "Wood" or "Concrete")) node.Material = "Plastic";
+            node.Transparency = float.IsFinite(node.Transparency) ? Math.Clamp(node.Transparency, 0, 1) : 0;
+            node.Brightness = float.IsFinite(node.Brightness) ? Math.Clamp(node.Brightness, 0, 8) : 1;
+            node.Range = float.IsFinite(node.Range) ? Math.Clamp(node.Range, 1, 1000) : 16;
+            node.Angle = float.IsFinite(node.Angle) ? Math.Clamp(node.Angle, 1, 175) : 45;
+            node.ActionText ??= "Interact";
+            node.ObjectText ??= string.Empty;
+            node.MaxActivationDistance = float.IsFinite(node.MaxActivationDistance) ? Math.Clamp(node.MaxActivationDistance, 1, 100) : 10;
         }
         var scriptNames = Flatten(project.Workspace.Children).Concat(Flatten(project.Gui.Children))
             .Where(node => node.Type == "Script")
@@ -269,7 +284,7 @@ public static class GameProjectStore
         foreach (var duplicate in cameras.Skip(1)) RemoveNode(project.Workspace.Children, duplicate.Id);
         RemoveNode(project.Workspace.Children, camera.Id);
         project.Workspace.Children.Insert(0, camera);
-        if (camera.CameraMode == "Subject" && !Flatten(project.Workspace.Children).Any(node => node.Id == camera.Subject && (node.Type is "Part" or "MeshPart")))
+        if (camera.CameraMode == "Subject" && !Flatten(project.Workspace.Children).Any(node => node.Id == camera.Subject && SceneNodeTypes.IsBasePart(node)))
         {
             camera.CameraMode = "Custom";
             camera.Subject = string.Empty;
@@ -281,6 +296,15 @@ public static class GameProjectStore
     {
         var result = new float[2];
         if (values is not null) Array.Copy(values, result, Math.Min(values.Length, result.Length));
+        return result;
+    }
+
+    private static float[] EnsureVector(float[]? values, float[] defaults)
+    {
+        var result = (float[])defaults.Clone();
+        if (values is not null) Array.Copy(values, result, Math.Min(values.Length, result.Length));
+        for (var index = 0; index < result.Length; index++)
+            if (!float.IsFinite(result[index])) result[index] = defaults[index];
         return result;
     }
 
@@ -299,7 +323,7 @@ public static class GameProjectStore
         if (!IsNodeInTree(project.Workspace, destinationParent.Id) && !IsNodeInTree(project.Gui, destinationParent.Id)) return false;
         if (Flatten(source.Children).Any(node => node.Id == destinationParent.Id)) return false;
         if (source.Type == "Camera")
-            return destinationParent.Id == project.Workspace.Id && source.Children.All(IsWorkspaceSubtreeCompatible);
+            return destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
 
         var destinationIsGui = IsNodeInTree(project.Gui, destinationParent.Id);
         if (destinationIsGui)
@@ -311,7 +335,8 @@ public static class GameProjectStore
             return IsGuiSubtreeCompatible(source, false, destinationParent.Type);
         }
 
-        return IsWorkspaceSubtreeCompatible(source);
+        if (destinationParent.Type is not ("Workspace" or "Folder" or "Model") && !SceneNodeTypes.IsBasePart(destinationParent)) return false;
+        return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
     }
 
     public static bool MoveNodeToParent(GameProject project, SceneNode source, SceneNode destinationParent)
@@ -398,9 +423,19 @@ public static class GameProjectStore
         return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
     }
 
-    private static bool IsWorkspaceSubtreeCompatible(SceneNode node) =>
-        node.Type is "Part" or "MeshPart" or "ImageLabel" or "Folder" or "Script"
-        && node.Children.All(IsWorkspaceSubtreeCompatible);
+    private static bool IsWorkspaceSubtreeCompatible(SceneNode node, string? parentType)
+    {
+        if (node.Type == "Decal")
+            return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
+        if (node.Type == "ProximityPrompt")
+            return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
+        if (SceneNodeTypes.IsLight(node))
+            return SceneNodeTypes.IsBasePartType(parentType)
+                && node.Children.Count == 0;
+        if (!SceneNodeTypes.IsBasePart(node) && node.Type is not ("ImageLabel" or "Folder" or "Model" or "Script")) return false;
+        if (node.Type is "Script" or "ImageLabel" && node.Children.Count > 0) return false;
+        return node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
+    }
 
     public static IReadOnlyList<SceneNode> RemoveNodeAndGetSubtree(List<SceneNode> nodes, string id)
     {
