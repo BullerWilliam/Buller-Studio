@@ -20,9 +20,14 @@ public sealed class LuaXRuntime
     private readonly Dictionary<string, List<ScriptCallback>> promptTriggeredCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> clickDetectorCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> humanoidDiedCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<ScriptCallback>> valueChangedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, bool> humanoidWasAlive = new(StringComparer.Ordinal);
     private readonly HashSet<string> activeContacts = new(StringComparer.Ordinal);
     private readonly List<ScriptExecution> activeScripts = [];
+    private readonly List<ScheduledTask> scheduledTasks = [];
+    private readonly Queue<string> pendingScriptStarts = new();
+    private readonly HashSet<string> queuedScriptIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> startedScriptIds = new(StringComparer.Ordinal);
     private readonly ConditionalWeakTable<Table, LuaXTypeTag> runtimeTypeTags = new();
     private Script script = null!;
     private GameScript? currentGameScript;
@@ -31,10 +36,19 @@ public sealed class LuaXRuntime
     private sealed record LuaXTypeTag(string Name);
     private sealed record ScriptCallback(GameScript GameScript, DynValue Function, string Name);
     private sealed record ScriptExecution(GameScript GameScript, Coroutine Coroutine, bool ReportFinished, string? CallbackName = null);
+    private sealed class ScheduledTask(GameScript owner, DynValue handle, DynValue[] arguments, float remaining, bool deferred)
+    {
+        public GameScript Owner { get; } = owner;
+        public DynValue Handle { get; } = handle;
+        public DynValue[] Arguments { get; } = arguments;
+        public float Remaining { get; set; } = remaining;
+        public bool Deferred { get; } = deferred;
+    }
     private static readonly HashSet<string> CreatableClasses = new(StringComparer.Ordinal)
     {
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Humanoid",
-        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint",
+        "BoolValue", "IntValue", "NumberValue", "StringValue",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam",
         "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"
     };
@@ -48,12 +62,23 @@ public sealed class LuaXRuntime
     }
 
     public IReadOnlyCollection<SceneNode> Parts => GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
-    public bool HasPendingScripts => activeScripts.Count > 0;
+    public bool HasPendingScripts => activeScripts.Count > 0 || pendingScriptStarts.Count > 0 || scheduledTasks.Count > 0;
 
     public void RunAll()
     {
         activeScripts.Clear();
-        foreach (var gameScript in project.Scripts) StartScript(gameScript, false);
+        scheduledTasks.Clear();
+        pendingScriptStarts.Clear();
+        queuedScriptIds.Clear();
+        startedScriptIds.Clear();
+        foreach (var gameScript in project.Scripts.ToArray())
+        {
+            var node = FindScriptNode(gameScript.Id);
+            if (node is not null && (node.Type != "Script" || !node.Enabled || !IsScriptAttachedForExecution(node))) continue;
+            startedScriptIds.Add(gameScript.Id);
+            StartScript(gameScript, false);
+        }
+        StartQueuedScripts();
         ResumePendingScripts(.05f);
     }
 
@@ -61,10 +86,56 @@ public sealed class LuaXRuntime
     {
         var gameScript = project.Scripts.FirstOrDefault(item => item.Id == scriptId);
         if (gameScript is null) return;
+        startedScriptIds.Add(scriptId);
         StartScript(gameScript, true);
+        StartQueuedScripts();
     }
 
-    public void Update(float elapsedSeconds = .05f) => ResumePendingScripts(Math.Clamp(elapsedSeconds, .001f, .25f));
+    public void Update(float elapsedSeconds = .05f)
+    {
+        var elapsed = Math.Clamp(elapsedSeconds, .001f, .25f);
+        ResumePendingScripts(elapsed);
+        RunDelayedTasks(elapsed);
+        StartQueuedScripts();
+    }
+
+    private SceneNode? FindScriptNode(string id) =>
+        GameProjectStore.Flatten(project).FirstOrDefault(node => node.Id == id)
+        ?? (createdNodes.TryGetValue(id, out var created) ? created : null);
+
+    private bool IsScriptAttachedForExecution(SceneNode node)
+    {
+        var current = node;
+        while (FindParentNode(current) is { } parent)
+        {
+            if (ReferenceEquals(parent, project.Workspace) || ReferenceEquals(parent, project.ServerScriptService) || ReferenceEquals(parent, project.Gui)) return true;
+            if (ReferenceEquals(parent, project.ReplicatedStorage) || ReferenceEquals(parent, project.ServerStorage) || ReferenceEquals(parent, project.Players)) return false;
+            current = parent;
+        }
+        return false;
+    }
+
+    private void QueueRunnableScripts(SceneNode source)
+    {
+        foreach (var node in new[] { source }.Concat(GameProjectStore.Flatten(source.Children)))
+            if (node.Type == "Script" && node.Enabled && IsScriptAttachedForExecution(node) && !startedScriptIds.Contains(node.Id)
+                && project.Scripts.Any(item => item.Id == node.Id) && queuedScriptIds.Add(node.Id))
+                pendingScriptStarts.Enqueue(node.Id);
+    }
+
+    private void StartQueuedScripts()
+    {
+        for (var count = 0; count < 64 && pendingScriptStarts.Count > 0; count++)
+        {
+            var id = pendingScriptStarts.Dequeue();
+            queuedScriptIds.Remove(id);
+            if (startedScriptIds.Contains(id) || FindScriptNode(id) is not { Type: "Script", Enabled: true } node || !IsScriptAttachedForExecution(node)) continue;
+            var gameScript = project.Scripts.FirstOrDefault(item => item.Id == id);
+            if (gameScript is null) continue;
+            startedScriptIds.Add(id);
+            StartScript(gameScript, false);
+        }
+    }
 
     private void StartScript(GameScript gameScript, bool reportFinished)
     {
@@ -75,11 +146,13 @@ public sealed class LuaXRuntime
             var execution = new ScriptExecution(gameScript, coroutine, reportFinished);
             coroutine.Resume();
             SynchronizeInstances();
+            RunDeferredTasks();
             if (coroutine.State == CoroutineState.Dead)
             {
                 if (reportFinished) output?.Invoke($"{gameScript.Name} finished.");
             }
-            else activeScripts.Add(execution);
+            else if (project.Scripts.Any(item => item.Id == gameScript.Id)
+                && (FindScriptNode(gameScript.Id) is not { } node || node.Enabled && IsScriptAttachedForExecution(node))) activeScripts.Add(execution);
         }
         catch (Exception exception)
         {
@@ -92,7 +165,9 @@ public sealed class LuaXRuntime
     {
         foreach (var execution in activeScripts.ToArray())
         {
-            if (execution.Coroutine.State == CoroutineState.Dead)
+            if (!activeScripts.Contains(execution)) continue;
+            if (execution.Coroutine.State == CoroutineState.Dead || !project.Scripts.Any(item => item.Id == execution.GameScript.Id)
+                || FindScriptNode(execution.GameScript.Id) is { } node && (!node.Enabled || !IsScriptAttachedForExecution(node)))
             {
                 activeScripts.Remove(execution);
                 continue;
@@ -102,7 +177,8 @@ public sealed class LuaXRuntime
             {
                 execution.Coroutine.Resume(DynValue.NewNumber(elapsedSeconds));
                 SynchronizeInstances();
-                if (execution.Coroutine.State != CoroutineState.Dead) continue;
+                if (execution.Coroutine.State != CoroutineState.Dead && project.Scripts.Any(item => item.Id == execution.GameScript.Id)
+                    && (FindScriptNode(execution.GameScript.Id) is not { } resumedNode || resumedNode.Enabled && IsScriptAttachedForExecution(resumedNode))) continue;
                 activeScripts.Remove(execution);
                 if (execution.ReportFinished) output?.Invoke($"{execution.GameScript.Name} finished.");
             }
@@ -115,12 +191,16 @@ public sealed class LuaXRuntime
                 SynchronizeInstances();
             }
         }
+        RunDeferredTasks();
     }
 
     public void UpdateTouched(float elapsedSeconds = .05f)
     {
-        ResumePendingScripts(Math.Clamp(elapsedSeconds, .001f, .25f));
+        var elapsed = Math.Clamp(elapsedSeconds, .001f, .25f);
+        ResumePendingScripts(elapsed);
+        RunDelayedTasks(elapsed);
         SynchronizeInstances();
+        StartQueuedScripts();
         var nodes = Parts.Where(node => node.CanTouch).ToDictionary(node => node.Id, StringComparer.Ordinal);
         var touchingNow = new HashSet<string>(StringComparer.Ordinal);
         var parts = nodes.Values.ToArray();
@@ -154,7 +234,7 @@ public sealed class LuaXRuntime
             var instance = CreateInstance(node);
             instances[node.Id] = instance;
             if (node.Type == "Humanoid") humanoidWasAlive[node.Id] = node.Health > 0;
-            if (node.Type is not ("Workspace" or "Players" or "Gui")) script.Globals.Set(node.Name, DynValue.NewTable(instance));
+            if (node.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui")) script.Globals.Set(node.Name, DynValue.NewTable(instance));
         }
         foreach (var node in GameProjectStore.Flatten(project))
         {
@@ -167,9 +247,15 @@ public sealed class LuaXRuntime
         runtimeTypeTags.Add(game, new LuaXTypeTag("DataModel"));
         var workspace = instances[project.Workspace.Id];
         var players = instances[project.Players.Id];
+        var replicatedStorage = instances[project.ReplicatedStorage.Id];
+        var serverScriptService = instances[project.ServerScriptService.Id];
+        var serverStorage = instances[project.ServerStorage.Id];
         var gui = instances[project.Gui.Id];
         game.Set("Workspace", DynValue.NewTable(workspace));
         game.Set("Players", DynValue.NewTable(players));
+        game.Set("ReplicatedStorage", DynValue.NewTable(replicatedStorage));
+        game.Set("ServerScriptService", DynValue.NewTable(serverScriptService));
+        game.Set("ServerStorage", DynValue.NewTable(serverStorage));
         game.Set("Gui", DynValue.NewTable(gui));
         game.Set("GetService", DynValue.NewCallback((_, args) =>
         {
@@ -178,6 +264,9 @@ public sealed class LuaXRuntime
             {
                 "Workspace" => DynValue.NewTable(workspace),
                 "Players" => DynValue.NewTable(players),
+                "ReplicatedStorage" => DynValue.NewTable(replicatedStorage),
+                "ServerScriptService" => DynValue.NewTable(serverScriptService),
+                "ServerStorage" => DynValue.NewTable(serverStorage),
                 "Gui" => DynValue.NewTable(gui),
                 _ => DynValue.Nil
             };
@@ -185,6 +274,9 @@ public sealed class LuaXRuntime
         script.Globals.Set("game", DynValue.NewTable(game));
         script.Globals.Set("workspace", DynValue.NewTable(workspace));
         script.Globals.Set("Players", DynValue.NewTable(players));
+        script.Globals.Set("ReplicatedStorage", DynValue.NewTable(replicatedStorage));
+        script.Globals.Set("ServerScriptService", DynValue.NewTable(serverScriptService));
+        script.Globals.Set("ServerStorage", DynValue.NewTable(serverStorage));
         script.Globals.Set("Gui", DynValue.NewTable(gui));
         var instanceLibrary = new Table(script);
         instanceLibrary.Set("new", DynValue.NewCallback((_, args) => NewInstance(args)));
@@ -233,6 +325,7 @@ public sealed class LuaXRuntime
         script.Globals.Set("print", DynValue.NewCallback((_, args) => { var values = new List<string>(); for (var index = 0; index < args.Count; index++) values.Add(args[index].ToPrintString()); output?.Invoke(string.Join("\t", values)); return DynValue.Nil; }));
         script.Globals.Set("warn", DynValue.NewCallback((_, args) => { var values = new List<string>(); for (var index = 0; index < args.Count; index++) values.Add(args[index].ToPrintString()); output?.Invoke($"Warning: {string.Join("\t", values)}"); return DynValue.Nil; }));
         InstallWaitForChild();
+        InstallTaskLibrary();
     }
 
     private void InstallWaitForChild()
@@ -257,6 +350,112 @@ public sealed class LuaXRuntime
             instance.Set("WaitForChild", waitForChild);
             instance.Set("waitforchild", waitForChild);
         }
+    }
+
+    private void InstallTaskLibrary()
+    {
+        script.DoString("""
+            function wait(duration)
+                local target = type(duration) == "number" and math.max(0, duration) or 0
+                local elapsed = 0
+                repeat
+                    local step = coroutine.yield()
+                    elapsed = elapsed + (type(step) == "number" and step or 0.05)
+                until elapsed >= target
+                return elapsed
+            end
+            """);
+        var taskLibrary = new Table(script);
+        taskLibrary.Set("wait", script.Globals.Get("wait"));
+        taskLibrary.Set("spawn", DynValue.NewCallback((_, args) => ScheduleTask(args, 0, 0, deferred: false, startNow: true)));
+        taskLibrary.Set("defer", DynValue.NewCallback((_, args) => ScheduleTask(args, 0, 0, deferred: true, startNow: false)));
+        taskLibrary.Set("delay", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count < 2 || args[0].Type != DataType.Number || !double.IsFinite(args[0].Number)) return DynValue.Nil;
+            return ScheduleTask(args, 1, (float)Math.Clamp(args[0].Number, 0, 86400), deferred: false, startNow: false);
+        }));
+        taskLibrary.Set("cancel", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count == 0 || args[0].Type != DataType.Thread) return DynValue.Nil;
+            var coroutine = args[0].Coroutine;
+            scheduledTasks.RemoveAll(item => ReferenceEquals(item.Handle.Coroutine, coroutine));
+            activeScripts.RemoveAll(item => ReferenceEquals(item.Coroutine, coroutine));
+            return DynValue.Nil;
+        }));
+        script.Globals.Set("task", DynValue.NewTable(taskLibrary));
+    }
+
+    private DynValue ScheduleTask(CallbackArguments args, int functionIndex, float delaySeconds, bool deferred, bool startNow)
+    {
+        if (currentGameScript is null || args.Count <= functionIndex) return DynValue.Nil;
+        DynValue handle;
+        try
+        {
+            handle = args[functionIndex].Type == DataType.Thread
+                ? args[functionIndex] : script.CreateCoroutine(args[functionIndex]);
+        }
+        catch (Exception exception)
+        {
+            output?.Invoke($"task: {exception.Message}");
+            return DynValue.Nil;
+        }
+        var arguments = new DynValue[args.Count - functionIndex - 1];
+        for (var index = 0; index < arguments.Length; index++) arguments[index] = args[functionIndex + 1 + index];
+        var scheduled = new ScheduledTask(currentGameScript, handle, arguments, delaySeconds, deferred);
+        if (startNow) StartScheduledTask(scheduled);
+        else scheduledTasks.Add(scheduled);
+        return handle;
+    }
+
+    private bool IsTaskOwnerActive(GameScript owner)
+    {
+        if (!project.Scripts.Any(item => item.Id == owner.Id)) return false;
+        var node = FindScriptNode(owner.Id);
+        return node is null || node.Type == "Script" && node.Enabled && IsScriptAttachedForExecution(node);
+    }
+
+    private void StartScheduledTask(ScheduledTask scheduled)
+    {
+        if (!IsTaskOwnerActive(scheduled.Owner)) return;
+        BindCurrentScript(scheduled.Owner);
+        try
+        {
+            var coroutine = scheduled.Handle.Coroutine;
+            coroutine.Resume(scheduled.Arguments);
+            SynchronizeInstances();
+            if (coroutine.State != CoroutineState.Dead && IsTaskOwnerActive(scheduled.Owner))
+                activeScripts.Add(new ScriptExecution(scheduled.Owner, coroutine, false, "task"));
+        }
+        catch (Exception exception)
+        {
+            output?.Invoke($"{scheduled.Owner.Name} task: {exception.Message}");
+            SynchronizeInstances();
+        }
+    }
+
+    private void RunDeferredTasks()
+    {
+        foreach (var scheduled in scheduledTasks.Where(item => item.Deferred).Take(64).ToArray())
+        {
+            if (!scheduledTasks.Remove(scheduled)) continue;
+            StartScheduledTask(scheduled);
+        }
+    }
+
+    private void RunDelayedTasks(float elapsedSeconds)
+    {
+        var due = new List<ScheduledTask>();
+        foreach (var scheduled in scheduledTasks.Where(item => !item.Deferred))
+        {
+            scheduled.Remaining -= elapsedSeconds;
+            if (scheduled.Remaining <= 0 && due.Count < 64) due.Add(scheduled);
+        }
+        foreach (var scheduled in due)
+        {
+            if (!scheduledTasks.Remove(scheduled)) continue;
+            StartScheduledTask(scheduled);
+        }
+        RunDeferredTasks();
     }
 
     private void InstallLuauMath()
@@ -336,6 +535,7 @@ public sealed class LuaXRuntime
         var instance = new Table(script);
         runtimeTypeTags.Add(instance, new LuaXTypeTag(node.Type));
         instance.Set("Name", DynValue.NewString(node.Name));
+        instance.Set("Archivable", DynValue.NewBoolean(node.Archivable));
         instance.Set("Id", DynValue.NewString(node.Id));
         instance.Set("ClassName", DynValue.NewString(node.Type));
         instance.Set("Position", IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Position));
@@ -368,6 +568,10 @@ public sealed class LuaXRuntime
         instance.Set("RollOffMaxDistance", DynValue.NewNumber(node.RollOffMaxDistance));
         instance.Set("Part0", DynValue.NewString(node.Part0));
         instance.Set("Part1", DynValue.NewString(node.Part1));
+        instance.Set("Attachment0", DynValue.NewString(node.Attachment0));
+        instance.Set("Attachment1", DynValue.NewString(node.Attachment1));
+        instance.Set("Width0", DynValue.NewNumber(node.Width0));
+        instance.Set("Width1", DynValue.NewNumber(node.Width1));
         instance.Set("Texture", DynValue.NewString(node.Texture));
         instance.Set("Text", DynValue.NewString(node.Text));
         instance.Set("TextColor", DynValue.NewString(node.TextColor));
@@ -400,6 +604,7 @@ public sealed class LuaXRuntime
         instance.Set("MaxHealth", DynValue.NewNumber(node.MaxHealth));
         instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
         instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
+        if (SceneNodeTypes.IsValueObject(node)) instance.Set("Value", GetValueObjectValue(node));
         instance.Set("Asset", DynValue.NewString(node.Asset));
         instance.Set("CameraMode", DynValue.NewString(node.CameraMode));
         instance.Set("Mode", DynValue.NewString(node.CameraMode));
@@ -434,6 +639,20 @@ public sealed class LuaXRuntime
             return DynValue.NewBoolean(className is not null && IsA(node, className));
         }));
         instance.Set("Destroy", DynValue.NewCallback((_, _) => DestroyInstance(node)));
+        instance.Set("Clone", DynValue.NewCallback((_, _) => CloneInstance(node)));
+        if (SceneNodeTypes.IsValueObject(node))
+        {
+            var changed = new Table(script);
+            changed.Set("Connect", DynValue.NewCallback((_, args) =>
+            {
+                var index = args.Count > 0 && args[0].Type == DataType.Table ? 1 : 0;
+                if (currentGameScript is null || args.Count <= index || args[index].Type != DataType.Function) return DynValue.Nil;
+                if (!valueChangedCallbacks.TryGetValue(node.Id, out var callbacks)) valueChangedCallbacks[node.Id] = callbacks = [];
+                callbacks.Add(new ScriptCallback(currentGameScript, args[index], "Changed"));
+                return DynValue.Nil;
+            }));
+            instance.Set("Changed", DynValue.NewTable(changed));
+        }
         if (node.Type == "Sound")
         {
             instance.Set("Play", DynValue.NewCallback((_, _) => SetPropertyValue(node, "Playing", DynValue.NewBoolean(true))));
@@ -566,13 +785,17 @@ public sealed class LuaXRuntime
 
     private void StartCallback(ScriptCallback callback, params DynValue[] arguments)
     {
+        if (!project.Scripts.Any(item => item.Id == callback.GameScript.Id)
+            || FindScriptNode(callback.GameScript.Id) is { } owner && (!owner.Enabled || !IsScriptAttachedForExecution(owner))) return;
         BindCurrentScript(callback.GameScript);
         try
         {
             var coroutine = script.CreateCoroutine(callback.Function).Coroutine;
             coroutine.Resume(arguments);
             SynchronizeInstances();
-            if (coroutine.State != CoroutineState.Dead)
+            RunDeferredTasks();
+            if (coroutine.State != CoroutineState.Dead && project.Scripts.Any(item => item.Id == callback.GameScript.Id)
+                && (FindScriptNode(callback.GameScript.Id) is not { } resumedOwner || resumedOwner.Enabled && IsScriptAttachedForExecution(resumedOwner)))
                 activeScripts.Add(new ScriptExecution(callback.GameScript, coroutine, false, callback.Name));
         }
         catch (Exception exception)
@@ -605,15 +828,58 @@ public sealed class LuaXRuntime
         return DynValue.NewTable(instance);
     }
 
+    private DynValue CloneInstance(SceneNode source)
+    {
+        if (source.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" || !instances.ContainsKey(source.Id)) return DynValue.Nil;
+        SynchronizeInstances();
+        if (!instances.ContainsKey(source.Id)) return DynValue.Nil;
+        var clone = GameProjectStore.CloneSubtree(source, out var renewedIds);
+        if (clone is null) return DynValue.Nil;
+        var clonedNodes = new[] { clone }.Concat(GameProjectStore.Flatten(clone.Children)).ToArray();
+        foreach (var node in clonedNodes) createdNodes[node.Id] = node;
+        foreach (var node in clonedNodes)
+        {
+            instances[node.Id] = CreateInstance(node);
+            if (node.Type == "Humanoid") humanoidWasAlive[node.Id] = node.Health > 0;
+        }
+        foreach (var node in clonedNodes)
+        {
+            var parent = FindParentNode(node);
+            instances[node.Id].Set("Parent", parent is not null ? DynValue.NewTable(instances[parent.Id]) : DynValue.Nil);
+            RefreshParentChildren(node);
+            if (node.Type == "WeldConstraint")
+            {
+                instances[node.Id].Set("Part0", GetPartReferenceValue(node.Part0));
+                instances[node.Id].Set("Part1", GetPartReferenceValue(node.Part1));
+            }
+            if (node.Type == "Beam")
+            {
+                instances[node.Id].Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+                instances[node.Id].Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            }
+        }
+        foreach (var original in new[] { source }.Concat(GameProjectStore.Flatten(source.Children)))
+        {
+            if (original.Type != "Script" || !renewedIds.TryGetValue(original.Id, out var clonedId)) continue;
+            var originalScript = project.Scripts.FirstOrDefault(item => item.Id == original.Id);
+            if (originalScript is null) continue;
+            var clonedScript = clonedNodes.First(node => node.Id == clonedId);
+            project.Scripts.Add(new GameScript { Id = clonedId, Name = clonedScript.Name, Source = originalScript.Source });
+        }
+        return DynValue.NewTable(instances[clone.Id]);
+    }
+
     private DynValue DestroyInstance(SceneNode node)
     {
-        if (node.Type is "Workspace" or "Players" or "Gui" or "Camera" || !instances.ContainsKey(node.Id)) return DynValue.Nil;
+        if (node.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" || !instances.ContainsKey(node.Id)) return DynValue.Nil;
         var oldParent = FindParentNode(node);
         var sourceCollection = FindSourceCollection(node);
         sourceCollection?.Remove(node);
         if (oldParent is not null) RefreshParentChildren(oldParent);
         if (instances.TryGetValue(node.Id, out var removedInstance)) removedInstance.Set("Parent", DynValue.Nil);
-        foreach (var removed in new[] { node }.Concat(GameProjectStore.Flatten(node.Children)))
+        var removedNodes = new[] { node }.Concat(GameProjectStore.Flatten(node.Children)).ToArray();
+        var removedScriptIds = removedNodes.Where(removed => removed.Type == "Script").Select(removed => removed.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var removed in removedNodes)
         {
             instances.Remove(removed.Id);
             createdNodes.Remove(removed.Id);
@@ -625,10 +891,50 @@ public sealed class LuaXRuntime
             promptTriggeredCallbacks.Remove(removed.Id);
             clickDetectorCallbacks.Remove(removed.Id);
             humanoidDiedCallbacks.Remove(removed.Id);
+            valueChangedCallbacks.Remove(removed.Id);
+            queuedScriptIds.Remove(removed.Id);
+            startedScriptIds.Remove(removed.Id);
             project.Scripts.RemoveAll(script => script.Id == removed.Id);
         }
+        StopScripts(removedScriptIds);
         propertyChanged?.Invoke(node, "Parent", DynValue.Nil);
         return DynValue.Nil;
+    }
+
+    private void StopScripts(HashSet<string> scriptIds)
+    {
+        if (scriptIds.Count == 0) return;
+        foreach (var id in scriptIds)
+        {
+            queuedScriptIds.Remove(id);
+            startedScriptIds.Remove(id);
+        }
+        activeScripts.RemoveAll(execution => scriptIds.Contains(execution.GameScript.Id));
+        scheduledTasks.RemoveAll(item => scriptIds.Contains(item.Owner.Id));
+        RemoveCallbacksOwnedBy(scriptIds, touchedCallbacks);
+        RemoveCallbacksOwnedBy(scriptIds, guiActivatedCallbacks);
+        RemoveCallbacksOwnedBy(scriptIds, guiTextChangedCallbacks);
+        RemoveCallbacksOwnedBy(scriptIds, promptTriggeredCallbacks);
+        RemoveCallbacksOwnedBy(scriptIds, clickDetectorCallbacks);
+        RemoveCallbacksOwnedBy(scriptIds, humanoidDiedCallbacks);
+        RemoveCallbacksOwnedBy(scriptIds, valueChangedCallbacks);
+    }
+
+    private void StopInactiveScripts(SceneNode source)
+    {
+        var inactive = new[] { source }.Concat(GameProjectStore.Flatten(source.Children))
+            .Where(node => node.Type == "Script" && (!node.Enabled || !IsScriptAttachedForExecution(node)))
+            .Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        StopScripts(inactive);
+    }
+
+    private static void RemoveCallbacksOwnedBy(HashSet<string> scriptIds, Dictionary<string, List<ScriptCallback>> registry)
+    {
+        foreach (var (nodeId, callbacks) in registry.ToArray())
+        {
+            callbacks.RemoveAll(callback => scriptIds.Contains(callback.GameScript.Id));
+            if (callbacks.Count == 0) registry.Remove(nodeId);
+        }
     }
 
     private SceneNode[] KnownNodes()
@@ -640,7 +946,7 @@ public sealed class LuaXRuntime
 
     private bool TrySetParent(SceneNode source, DynValue value, bool updateLinks = true)
     {
-        if (source.Type is "Workspace" or "Players" or "Gui" or "Camera") return false;
+        if (source.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return false;
         if (value.Type == DataType.Nil)
         {
             var detachedOldParent = FindParentNode(source);
@@ -649,6 +955,7 @@ public sealed class LuaXRuntime
             oldCollection.Remove(source);
             createdNodes[source.Id] = source;
             if (updateLinks) RefreshLinksForMove(source, detachedOldParent, null);
+            StopInactiveScripts(source);
             return true;
         }
         var parent = ReadNodeArgument(value);
@@ -663,13 +970,15 @@ public sealed class LuaXRuntime
         sourceCollection?.Remove(source);
         parent.Children.Add(source);
         if (updateLinks) RefreshLinksForMove(source, oldParent, parent);
+        StopInactiveScripts(source);
+        QueueRunnableScripts(source);
         return true;
     }
 
     private SceneNode? FindParentNode(SceneNode target)
     {
-        if (ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.Gui)) return null;
-        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.Gui, target)
+        if (ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.Gui)) return null;
+        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.Gui, target)
             ?? createdNodes.Values.Select(node => FindParentNode(node, target)).FirstOrDefault(parent => parent is not null);
     }
 
@@ -696,7 +1005,7 @@ public sealed class LuaXRuntime
     }
 
     private List<SceneNode>? FindSourceCollection(SceneNode target) =>
-        FindParentCollection(project.Workspace, target) ?? FindParentCollection(project.Gui, target)
+        FindParentCollection(project.Workspace, target) ?? FindParentCollection(project.ReplicatedStorage, target) ?? FindParentCollection(project.ServerScriptService, target) ?? FindParentCollection(project.ServerStorage, target) ?? FindParentCollection(project.Gui, target)
         ?? createdNodes.Values.Select(node => FindParentCollection(node, target)).FirstOrDefault(collection => collection is not null);
 
     private void RefreshLinksForMove(SceneNode source, SceneNode? oldParent, SceneNode? newParent)
@@ -752,6 +1061,11 @@ public sealed class LuaXRuntime
                 instance.Set("Part0", GetPartReferenceValue(node.Part0));
                 instance.Set("Part1", GetPartReferenceValue(node.Part1));
             }
+            if (node.Type == "Beam")
+            {
+                instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+                instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            }
         }
         foreach (var node in nodes)
         {
@@ -790,6 +1104,7 @@ public sealed class LuaXRuntime
         var propertyName = normalizedProperty switch
         {
             "name" => "Name",
+            "archivable" => "Archivable",
             "position" => "Position",
             "rotation" => "Rotation",
             "size" => "Size",
@@ -834,10 +1149,15 @@ public sealed class LuaXRuntime
             "maxhealth" => "MaxHealth",
             "walkspeed" => "WalkSpeed",
             "jumppower" => "JumpPower",
+            "value" => "Value",
             "asset" => "Asset",
             "subject" => "Subject",
             "part0" => "Part0",
             "part1" => "Part1",
+            "attachment0" => "Attachment0",
+            "attachment1" => "Attachment1",
+            "width0" => "Width0",
+            "width1" => "Width1",
             "fieldofview" => "FieldOfView",
             "cornerradius" => "CornerRadius",
             "strokecolor" => "StrokeColor",
@@ -875,6 +1195,18 @@ public sealed class LuaXRuntime
     private DynValue SetPropertyValue(SceneNode node, string property, DynValue value)
     {
         var normalized = property.ToLowerInvariant();
+        if (normalized == "value")
+        {
+            if (!TrySetValueObjectValue(node, value, out var changed)) return DynValue.Nil;
+            if (instances.TryGetValue(node.Id, out var valueInstance)) valueInstance.Set("Value", GetValueObjectValue(node));
+            if (changed)
+            {
+                var currentValue = GetValueObjectValue(node);
+                propertyChanged?.Invoke(node, "Value", currentValue);
+                FireValueChanged(node, currentValue);
+            }
+            return DynValue.Nil;
+        }
         if (normalized == "parent")
         {
             if (!TrySetParent(node, value)) return DynValue.Nil;
@@ -926,10 +1258,19 @@ public sealed class LuaXRuntime
                     node.Material = material;
                     break;
                 case "transparency":
-                    if ((!IsBasePart(node) && node.Type is not ("Decal" or "Texture")) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    if ((!IsBasePart(node) && node.Type is not ("Decal" or "Texture" or "Beam")) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.Transparency = (float)Math.Clamp(value.Number, 0, 1);
                     break;
-                case "enabled": node.Enabled = value.CastToBool(); break;
+                case "enabled":
+                    if (value.Type != DataType.Boolean) return DynValue.Nil;
+                    var wasEnabled = node.Enabled;
+                    node.Enabled = value.Boolean;
+                    if (node.Type == "Script" && wasEnabled != node.Enabled)
+                    {
+                        if (node.Enabled) QueueRunnableScripts(node);
+                        else StopScripts([node.Id]);
+                    }
+                    break;
                 case "brightness": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Brightness = (float)Math.Clamp(value.Number, 0, 8); break;
                 case "range": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Range = (float)Math.Clamp(value.Number, 1, 1000); break;
                 case "angle": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Angle = (float)Math.Clamp(value.Number, 1, 175); break;
@@ -999,8 +1340,12 @@ public sealed class LuaXRuntime
                     node.JumpPower = (float)Math.Clamp(value.Number, 0, 1000);
                     break;
                 case "asset": node.Asset = value.CastToString() ?? string.Empty; break;
+                case "archivable":
+                    if (value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.Archivable = value.Boolean;
+                    break;
                 case "name":
-                    if (node.Type is "Workspace" or "Players" or "Gui") return DynValue.Nil;
+                    if (node.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return DynValue.Nil;
                     SetNodeName(node, value.CastToString() ?? node.Name);
                     break;
                 case "cameramode":
@@ -1029,6 +1374,22 @@ public sealed class LuaXRuntime
                     if (endpointId.Length > 0 && endpointId == (normalized == "part0" ? node.Part1 : node.Part0)) return DynValue.Nil;
                     if (normalized == "part0") node.Part0 = endpointId;
                     else node.Part1 = endpointId;
+                    break;
+                case "attachment0":
+                case "attachment1":
+                    if (node.Type != "Beam") return DynValue.Nil;
+                    var attachment = value.Type == DataType.Nil ? null : ReadNodeArgument(value);
+                    if (value.Type != DataType.Nil && attachment?.Type != "Attachment") return DynValue.Nil;
+                    var attachmentId = attachment?.Id ?? string.Empty;
+                    if (attachmentId.Length > 0 && attachmentId == (normalized == "attachment0" ? node.Attachment1 : node.Attachment0)) return DynValue.Nil;
+                    if (normalized == "attachment0") node.Attachment0 = attachmentId;
+                    else node.Attachment1 = attachmentId;
+                    break;
+                case "width0":
+                case "width1":
+                    if (node.Type != "Beam" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    if (normalized == "width0") node.Width0 = (float)Math.Clamp(value.Number, 0, 100);
+                    else node.Width1 = (float)Math.Clamp(value.Number, 0, 100);
                     break;
                 case "fieldofview": node.FieldOfView = (float)Math.Clamp(value.Number, 10, 120); break;
                 case "cornerradius": node.CornerRadius = (float)Math.Max(0, value.Number); break;
@@ -1084,7 +1445,7 @@ public sealed class LuaXRuntime
 
     private void SetNodeName(SceneNode node, string name)
     {
-        if (node.Type is "Workspace" or "Players" or "Gui") return;
+        if (node.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
         node.Name = name;
         if (node.Type == "Script" && project.Scripts.FirstOrDefault(item => item.Id == node.Id) is { } gameScript)
             gameScript.Name = name;
@@ -1092,6 +1453,10 @@ public sealed class LuaXRuntime
 
     private DynValue GetPartReferenceValue(string id) =>
         !string.IsNullOrEmpty(id) && FindNode(id) is { } part && IsBasePart(part) && instances.TryGetValue(part.Id, out var instance)
+            ? DynValue.NewTable(instance) : DynValue.Nil;
+
+    private DynValue GetAttachmentReferenceValue(string id) =>
+        !string.IsNullOrEmpty(id) && FindNode(id) is { Type: "Attachment" } attachment && instances.TryGetValue(attachment.Id, out var instance)
             ? DynValue.NewTable(instance) : DynValue.Nil;
 
     private DynValue GetCharacterValue(SceneNode player) =>
@@ -1106,8 +1471,15 @@ public sealed class LuaXRuntime
         && instances.TryGetValue(humanoid.Id, out var instance)
             ? DynValue.NewTable(instance) : DynValue.Nil;
 
-    private DynValue GetPropertyValue(SceneNode node, string property) => property.ToLowerInvariant() switch
+    private DynValue GetPropertyValue(SceneNode node, string property)
     {
+        if (property.Equals("Value", StringComparison.OrdinalIgnoreCase) && instances.TryGetValue(node.Id, out var valueInstance))
+        {
+            var pending = valueInstance.Get("Value");
+            if (IsValidValueObjectValue(node, pending)) return pending;
+        }
+        return property.ToLowerInvariant() switch
+        {
         "id" => DynValue.NewString(node.Id),
         "classname" or "type" => DynValue.NewString(node.Type),
         "position" => IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Position),
@@ -1155,7 +1527,9 @@ public sealed class LuaXRuntime
         "maxhealth" => DynValue.NewNumber(node.MaxHealth),
         "walkspeed" => DynValue.NewNumber(node.WalkSpeed),
         "jumppower" => DynValue.NewNumber(node.JumpPower),
+        "value" => SceneNodeTypes.IsValueObject(node) ? GetValueObjectValue(node) : DynValue.Nil,
         "asset" => DynValue.NewString(node.Asset),
+        "archivable" => DynValue.NewBoolean(node.Archivable),
         "name" => DynValue.NewString(node.Name),
         "children" => GetChildren(node),
         "parent" => FindParentNode(node) is { } parent && instances.TryGetValue(parent.Id, out var parentInstance) ? DynValue.NewTable(parentInstance) : DynValue.Nil,
@@ -1163,6 +1537,10 @@ public sealed class LuaXRuntime
         "subject" => FindNode(node.Subject) is { } subjectNode && IsBasePart(subjectNode) && instances.TryGetValue(subjectNode.Id, out var subject) ? DynValue.NewTable(subject) : DynValue.Nil,
         "part0" => GetPartReferenceValue(node.Part0),
         "part1" => GetPartReferenceValue(node.Part1),
+        "attachment0" => GetAttachmentReferenceValue(node.Attachment0),
+        "attachment1" => GetAttachmentReferenceValue(node.Attachment1),
+        "width0" => DynValue.NewNumber(node.Width0),
+        "width1" => DynValue.NewNumber(node.Width1),
         "fieldofview" => DynValue.NewNumber(node.FieldOfView),
         "cornerradius" => DynValue.NewNumber(node.CornerRadius),
         "strokecolor" => DynValue.NewString(node.StrokeColor),
@@ -1179,14 +1557,68 @@ public sealed class LuaXRuntime
         "skyboxtop" => DynValue.NewString(node.SkyboxTop),
         "skyboxbottom" => DynValue.NewString(node.SkyboxBottom),
         _ => DynValue.Nil
+        };
+    }
+
+    private static DynValue GetValueObjectValue(SceneNode node) => node.Type switch
+    {
+        "BoolValue" => DynValue.NewBoolean(node.BooleanValue),
+        "IntValue" => DynValue.NewNumber(node.IntegerValue),
+        "NumberValue" => DynValue.NewNumber(node.NumberValue),
+        "StringValue" => DynValue.NewString(node.StringValueText),
+        _ => DynValue.Nil
     };
+
+    private static bool IsValidValueObjectValue(SceneNode node, DynValue value) => node.Type switch
+    {
+        "BoolValue" => value.Type == DataType.Boolean,
+        "IntValue" => value.Type == DataType.Number && double.IsFinite(value.Number)
+            && value.Number == Math.Truncate(value.Number) && Math.Abs(value.Number) <= 9007199254740991d,
+        "NumberValue" => value.Type == DataType.Number && double.IsFinite(value.Number),
+        "StringValue" => value.Type == DataType.String,
+        _ => false
+    };
+
+    private static bool TrySetValueObjectValue(SceneNode node, DynValue value, out bool changed)
+    {
+        changed = false;
+        switch (node.Type)
+        {
+            case "BoolValue" when value.Type == DataType.Boolean:
+                changed = node.BooleanValue != value.Boolean;
+                node.BooleanValue = value.Boolean;
+                return true;
+            case "IntValue" when value.Type == DataType.Number && double.IsFinite(value.Number)
+                && value.Number == Math.Truncate(value.Number) && Math.Abs(value.Number) <= 9007199254740991d:
+                var integer = (long)value.Number;
+                changed = node.IntegerValue != integer;
+                node.IntegerValue = integer;
+                return true;
+            case "NumberValue" when value.Type == DataType.Number && double.IsFinite(value.Number):
+                changed = node.NumberValue != value.Number;
+                node.NumberValue = value.Number;
+                return true;
+            case "StringValue" when value.Type == DataType.String:
+                changed = node.StringValueText != value.String;
+                node.StringValueText = value.String;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void FireValueChanged(SceneNode node, DynValue value)
+    {
+        if (!valueChangedCallbacks.TryGetValue(node.Id, out var callbacks)) return;
+        foreach (var callback in callbacks.ToArray()) StartCallback(callback, value);
+    }
 
     private DynValue WaitForChild(CallbackArguments args)
     {
         if (args.Count < 2) return DynValue.Nil;
         var parent = ReadNodeArgument(args[0]);
         if (parent is null && args[0].Type == DataType.String)
-            parent = args[0].String == "Gui" ? project.Gui : project.Workspace;
+            parent = args[0].String switch { "Gui" => project.Gui, "ReplicatedStorage" => project.ReplicatedStorage, "ServerScriptService" => project.ServerScriptService, "ServerStorage" => project.ServerStorage, _ => project.Workspace };
         var name = args[1].CastToString();
         if (string.IsNullOrEmpty(name)) return DynValue.Nil;
         var node = (parent?.Children ?? project.Workspace.Children).FirstOrDefault(child => child.Name == name || child.Id == name);
@@ -1230,6 +1662,7 @@ public sealed class LuaXRuntime
         "Instance" => true,
         "BasePart" => IsBasePart(node),
         "Light" => SceneNodeTypes.IsLight(node),
+        "ValueBase" => SceneNodeTypes.IsValueObject(node),
         "FaceInstance" or "Decal" => node.Type is "Decal" or "Texture",
         "GuiObject" => node.Type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox",
         "GuiBase2d" => node.Type is "ScreenGui" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox",
@@ -1323,6 +1756,12 @@ public sealed class LuaXRuntime
         foreach (var node in KnownNodes())
         {
             if (!instances.TryGetValue(node.Id, out var instance)) continue;
+            if (SceneNodeTypes.IsValueObject(node))
+            {
+                if (TrySetValueObjectValue(node, instance.Get("Value"), out var valueChanged) && valueChanged)
+                    MarkChanged(node, "Value");
+                instance.Set("Value", GetValueObjectValue(node));
+            }
             if (instance.Get("Position").Type == DataType.Table)
             {
                 if (IsGuiObject(node) && TryReadUDim2(instance.Get("Position"), out var positionScale, out var positionOffset))
@@ -1389,9 +1828,18 @@ public sealed class LuaXRuntime
             }
             if (IsBasePart(node) && instance.Get("Material").CastToString() is "Plastic" or "Metal" or "Neon" or "Glass" or "Wood" or "Concrete")
                 Assign(node, "Material", node.Material, instance.Get("Material").String, value => node.Material = value);
-            if ((IsBasePart(node) || node.Type is "Decal" or "Texture") && instance.Get("Transparency").Type == DataType.Number && double.IsFinite(instance.Get("Transparency").Number))
+            if ((IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam") && instance.Get("Transparency").Type == DataType.Number && double.IsFinite(instance.Get("Transparency").Number))
                 Assign(node, "Transparency", node.Transparency, (float)Math.Clamp(instance.Get("Transparency").Number, 0, 1), value => node.Transparency = value);
-            if (instance.Get("Enabled").Type == DataType.Boolean) Assign(node, "Enabled", node.Enabled, instance.Get("Enabled").Boolean, value => node.Enabled = value);
+            if (instance.Get("Enabled").Type == DataType.Boolean)
+            {
+                var wasEnabled = node.Enabled;
+                Assign(node, "Enabled", node.Enabled, instance.Get("Enabled").Boolean, value => node.Enabled = value);
+                if (node.Type == "Script" && wasEnabled != node.Enabled)
+                {
+                    if (node.Enabled) QueueRunnableScripts(node);
+                    else StopScripts([node.Id]);
+                }
+            }
             if (instance.Get("Brightness").Type == DataType.Number && double.IsFinite(instance.Get("Brightness").Number)) Assign(node, "Brightness", node.Brightness, (float)Math.Clamp(instance.Get("Brightness").Number, 0, 8), value => node.Brightness = value);
             if (instance.Get("Range").Type == DataType.Number && double.IsFinite(instance.Get("Range").Number)) Assign(node, "Range", node.Range, (float)Math.Clamp(instance.Get("Range").Number, 1, 1000), value => node.Range = value);
             if (instance.Get("Angle").Type == DataType.Number && double.IsFinite(instance.Get("Angle").Number)) Assign(node, "Angle", node.Angle, (float)Math.Clamp(instance.Get("Angle").Number, 1, 175), value => node.Angle = value);
@@ -1428,6 +1876,23 @@ public sealed class LuaXRuntime
                 if (IsBasePart(requestedPart1) && requestedPart1!.Id != node.Part0)
                     Assign(node, "Part1", node.Part1, requestedPart1.Id, value => node.Part1 = value);
                 else if (part1Value.Type == DataType.Nil) Assign(node, "Part1", node.Part1, string.Empty, value => node.Part1 = value);
+            }
+            if (node.Type == "Beam")
+            {
+                var attachment0Value = instance.Get("Attachment0");
+                var requestedAttachment0 = ReadNodeArgument(attachment0Value);
+                if (requestedAttachment0 is { Type: "Attachment" } && requestedAttachment0.Id != node.Attachment1)
+                    Assign(node, "Attachment0", node.Attachment0, requestedAttachment0.Id, value => node.Attachment0 = value);
+                else if (attachment0Value.Type == DataType.Nil) Assign(node, "Attachment0", node.Attachment0, string.Empty, value => node.Attachment0 = value);
+                var attachment1Value = instance.Get("Attachment1");
+                var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                else if (attachment1Value.Type == DataType.Nil) Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                if (instance.Get("Width0").Type == DataType.Number && double.IsFinite(instance.Get("Width0").Number))
+                    Assign(node, "Width0", node.Width0, (float)Math.Clamp(instance.Get("Width0").Number, 0, 100), value => node.Width0 = value);
+                if (instance.Get("Width1").Type == DataType.Number && double.IsFinite(instance.Get("Width1").Number))
+                    Assign(node, "Width1", node.Width1, (float)Math.Clamp(instance.Get("Width1").Number, 0, 100), value => node.Width1 = value);
             }
             if (instance.Get("Texture").CastToString() is { } texture) Assign(node, "Texture", node.Texture, texture, value => node.Texture = value);
             if (instance.Get("Text").CastToString() is { } text) Assign(node, "Text", node.Text, text, value => node.Text = value);
@@ -1485,10 +1950,13 @@ public sealed class LuaXRuntime
                 instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
                 instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
             }
-            if (node.Type is not ("Workspace" or "Players" or "Gui") && instance.Get("Name").CastToString() is { } name)
+            if (node.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") && instance.Get("Name").CastToString() is { } name)
                 Assign(node, "Name", node.Name, name, value => SetNodeName(node, value));
-            else if (node.Type is "Workspace" or "Players" or "Gui")
+            else if (node.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui")
                 instance.Set("Name", DynValue.NewString(node.Name));
+            if (instance.Get("Archivable").Type == DataType.Boolean)
+                Assign(node, "Archivable", node.Archivable, instance.Get("Archivable").Boolean, value => node.Archivable = value);
+            else instance.Set("Archivable", DynValue.NewBoolean(node.Archivable));
             if (node.Type == "Workspace")
             {
                 if (instance.Get("SkyboxFront").CastToString() is { } skyboxFront) Assign(node, "SkyboxFront", node.SkyboxFront, skyboxFront, value => node.SkyboxFront = value);
@@ -1529,7 +1997,11 @@ public sealed class LuaXRuntime
         }
         UpdateParentLinks();
         foreach (var (key, node) in changed)
-            propertyChanged?.Invoke(node, key.Property, GetPropertyValue(node, key.Property));
+        {
+            var currentValue = GetPropertyValue(node, key.Property);
+            propertyChanged?.Invoke(node, key.Property, currentValue);
+            if (key.Property == "Value") FireValueChanged(node, currentValue);
+        }
         UpdateHumanoidDeaths();
     }
 
@@ -1668,13 +2140,15 @@ public sealed class LuaXRuntime
     private bool IsGuiObject(SceneNode node)
     {
         if (node.Type is not ("Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox")) return false;
+        if (node.Type != "ImageLabel") return true;
         var parent = FindParentNode(node);
         while (parent is not null)
         {
-            if (parent.Id == project.Gui.Id) return true;
+            if (parent.Id == project.Gui.Id || parent.Type == "ScreenGui") return true;
+            if (parent.Id == project.Workspace.Id || parent.Id == project.ReplicatedStorage.Id || parent.Id == project.ServerScriptService.Id || parent.Id == project.ServerStorage.Id || parent.Type == "Model" || SceneNodeTypes.IsBasePart(parent)) return false;
             parent = FindParentNode(parent);
         }
-        return false;
+        return true;
     }
 
     private DynValue CreateColorFromHsv(float hue, float saturation, float value)

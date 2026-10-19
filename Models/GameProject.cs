@@ -9,6 +9,9 @@ public sealed class GameProject
     public ProjectSettings Settings { get; set; } = new();
     public SceneNode Workspace { get; set; } = new() { Id = "workspace", Type = "Workspace", Name = "Workspace" };
     public SceneNode Players { get; set; } = new() { Id = "players", Type = "Players", Name = "Players" };
+    public SceneNode ReplicatedStorage { get; set; } = new() { Id = "replicated-storage", Type = "ReplicatedStorage", Name = "ReplicatedStorage" };
+    public SceneNode ServerScriptService { get; set; } = new() { Id = "server-script-service", Type = "ServerScriptService", Name = "ServerScriptService" };
+    public SceneNode ServerStorage { get; set; } = new() { Id = "server-storage", Type = "ServerStorage", Name = "ServerStorage" };
     public SceneNode Gui { get; set; } = new() { Id = "gui", Type = "Gui", Name = "Gui", Children = [new SceneNode { Id = "screen-gui-main", Type = "ScreenGui", Name = "ScreenGui" }] };
     public List<ProjectAsset> Assets { get; set; } = [];
     public List<GameScript> Scripts { get; set; } = [];
@@ -27,6 +30,7 @@ public sealed class SceneNode
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Type { get; set; } = "Folder";
     public string Name { get; set; } = "Folder";
+    public bool Archivable { get; set; } = true;
     public float[] Position { get; set; } = [0, 0, 0];
     public float[] PositionScale { get; set; } = [0, 0];
     public float[] Rotation { get; set; } = [0, 0, 0];
@@ -59,6 +63,10 @@ public sealed class SceneNode
     public float RollOffMaxDistance { get; set; } = 100;
     public string Part0 { get; set; } = string.Empty;
     public string Part1 { get; set; } = string.Empty;
+    public string Attachment0 { get; set; } = string.Empty;
+    public string Attachment1 { get; set; } = string.Empty;
+    public float Width0 { get; set; } = .2f;
+    public float Width1 { get; set; } = .2f;
     public string Text { get; set; } = "Text";
     public string TextColor { get; set; } = "#FFFFFF";
     public string StrokeColor { get; set; } = "#FFFFFF";
@@ -89,6 +97,10 @@ public sealed class SceneNode
     public float MaxHealth { get; set; } = 100;
     public float WalkSpeed { get; set; } = 7.5f;
     public float JumpPower { get; set; } = 10;
+    public bool BooleanValue { get; set; }
+    public long IntegerValue { get; set; }
+    public double NumberValue { get; set; }
+    public string StringValueText { get; set; } = string.Empty;
     public string Asset { get; set; } = string.Empty;
     public string Texture { get; set; } = string.Empty;
     public string CameraMode { get; set; } = "Custom";

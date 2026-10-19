@@ -114,7 +114,7 @@ public partial class MainWindow : Window
         currentSnapshot = JsonSerializer.Serialize(next, GameProjectStore.JsonOptions);
         Title = $"{next.Name} - Buller Studio";
         ViewportDocument.Title = next.Name;
-        renderer = new SceneRenderService(SceneViewport, next.Workspace.Children.First(node => node.Type == "Camera"));
+        renderer = new SceneRenderService(SceneViewport, next.Workspace.Children.First(node => node.Type == "Camera"), showAttachmentGizmos: true);
         EnsureOutputBox();
         BottomContent.Content = outputBox;
         SelectBottomTab(showOutput: true);
@@ -144,9 +144,12 @@ public partial class MainWindow : Window
         if (selected is not null) selected = FindSceneNode(selected.Id);
         UpdateExplorerFilter(project.Workspace, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Players, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.ReplicatedStorage, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.ServerScriptService, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.ServerStorage, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Gui, ExplorerSearch.Text.Trim());
         isSuppressingExplorerSelection = true;
-        try { ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.Gui }; }
+        try { ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.Gui }; }
         finally { isSuppressingExplorerSelection = false; }
         ObjectCount.Text = GameProjectStore.Flatten(project).Count.ToString();
         renderer?.Refresh(project);
@@ -162,12 +165,15 @@ public partial class MainWindow : Window
         if (project is null) return;
         UpdateExplorerFilter(project.Workspace, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Players, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.ReplicatedStorage, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.ServerScriptService, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.ServerStorage, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Gui, ExplorerSearch.Text.Trim());
         isSuppressingExplorerSelection = true;
         try
         {
             ExplorerTree.ItemsSource = null;
-            ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.Gui };
+            ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.Gui };
         }
         finally { isSuppressingExplorerSelection = false; }
         if (selected is not null) SelectTreeNode(selected.Id);
@@ -209,7 +215,7 @@ public partial class MainWindow : Window
         var insert = new MenuItem { Header = "Insert Object", IsEnabled = node.Type != "Players" };
         insert.Click += (_, _) => ShowInsertMenu(node, item);
         menu.Items.Add(insert);
-        var canEdit = node.Type is not ("Workspace" or "Players" or "Gui" or "Camera");
+        var canEdit = node.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera");
         var duplicate = new MenuItem { Header = "Duplicate    Ctrl+D", IsEnabled = canEdit };
         duplicate.Click += (_, _) => DuplicateSelected();
         menu.Items.Add(duplicate);
@@ -225,7 +231,7 @@ public partial class MainWindow : Window
                 menu.Items.Add(ungroup);
             }
         }
-        var rename = new MenuItem { Header = "Rename    F2", IsEnabled = node.Type is not ("Workspace" or "Players" or "Gui") };
+        var rename = new MenuItem { Header = "Rename    F2", IsEnabled = node.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") };
         rename.Click += (_, _) => RenameSelected();
         menu.Items.Add(rename);
         menu.Items.Add(new Separator());
@@ -284,7 +290,7 @@ public partial class MainWindow : Window
             && Math.Abs(pointer.Y - explorerDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
         var source = explorerDragSource;
         explorerDragSource = null;
-        if (source.Type is "Workspace" or "Players" or "Gui" or "Camera") return;
+        if (source.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return;
         DragDrop.DoDragDrop(ExplorerTree, new DataObject(typeof(SceneNode), source), DragDropEffects.Move);
     }
 
@@ -451,6 +457,9 @@ public partial class MainWindow : Window
             return CanMoveNode(source, project.Workspace);
         }
         if (ReferenceEquals(target, project.Workspace) || target.Id == project.Workspace.Id) return CanMoveNode(source, project.Workspace);
+        if (ReferenceEquals(target, project.ReplicatedStorage) || target.Id == project.ReplicatedStorage.Id) return CanMoveNode(source, project.ReplicatedStorage);
+        if (ReferenceEquals(target, project.ServerScriptService) || target.Id == project.ServerScriptService.Id) return CanMoveNode(source, project.ServerScriptService);
+        if (ReferenceEquals(target, project.ServerStorage) || target.Id == project.ServerStorage.Id) return CanMoveNode(source, project.ServerStorage);
         if (ReferenceEquals(target, project.Gui) || target.Id == project.Gui.Id) return CanMoveNode(source, project.Gui);
         var container = FindTreeItem(ExplorerTree, target.Id);
         var header = container?.Template.FindName("PART_Header", container) as FrameworkElement;
@@ -477,9 +486,21 @@ public partial class MainWindow : Window
         var dataSection = AddPropertySection("Data");
         propertyTarget = dataSection;
         AddLabel($"Class: {selected.Type}", "Class");
-        if (selected.Type == "Players") AddLabel("Name: Players");
+        if (selected.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") AddLabel($"Name: {selected.Name}");
         else AddTextField("Name", selected.Name);
         if (selected.Type != "Players") AddObjectReferenceField("Parent", selected, FindParentNode(selected));
+        if (selected.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui")) AddCheckField("Archivable", selected.Archivable);
+        if (SceneNodeTypes.IsValueObject(selected))
+        {
+            propertyTarget = AddPropertySection("Value");
+            if (selected.Type == "BoolValue") AddCheckField("Value", selected.BooleanValue);
+            else AddTextField("Value", selected.Type switch
+            {
+                "IntValue" => selected.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "NumberValue" => selected.NumberValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                _ => selected.StringValueText
+            });
+        }
         if (selected.Type == "Model" && !IsGuiNode(selected))
         {
             propertyTarget = AddPropertySection("Transform");
@@ -627,6 +648,24 @@ public partial class MainWindow : Window
             AddObjectReferenceField("Part1", selected, SceneNodeTypes.IsBasePart(part1) ? part1 : null);
             AddLabel("Joined parts move as one assembly during play.", "Part0");
         }
+        if (selected.Type == "Attachment")
+        {
+            propertyTarget = AddPropertySection("Attachment");
+            AddTextField("Position", VectorText(selected.Position));
+            AddTextField("Rotation", VectorText(selected.Rotation));
+            AddLabel("Position is relative to the parent part.", "Position");
+        }
+        if (selected.Type == "Beam")
+        {
+            propertyTarget = AddPropertySection("Beam");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } attachment0 ? attachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } attachment1 ? attachment1 : null);
+            AddTextField("Width0", selected.Width0.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Width1", selected.Width1.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Color", selected.Color);
+            AddTextField("Transparency", selected.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         if (selected.Type == "Humanoid")
         {
             propertyTarget = AddPropertySection("Humanoid");
@@ -643,6 +682,7 @@ public partial class MainWindow : Window
             if (script is not null)
             {
                 propertyTarget = AddPropertySection("Script");
+                AddCheckField("Enabled", selected.Enabled);
                 AddLabel("Double-click this script in Explorer to open it.", "Source");
             }
         }
@@ -766,7 +806,7 @@ public partial class MainWindow : Window
             Padding = new Thickness(6, 3, 6, 3),
             MinWidth = 100,
             Tag = property,
-            IsEnabled = !(property == "Parent" && (ReferenceEquals(target, project?.Workspace) || ReferenceEquals(target, project?.Gui))),
+            IsEnabled = !(property == "Parent" && (ReferenceEquals(target, project?.Workspace) || ReferenceEquals(target, project?.ReplicatedStorage) || ReferenceEquals(target, project?.ServerScriptService) || ReferenceEquals(target, project?.ServerStorage) || ReferenceEquals(target, project?.Gui))),
             ToolTip = isPicking ? "Choose an object in Explorer or the viewport. Press Escape to cancel." : value is null ? "Select an object in Explorer or the 3D viewport" : $"{GetObjectPath(value)}\nClick to select another object"
         };
         if (isPicking)
@@ -824,6 +864,37 @@ public partial class MainWindow : Window
         if (project is null || box.Tag is not string property || box.DataContext is not string targetId || FindSceneNode(targetId) is not { } target) return;
         var text = box.Text.Trim();
         var currentNumber = NumericPropertyText(target, property);
+        if (property == "Value" && target.Type == "IntValue")
+        {
+            if (!long.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var integerValue)
+                || integerValue < -9007199254740991L || integerValue > 9007199254740991L)
+            {
+                SetStatus("Enter a whole number within Lua's exact integer range.");
+                box.Text = target.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return;
+            }
+            target.IntegerValue = integerValue;
+            RecordEdit();
+            return;
+        }
+        else if (property == "Value" && target.Type == "NumberValue")
+        {
+            if (!double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var numberValue) || !double.IsFinite(numberValue))
+            {
+                SetStatus("Enter a valid number for Value.");
+                box.Text = target.NumberValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return;
+            }
+            target.NumberValue = numberValue;
+            RecordEdit();
+            return;
+        }
+        else if (property == "Value" && target.Type == "StringValue")
+        {
+            target.StringValueText = box.Text;
+            RecordEdit();
+            return;
+        }
         if (currentNumber is not null)
         {
             var valid = property == "TableColumns"
@@ -897,6 +968,12 @@ public partial class MainWindow : Window
         }
         else if (property == "FillTransparency" && target.Type == "Highlight" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fillTransparency) && float.IsFinite(fillTransparency)) target.FillTransparency = Math.Clamp(fillTransparency, 0, 1);
         else if (property == "OutlineTransparency" && target.Type == "Highlight" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var outlineTransparency) && float.IsFinite(outlineTransparency)) target.OutlineTransparency = Math.Clamp(outlineTransparency, 0, 1);
+        else if (target.Type == "Beam" && property is ("Width0" or "Width1")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var beamWidth) && float.IsFinite(beamWidth))
+        {
+            if (property == "Width0") target.Width0 = Math.Clamp(beamWidth, 0, 100);
+            else target.Width1 = Math.Clamp(beamWidth, 0, 100);
+        }
         else if (property == "Gravity" && target.Type == "Workspace" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gravity) && float.IsFinite(gravity)) target.Gravity = Math.Clamp(gravity, 0, 1000);
         else if (target.Type == "Humanoid" && property is ("Health" or "MaxHealth" or "WalkSpeed" or "JumpPower")
             && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var humanoidValue) && float.IsFinite(humanoidValue))
@@ -944,7 +1021,7 @@ public partial class MainWindow : Window
             }
             renderer?.Refresh(project);
         }
-        else if (property == "Name" && !string.IsNullOrWhiteSpace(text))
+        else if (property == "Name" && target.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") && !string.IsNullOrWhiteSpace(text))
         {
             target.Name = text;
             if (target.Type == "Script")
@@ -1017,6 +1094,8 @@ public partial class MainWindow : Window
         if (property == "Looped") target.Looped = box.IsChecked == true;
         if (property == "Playing") target.Playing = box.IsChecked == true;
         if (property == "AutoManageCharacter" && target.Type == "Workspace") target.AutoManageCharacter = box.IsChecked == true;
+        if (property == "Archivable") target.Archivable = box.IsChecked == true;
+        if (property == "Value" && target.Type == "BoolValue") target.BooleanValue = box.IsChecked == true;
         if (IsGuiNode(target)) RefreshGuiPreview();
         renderer?.UpdateNode(target, project);
         RecordEdit();
@@ -1111,6 +1190,20 @@ public partial class MainWindow : Window
             else target.Part1 = value.Id;
             RecordEdit();
         }
+        else if (property is "Attachment0" or "Attachment1")
+        {
+            if (value.Type != "Attachment" || value.Id == (property == "Attachment0" ? target.Attachment1 : target.Attachment0))
+            {
+                SetStatus("Choose a different Attachment for each beam endpoint.");
+                return true;
+            }
+            propertyPickerTargetId = null;
+            propertyPickerProperty = null;
+            if (property == "Attachment0") target.Attachment0 = value.Id;
+            else target.Attachment1 = value.Id;
+            renderer?.UpdateNode(target, project);
+            RecordEdit();
+        }
         propertyPickerTargetId = null;
         propertyPickerProperty = null;
         SetObjectReferencePickerActive(false);
@@ -1139,14 +1232,17 @@ public partial class MainWindow : Window
         if (project is null) return null;
         if (project.Workspace.Id == id) return project.Workspace;
         if (project.Players.Id == id) return project.Players;
+        if (project.ReplicatedStorage.Id == id) return project.ReplicatedStorage;
+        if (project.ServerScriptService.Id == id) return project.ServerScriptService;
+        if (project.ServerStorage.Id == id) return project.ServerStorage;
         if (project.Gui.Id == id) return project.Gui;
         return GameProjectStore.Flatten(project).FirstOrDefault(node => node.Id == id);
     }
 
     private SceneNode? FindParentNode(SceneNode target)
     {
-        if (project is null || ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.Gui)) return null;
-        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.Gui, target);
+        if (project is null || ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.Gui)) return null;
+        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.Gui, target);
     }
 
     private static SceneNode? FindParentNode(SceneNode parent, SceneNode target)
@@ -1252,9 +1348,9 @@ public partial class MainWindow : Window
         if (project is null) return;
         var choices = IsGuiNode(parent)
             ? (parent.Type == "Gui"
-                ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") }
-                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIListLayout", "UIListLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
-            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") };
+                ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") }
+                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIListLayout", "UIListLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
+            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
         choices = choices.Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
         var search = new TextBox { Width = 190, Margin = new Thickness(5), Padding = new Thickness(5, 3, 5, 3), ToolTip = "Search objects" };
@@ -1856,6 +1952,12 @@ public partial class MainWindow : Window
     {
         ["game.getservice"] = new("GetService", ["name: string"]),
         ["instance.new"] = new("Instance.new", ["className: string", "parent: Instance?"]),
+        ["task.wait"] = new("task.wait", ["duration: number?"]),
+        ["task.spawn"] = new("task.spawn", ["callback: function", "...: any"]),
+        ["task.defer"] = new("task.defer", ["callback: function", "...: any"]),
+        ["task.delay"] = new("task.delay", ["duration: number", "callback: function", "...: any"]),
+        ["task.cancel"] = new("task.cancel", ["thread: coroutine"]),
+        ["wait"] = new("wait", ["duration: number?"]),
         ["destroy"] = new("Destroy", []),
         ["getassetpath"] = new("GetAssetPath", ["pathOrName: string"]),
         ["connecttouched"] = new("ConnectTouched", ["object: BasePart", "callback: (other: BasePart) -> ()"]),
@@ -1967,7 +2069,7 @@ public partial class MainWindow : Window
             var imageAssetContext = Regex.IsMatch(source, @"\b(?:Texture|Skybox(?:Front|Back|Left|Right|Top|Bottom))\s*=\s*(?:GetAssetPath\s*\(\s*)?(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase);
             return GetLuaXAssetPathCompletions(imageAssetContext);
         }
-        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "Gui"];
+        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "ReplicatedStorage", "Gui"];
         if (Regex.IsMatch(source, @"\bInstance\.new\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXCreatableClassNameCompletions;
         if (Regex.IsMatch(source, @"\b(?:Mode|CameraMode)\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject"];
         if (Regex.IsMatch(source, @"\bLayoutDirection\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Vertical", "Horizontal"];
@@ -2309,8 +2411,8 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXNamedFunctionPattern = new(@"\bfunction\s+(?<name>[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Model", "Camera", "Workspace", "Players", "Player", "DataModel", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
+    private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Camera", "Workspace", "Players", "Player", "ReplicatedStorage", "DataModel", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -2353,7 +2455,7 @@ public partial class MainWindow : Window
 
     private string[] GetLuaXMembers(string receiver, TextEditor editor)
     {
-        if (receiver == "game") return ["GetService", "Gui", "Players", "Workspace"];
+        if (receiver == "game") return ["GetService", "Gui", "Players", "ReplicatedStorage", "Workspace"];
         if (receiver == "Instance") return ["new"];
         if (receiver == "Enum") return ["CameraMode", "LayoutDirection"];
         if (receiver == "Enum.CameraMode") return ["Custom", "Subject"];
@@ -2363,7 +2465,7 @@ public partial class MainWindow : Window
         if (receiver == "UDim") return ["new"];
         if (receiver == "UDim2") return ["fromOffset", "fromScale", "new", "zero"];
         if (LuaXStandardLibraryMembers.TryGetValue(receiver, out var libraryMembers)) return libraryMembers;
-        if (receiver.EndsWith(".Touched", StringComparison.Ordinal) || receiver == "Touched" || receiver.EndsWith(".Triggered", StringComparison.Ordinal) || receiver == "Triggered" || receiver.EndsWith(".MouseClick", StringComparison.Ordinal) || receiver == "MouseClick" || receiver.EndsWith(".Died", StringComparison.Ordinal) || receiver == "Died") return ["Connect"];
+        if (receiver.EndsWith(".Touched", StringComparison.Ordinal) || receiver == "Touched" || receiver.EndsWith(".Triggered", StringComparison.Ordinal) || receiver == "Triggered" || receiver.EndsWith(".MouseClick", StringComparison.Ordinal) || receiver == "MouseClick" || receiver.EndsWith(".Died", StringComparison.Ordinal) || receiver == "Died" || receiver.EndsWith(".Changed", StringComparison.Ordinal) || receiver == "Changed") return ["Connect"];
         var node = ResolveLuaXNode(receiver);
         if (node is null)
         {
@@ -2380,12 +2482,13 @@ public partial class MainWindow : Window
             if (node is null) return LuaXMemberCompletions;
         }
 
-        var members = new List<string> { "Name", "Parent", "ClassName", "Id", "Children", "SetProperty", "GetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Destroy" };
+        var members = new List<string> { "Name", "Parent", "Archivable", "ClassName", "Id", "Children", "SetProperty", "GetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy" };
         if (node.Type == "BasePart" || SceneNodeTypes.IsBasePart(node)) members.AddRange(["Position", "Rotation", "Size", "Color", "Material", "Transparency", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Touched", "touched"]);
         if (node.Type == "Part") members.AddRange(["Shape", "Texture"]);
         if (node.Type == "SpawnLocation") members.Add("Enabled");
         if (node.Type == "Seat") members.Add("Occupant");
         if (node.Type == "Humanoid") members.AddRange(["Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died"]);
+        if (SceneNodeTypes.IsValueObject(node) || node.Type == "ValueBase") members.AddRange(["Value", "Changed"]);
         if (node.Type == "MeshPart") members.Add("Asset");
         if (node.Type == "Light" || SceneNodeTypes.IsLight(node)) members.AddRange(["Enabled", "Color", "Brightness", "Range", "Position"]);
         if (node.Type is "SpotLight" or "SurfaceLight") members.Add("Angle");
@@ -2398,6 +2501,8 @@ public partial class MainWindow : Window
         if (node.Type == "ClickDetector") members.AddRange(["Enabled", "MaxActivationDistance", "MouseClick"]);
         if (node.Type == "Highlight") members.AddRange(["Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency"]);
         if (node.Type == "WeldConstraint") members.AddRange(["Enabled", "Part0", "Part1"]);
+        if (node.Type == "Beam") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Width0", "Width1", "Color", "Transparency"]);
+        if (node.Type == "Attachment") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
         if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
         if (node.Type == "Players") members.Add("LocalPlayer");
@@ -2422,7 +2527,7 @@ public partial class MainWindow : Window
         if (receiver.Equals("Touched", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Touched", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".Activated", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".MouseButton1Click", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".TextChanged", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Triggered", StringComparison.OrdinalIgnoreCase)
-            || receiver.EndsWith(".MouseClick", StringComparison.OrdinalIgnoreCase)) return ["Connect"];
+            || receiver.EndsWith(".MouseClick", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Changed", StringComparison.OrdinalIgnoreCase)) return ["Connect"];
         var inferredType = InferLuaXReceiverType(receiver, editor);
         if (inferredType is "Vector3Constructor" or "Color3Constructor" or "UDimConstructor" or "UDim2Constructor" or "UDim" or "UDim2") return [];
         if (inferredType == "Vector3") return ["Cross", "Dot", "Lerp"];
@@ -2430,9 +2535,9 @@ public partial class MainWindow : Window
         if (inferredType == "RBXScriptSignal") return ["Connect"];
         if (inferredType is "number" or "string" or "boolean" or "table") return [];
         var receiverNode = ResolveLuaXNode(receiver) ?? ResolveLuaXReceiverNode(receiver, editor);
-        if (inferredType == "Sound" || receiverNode?.Type == "Sound") return ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Play", "Stop"];
+        if (inferredType == "Sound" || receiverNode?.Type == "Sound") return ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Play", "Stop"];
         return LuaXInstanceTypes.Contains(inferredType ?? string.Empty) || receiverNode is not null
-            ? ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA"]
+            ? ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"]
             : LuaXMethodCompletions;
     }
 
@@ -2503,6 +2608,7 @@ public partial class MainWindow : Window
                     {
                         "touched" => "BasePart",
                         "triggered" or "mouseclick" => "Model",
+                        "changed" => null,
                         _ => "string"
                     };
             }
@@ -2684,8 +2790,8 @@ public partial class MainWindow : Window
         expression = StripExpressionParentheses(expression.Trim());
         var node = ResolveLuaXNode(expression);
         if (node is not null) return node;
-        var serviceMatch = Regex.Match(expression, @"^game:GetService\s*\(\s*[""'](?<service>Workspace|Players|Gui)[""']\s*\)$");
-        if (serviceMatch.Success) return serviceMatch.Groups["service"].Value switch { "Workspace" => project?.Workspace, "Players" => project?.Players, _ => project?.Gui };
+        var serviceMatch = Regex.Match(expression, @"^game:GetService\s*\(\s*[""'](?<service>Workspace|Players|ReplicatedStorage|Gui)[""']\s*\)$");
+        if (serviceMatch.Success) return serviceMatch.Groups["service"].Value switch { "Workspace" => project?.Workspace, "Players" => project?.Players, "ReplicatedStorage" => project?.ReplicatedStorage, _ => project?.Gui };
         var childMatch = Regex.Match(expression, @"^(?<parent>.+):(?<method>WaitForChild|waitforchild|FindFirstChild)\s*\(\s*[""'](?<name>[^""']+)[""']\s*(?:,\s*(?<recursive>true|false)\s*)?\)$", RegexOptions.IgnoreCase);
         if (childMatch.Success)
         {
@@ -2709,6 +2815,8 @@ public partial class MainWindow : Window
         if (member.Equals("Character", StringComparison.OrdinalIgnoreCase) && instance.Type == "Player") return FindSceneNode(instance.Character);
         if (member.Equals("Part0", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part0);
         if (member.Equals("Part1", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part1);
+        if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type == "Beam") return FindSceneNode(instance.Attachment0);
+        if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type == "Beam") return FindSceneNode(instance.Attachment1);
         return instance.Children.FirstOrDefault(child => child.Name == member || child.Id == member);
     }
 
@@ -2731,12 +2839,13 @@ public partial class MainWindow : Window
         var index = 1;
         if (segments[0] == "workspace") node = project.Workspace;
         else if (segments[0] == "Players") node = project.Players;
+        else if (segments[0] == "ReplicatedStorage") node = project.ReplicatedStorage;
         else if (segments[0] == "Gui") node = project.Gui;
         else if (segments[0] == "script") node = selectedScript is null ? null : FindSceneNode(selectedScript.Id);
         else if (segments[0] == "game")
         {
             if (segments.Length == 1) return null;
-            node = segments[1] switch { "Workspace" => project.Workspace, "Players" => project.Players, "Gui" => project.Gui, _ => null };
+            node = segments[1] switch { "Workspace" => project.Workspace, "Players" => project.Players, "ReplicatedStorage" => project.ReplicatedStorage, "Gui" => project.Gui, _ => null };
             index = 2;
         }
         else
@@ -2753,25 +2862,26 @@ public partial class MainWindow : Window
     [
         "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
         "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs", "pcall", "print", "warn", "rawequal", "rawget", "rawlen", "rawset", "select", "setmetatable", "tonumber", "tostring", "type", "typeof", "unpack", "xpcall",
-        "math", "string", "table", "coroutine", "utf8", "game", "workspace", "script", "Gui", "Players", "Instance", "Enum", "Vector3", "Color3", "UDim", "UDim2",
+        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "ReplicatedStorage", "Instance", "Enum", "Vector3", "Color3", "UDim", "UDim2",
         "SetProperty", "GetProperty", "WaitForChild", "GetAssetPath", "ConnectTouched"
     ];
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "Enabled", "Part0", "Part1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Destroy"
+        "Name", "Parent", "Archivable", "Value", "Changed", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"
     ];
 
-    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Destroy"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Humanoid", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Model", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Attachment", "Beam", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "ReplicatedStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
         ["string"] = ["byte", "char", "dump", "find", "format", "gmatch", "gsub", "len", "lower", "match", "rep", "reverse", "sub", "upper"],
         ["table"] = ["concat", "insert", "maxn", "remove", "sort", "unpack"],
         ["coroutine"] = ["create", "resume", "running", "status", "wrap", "yield"],
-        ["utf8"] = ["char", "codes", "codepoint", "len", "offset"]
+        ["utf8"] = ["char", "codes", "codepoint", "len", "offset"],
+        ["task"] = ["wait", "spawn", "defer", "delay", "cancel"]
     };
 
     private static IHighlightingDefinition CreateLuaXHighlighting()
@@ -2826,8 +2936,8 @@ public partial class MainWindow : Window
                 <Keywords color="LuauKeyword"><Word>continue</Word><Word>export</Word><Word>type</Word><Word>typeof</Word></Keywords>
                 <Keywords color="Builtin">
                   <Word>assert</Word><Word>collectgarbage</Word><Word>error</Word><Word>getmetatable</Word><Word>ipairs</Word><Word>next</Word><Word>pairs</Word><Word>pcall</Word><Word>print</Word><Word>warn</Word><Word>rawequal</Word><Word>rawget</Word><Word>rawlen</Word><Word>rawset</Word><Word>select</Word><Word>setmetatable</Word><Word>tonumber</Word><Word>tostring</Word><Word>type</Word><Word>unpack</Word><Word>xpcall</Word>
-                  <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word>
-                  <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>Color3</Word><Word>GetService</Word>
+                  <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word><Word>task</Word><Word>wait</Word>
+                  <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>ReplicatedStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>Color3</Word><Word>GetService</Word>
                 </Keywords>
                 <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Script</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
                 <Rule color="LuauKeyword">(?m)^\s*(?:export\s+)?type\b</Rule>
@@ -3439,17 +3549,25 @@ public partial class MainWindow : Window
 
     private void DeleteSelected()
     {
-        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "Gui") return;
+        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
         if (!StudioDialog.Confirm(this, "Delete object", $"Delete {selected.Name}?")) return;
         var removedNodes = GameProjectStore.RemoveNodeAndGetSubtree(project.Workspace.Children, selected.Id)
+            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.ReplicatedStorage.Children, selected.Id))
+            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.ServerScriptService.Children, selected.Id))
+            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.ServerStorage.Children, selected.Id))
             .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.Gui.Children, selected.Id))
             .ToArray();
         if (removedNodes.Length == 0) return;
         var removedIds = removedNodes.Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
-        foreach (var weld in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "WeldConstraint"))
+        foreach (var weld in GameProjectStore.Flatten(project).Where(node => node.Type == "WeldConstraint"))
         {
             if (removedIds.Contains(weld.Part0)) weld.Part0 = string.Empty;
             if (removedIds.Contains(weld.Part1)) weld.Part1 = string.Empty;
+        }
+        foreach (var beam in GameProjectStore.Flatten(project).Where(node => node.Type == "Beam"))
+        {
+            if (removedIds.Contains(beam.Attachment0)) beam.Attachment0 = string.Empty;
+            if (removedIds.Contains(beam.Attachment1)) beam.Attachment1 = string.Empty;
         }
         if (selectedScript is not null && removedIds.Contains(selectedScript.Id)) CommitScriptEditor();
         project.Scripts.RemoveAll(script => removedIds.Contains(script.Id));
@@ -3473,7 +3591,7 @@ public partial class MainWindow : Window
     private void UngroupSelected_Click(object sender, RoutedEventArgs e) => UngroupSelected();
 
     private bool CanGroupSelected() => project is not null && selected is not null
-        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Players" or "Gui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "WeldConstraint" or "Humanoid")
+        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "WeldConstraint" or "Humanoid")
         && !SceneNodeTypes.IsLight(selected)
         && FindParentNode(selected) is not null;
 
@@ -3518,7 +3636,7 @@ public partial class MainWindow : Window
 
     private void RenameSelected()
     {
-        if (selected is null || selected.Type is "Workspace" or "Players" or "Gui") return;
+        if (selected is null || selected.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
         var name = StudioDialog.Prompt(this, "Rename object", "Name", selected.Name, "Rename");
         if (string.IsNullOrWhiteSpace(name)) return;
         var id = selected.Id;
@@ -3528,26 +3646,12 @@ public partial class MainWindow : Window
 
     private void DuplicateSelected()
     {
-        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "Gui") return;
+        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
         var parent = FindParentNode(selected);
         if (parent is null) return;
         var original = selected;
-        var clone = JsonSerializer.Deserialize<SceneNode>(JsonSerializer.Serialize(original, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions);
+        var clone = GameProjectStore.CloneSubtree(original, out var newIds, respectArchivable: false);
         if (clone is null) return;
-        var newIds = new Dictionary<string, string>(StringComparer.Ordinal);
-        void RenewIds(SceneNode node)
-        {
-            var oldId = node.Id;
-            node.Id = Guid.NewGuid().ToString("N");
-            newIds[oldId] = node.Id;
-            foreach (var child in node.Children) RenewIds(child);
-        }
-        RenewIds(clone);
-        foreach (var weld in new[] { clone }.Concat(GameProjectStore.Flatten(clone.Children)).Where(node => node.Type == "WeldConstraint"))
-        {
-            if (newIds.TryGetValue(weld.Part0, out var newPart0)) weld.Part0 = newPart0;
-            if (newIds.TryGetValue(weld.Part1, out var newPart1)) weld.Part1 = newPart1;
-        }
         clone.Name += " Copy";
         if (!IsGuiNode(original))
         {
@@ -3703,8 +3807,14 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["string.format"] = "format(format: string, ...: any): string — Formats values into a string.",
         ["table.insert"] = "insert(list: table, value: any): () — Appends a value to a list.",
         ["coroutine.yield"] = "yield(...: any): (...any) — Suspends the current Lua X script until the runtime resumes it.",
-        ["GetService"] = "GetService(name: string): Instance? — Returns Workspace, Players, or Gui.",
+        ["GetService"] = "GetService(name: string): Instance? — Returns Workspace, Players, ReplicatedStorage, or Gui.",
         ["Instance.new"] = "Instance.new(className: string, parent: Instance?): Instance? — Creates a supported object during play.",
+        ["task.wait"] = "task.wait(duration: number?): number — Resumes on a later play update after at least this many seconds.",
+        ["task.spawn"] = "task.spawn(callback: function, ...: any): coroutine — Starts a function immediately in a separate task.",
+        ["task.defer"] = "task.defer(callback: function, ...: any): coroutine — Runs a function after the current script resume point.",
+        ["task.delay"] = "task.delay(duration: number, callback: function, ...: any): coroutine — Runs a function after the delay.",
+        ["task.cancel"] = "task.cancel(thread: coroutine): () — Cancels a pending or yielded task.",
+        ["wait"] = "wait(duration: number?): number — Alias for task.wait in Lua X.",
         ["Destroy"] = "Destroy(): () — Removes this object and its descendants from the running game.",
         ["WaitForChild"] = "WaitForChild(name: string, timeout: number?): Instance? — Yields until a direct child is available; returns nil on timeout.",
         ["FindFirstChild"] = "FindFirstChild(name: string, recursive: boolean?): Instance? — Finds a direct child, or searches descendants when recursive is true.",

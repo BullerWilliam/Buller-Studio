@@ -8,5 +8,9 @@ public static class SceneNodeTypes
 
     public static bool IsLight(SceneNode? node) => node?.Type is "PointLight" or "SpotLight" or "SurfaceLight";
 
+    public static bool IsValueObject(SceneNode? node) => IsValueObjectType(node?.Type);
+
+    public static bool IsValueObjectType(string? type) => type is "BoolValue" or "IntValue" or "NumberValue" or "StringValue";
+
     public static bool IsFace(string? face) => face is "Front" or "Back" or "Left" or "Right" or "Top" or "Bottom";
 }

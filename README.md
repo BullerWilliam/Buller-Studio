@@ -17,6 +17,9 @@ The app opens to a dedicated Home screen; no editor is shown until you create or
 
 - Create objects from the `+` button on a compatible Explorer object or **Model → Insert**; search the insert menu to filter object types. The Workspace always keeps one Camera.
 - Insert Block, Ball, and Cylinder Parts, WedgePart, CornerWedgePart, TrussPart, SpawnLocation, Seat, MeshPart, Models, Folders, Humanoid, and PointLight, SpotLight, SurfaceLight, Decal, Texture, Sound, ProximityPrompt, ClickDetector, Highlight, or WeldConstraint objects. A Humanoid belongs under a Model, with one Humanoid per Model. Lights, Decals, Textures, prompts, and click detectors are children of a 3D part; Sound can also sit under Workspace, a Folder, or a Model. A Highlight can be a child of a part or Model. A Part's Shape and a light's color, brightness, range, and enabled state are editable in Properties; SpotLight also has rotation, and SurfaceLight points outward from its selected Face. An enabled SpawnLocation places the play-mode character on its pad.
+- Insert BoolValue, IntValue, NumberValue, and StringValue under compatible Workspace, GUI, or ReplicatedStorage objects to store simple typed data. Value objects can contain child objects. Edit `Value` in Properties; values persist with the project. In Lua X, read or assign `.Value`, call `:SetProperty("Value", value)`, and connect `Changed` to receive the new value. `Instance.new` also creates these objects during play. IntValue accepts whole numbers within Lua's exact integer range (±9,007,199,254,740,991).
+- ReplicatedStorage is a persistent Explorer service for shared folders, models, parts, sounds, values, and Script templates. Retrieve it with `game:GetService("ReplicatedStorage")` or `game.ReplicatedStorage`. Parts kept there are not rendered or simulated. Scripts kept there stay dormant; moving or cloning an enabled one into Workspace or GUI starts it during play. A Script's `Enabled` checkbox controls startup, and changing `Enabled` in Lua X can stop or restart it. Moving a running Script into ReplicatedStorage stops it until it returns to an active hierarchy.
+- Use `instance:Clone()` in Lua X to make an unparented copy of a stored template, then parent the copy into Workspace or GUI. The copy gets new IDs, keeps child properties, and reconnects internal weld references. Set `Archivable` in Properties or Lua X to exclude an object and its descendants from cloning; non-archivable children are omitted. The editor's **Duplicate** command still copies those children and sets the duplicate's own Archivable value to true.
 - Import an image in Asset Manager, then use **Use on selected object** with a selected Decal or set its Asset path in Properties. Choose Front, Back, Left, Right, Top, or Bottom in Face. Decals are planar overlays and fit flat part faces best; their texture follows the parent part during editing and play.
 - Add a Texture to a part and assign an imported image through Asset Manager or its Asset property. Choose its Face, StudsPerTileU/V, and OffsetStudsU/V in Properties to repeat and shift the image across that face. The tiling updates when the part is resized.
 - Add a Sound to Workspace or a part and assign an imported WAV, MP3, or WMA asset. Set Playing and Looped in Properties, or call `sound:Play()` and `sound:Stop()` in Lua X. Sounds attached directly to a part fade between RollOffMinDistance and RollOffMaxDistance relative to the play character, or the camera when automatic character creation is off. Workspace sounds play at their full Volume. Audio runs during play tests and in packaged games.
@@ -30,6 +33,7 @@ The app opens to a dedicated Home screen; no editor is shown until you create or
 - Add a ClickDetector to a part and edit its Enabled state and MaxActivationDistance in Properties. During play with an automatically managed character, left-click that part while in range to fire its Lua X `MouseClick` event. The callback receives `Players.LocalPlayer`.
 - Add a Highlight to a part or Model to tint and outline it in the editor and during play. Edit Enabled, FillColor, OutlineColor, FillTransparency, and OutlineTransparency in Properties or Lua X. A Model Highlight covers its descendant parts; a closer Highlight on a child part takes precedence.
 - Add a WeldConstraint under Workspace, a Folder, Model, or part. Set Part0 and Part1 using the Properties object pickers; adding it under a part fills Part0 automatically. Enabled welds join unanchored parts into one translating assembly during play, and an anchored member holds the assembly still. Lua X can read or assign Part0 and Part1 as BasePart instances. Welds preserve the parts' relative positions during physics, and moving one member translates the assembly. When an assembly has an anchored member, its position controls the assembly. Rotation is not yet propagated through welds.
+- Add an Attachment under each of two parts, then insert a Beam and set Attachment0 and Attachment1 with the Properties object pickers. Attachment Position is relative to its parent part. Small Attachment markers are selectable in the editor viewport and hidden during play. Beams render as tapered colored tubes between the endpoints, follow moving and rotating parts, and expose Enabled, Width0, Width1, Color, and Transparency. Lua X can create both classes with `Instance.new` and set Beam endpoint references to Attachment instances. Cloning a Model that contains the Beam and both Attachments reconnects the clone's endpoints.
 - Set `Velocity` or `AssemblyLinearVelocity` in Lua X to move an unanchored BasePart during play. Welded parts share translation and velocity. Collision stops the affected velocity component; bounce and friction are not simulated.
 - The Workspace Camera has `Mode` (`Custom` or `Subject`), `Position`, `Rotation`, `Subject`, and `FieldOfView` properties. Custom mode uses Position and Rotation. Subject mode orbits the selected BasePart. The scene view uses this same camera.
 - Use right mouse drag to turn the editor camera, WASD/QE to move it, and the wheel to zoom. The editor camera controls remain separate from the play-mode character and follow camera.
@@ -65,10 +69,41 @@ end)
 local humanoid = game.Players.LocalPlayer.Character:WaitForChild("Humanoid")
 humanoid.Died:Connect(function() print("Character died") end)
 humanoid.WalkSpeed = 12
+local score = Instance.new("IntValue", workspace)
+score.Name = "Score"
+score.Changed:Connect(function(value) print("Score:", value) end)
+score.Value = score.Value + 1
+local template = game.ReplicatedStorage:FindFirstChild("Tree")
+if template then
+    local tree = template:Clone()
+    tree:SetProperty("Parent", workspace)
+end
 local imagePath = GetAssetPath("logo.png")
 ```
 
 `SetProperty(instance, property, value)`, `GetProperty(instance, property)`, `WaitForChild(parent, childName)`, `ConnectTouched(instance, callback)`, `GetAssetPath(assetName)`, and `print(...)` are available. `waitforchild` and lowercase `touched` aliases are supported. Touched events are generated for overlapping BasePart bounds when both parts have `CanTouch` enabled.
+
+Use `task.wait(seconds)` to yield until a later play update; it returns the elapsed simulation time. `task.spawn(callback, ...)` starts a separate coroutine immediately, `task.defer(callback, ...)` runs after the current script resume point, and `task.delay(seconds, callback, ...)` runs after the delay. Each scheduling call returns a coroutine that `task.cancel(thread)` can stop while pending or yielded. The global `wait(seconds)` is an alias for `task.wait`. Disabling, moving out of an active hierarchy, or destroying a Script cancels its pending tasks.
+
+During play, `Instance.new(className, parent?)` creates supported scene and GUI objects. Children can be added to a Model before the Model is placed in Workspace. Assign `Parent = nil` to detach an object, or call `Destroy()` to remove it and its descendants. These changes affect the play copy and are not saved to the editor project. For a project with `Workspace.AutoManageCharacter` off, a script can create and assign its own character Model:
+
+```lua
+local character = Instance.new("Model")
+character.Name = "CustomCharacter"
+local root = Instance.new("Part", character)
+root.Name = "HumanoidRootPart"
+root.Position = Vector3.new(0, 5, 0)
+root.Anchored = false
+Instance.new("Humanoid", character)
+character.Parent = workspace
+game.Players.LocalPlayer.Character = character
+workspace.Camera.Subject = root
+workspace.Camera.Mode = "Subject"
+```
+
+Direct `Name` and `Parent` assignments become visible to hierarchy lookups when the current script yields or finishes. Use `instance:SetProperty("Name", name)` or `instance:SetProperty("Parent", parent)` when later lines in the same script need to find the object immediately.
+
+With automatic character management off, scripts control that character's movement and respawn behavior.
 
 ## Build games
 

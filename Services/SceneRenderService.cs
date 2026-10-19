@@ -12,9 +12,12 @@ namespace BullerStudio.Services;
 public sealed class SceneRenderService
 {
     private readonly Viewport3DX viewport;
+    private readonly bool showAttachmentGizmos;
     private readonly DefaultEffectsManager effectsManager = new();
     private readonly Dictionary<string, MeshGeometryModel3D> visuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MeshGeometryModel3D> highlightFills = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, OutLineMeshGeometryModel3D> beamVisuals = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, BeamState> beamStates = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SceneNode> highlightSources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> renderedAssetSources = new(StringComparer.Ordinal);
     private readonly List<Light3D> objectLights = [];
@@ -25,11 +28,15 @@ public sealed class SceneRenderService
     private float orbitYaw = 35;
     private float orbitPitch = -24;
     private float orbitDistance = 12;
+    private bool hasBeamNodes;
 
-    public SceneRenderService(Viewport3DX viewport, SceneNode cameraNode)
+    private sealed record BeamState(Point3D Start, Point3D End, float Width0, float Width1, string Color, float Transparency);
+
+    public SceneRenderService(Viewport3DX viewport, SceneNode cameraNode, bool showAttachmentGizmos = false)
     {
         this.viewport = viewport;
         this.cameraNode = cameraNode;
+        this.showAttachmentGizmos = showAttachmentGizmos;
         viewport.EffectsManager = effectsManager;
         viewport.Camera = new HelixToolkit.Wpf.SharpDX.PerspectiveCamera { Position = new Point3D(0, 0, 0), LookDirection = new Vector3D(0, 0, -1), UpDirection = new Vector3D(0, 1, 0), FieldOfView = cameraNode.FieldOfView };
         viewport.Items.Add(new AmbientLight3D { Color = Colors.Gray });
@@ -40,6 +47,7 @@ public sealed class SceneRenderService
     }
 
     public IReadOnlyDictionary<string, MeshGeometryModel3D> Visuals => visuals;
+    public IReadOnlyDictionary<string, OutLineMeshGeometryModel3D> BeamVisuals => beamVisuals;
     public IReadOnlyDictionary<string, MeshGeometryModel3D> HighlightFills => highlightFills;
     public float CameraYaw => orbitYaw;
 
@@ -60,6 +68,11 @@ public sealed class SceneRenderService
             visual.OutlineColor = isSelected ? Colors.Orange : highlight is null
                 ? Colors.Orange : ParseHighlightColor(highlight.OutlineColor, highlight.OutlineTransparency, Colors.White);
         }
+        foreach (var (id, beam) in beamVisuals)
+        {
+            beam.EnableOutline = id == selectedId;
+            beam.OutlineColor = Colors.Orange;
+        }
     }
 
     public void Refresh(GameProject project)
@@ -78,14 +91,18 @@ public sealed class SceneRenderService
         highlightFills.Clear();
         highlightSources.Clear();
         renderedAssetSources.Clear();
+        foreach (var beam in beamVisuals.Values) viewport.Items.Remove(beam);
+        beamVisuals.Clear();
+        beamStates.Clear();
         viewport.IsShadowMappingEnabled = project.Settings.Shadows;
-        foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type is not ("Decal" or "Texture") || FindPartParent(project, node) is not null)))
+        foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type is not ("Decal" or "Texture" or "Attachment") || FindPartParent(project, node) is not null)))
         {
             var model = CreateVisual(node, project);
             visuals[node.Id] = model;
             viewport.Items.Add(model);
         }
         RefreshObjectLights(project);
+        RefreshBeams(project);
         RefreshHighlights(project);
         RefreshSkybox(project.Workspace, project);
         UpdateCamera(project);
@@ -94,6 +111,26 @@ public sealed class SceneRenderService
 
     public void UpdateNode(SceneNode node, GameProject project)
     {
+        if (node.Type == "Model")
+        {
+            if (hasBeamNodes) RefreshBeams(project);
+            if (showAttachmentGizmos)
+                foreach (var attachment in GameProjectStore.Flatten(node.Children).Where(child => child.Type == "Attachment"))
+                    UpdateAttachmentVisual(attachment, project);
+        }
+        if (node.Type == "Attachment")
+        {
+            if (showAttachmentGizmos) UpdateAttachmentVisual(node, project);
+            RefreshBeams(project);
+            SetSelection(selectedId);
+            return;
+        }
+        if (node.Type == "Beam")
+        {
+            RefreshBeams(project);
+            SetSelection(selectedId);
+            return;
+        }
         if (SceneNodeTypes.IsLight(node) || SceneNodeTypes.IsBasePart(node) && node.Children.Any(SceneNodeTypes.IsLight)) RefreshObjectLights(project);
         if (node.Type == "Highlight")
         {
@@ -129,6 +166,10 @@ public sealed class SceneRenderService
         if (node.Type is not ("ImageLabel" or "Decal" or "Texture") && !(node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture))) model.Material = MakeMaterial(node);
         if (SceneNodeTypes.IsBasePart(node))
         {
+            if (hasBeamNodes) RefreshBeams(project);
+            if (showAttachmentGizmos)
+                foreach (var attachment in node.Children.Where(child => child.Type == "Attachment"))
+                    UpdateAttachmentVisual(attachment, project);
             foreach (var decal in node.Children.Where(child => child.Type is "Decal" or "Texture")) UpdateNode(decal, project);
             if (highlightFills.TryGetValue(node.Id, out var fill))
             {
@@ -223,6 +264,7 @@ public sealed class SceneRenderService
             builder.AddQuad(new Vector3(-halfX, -halfY, 0), new Vector3(halfX, -halfY, 0), new Vector3(halfX, halfY, 0), new Vector3(-halfX, halfY, 0));
         }
         else if (node.Type is "Decal" or "Texture") AddDecalFace(builder, node.Face);
+        else if (node.Type == "Attachment") builder.AddSphere(Vector3.Zero, .09, 12, 8);
         else if (node.Type == "MeshPart" && !string.IsNullOrWhiteSpace(node.Asset) && File.Exists(ResolveAsset(project, node.Asset)))
         {
             try { builder = ReadObj(ResolveAsset(project, node.Asset)); }
@@ -239,7 +281,7 @@ public sealed class SceneRenderService
         var decalParent = node.Type is "Decal" or "Texture" ? FindPartParent(project, node) : null;
         var geometry = builder.ToMeshGeometry3D();
         if (node.Type == "Texture" && decalParent is not null) ApplyTextureTiling(geometry, node, decalParent);
-        var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = decalParent is null ? TransformFor(node) : TransformFor(decalParent), IsThrowingShadow = node.Type is not ("Decal" or "Texture") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
+        var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = node.Type == "Attachment" ? AttachmentTransformFor(node, project) : decalParent is null ? TransformFor(node) : TransformFor(decalParent), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
         if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type is "Decal" or "Texture" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture)) LoadImageAsset(visual, ResolveTexture(project, node.Texture), node);
@@ -264,7 +306,82 @@ public sealed class SceneRenderService
 
     private static float EffectiveTransparency(SceneNode node) => Math.Clamp(Math.Max(node.Transparency, node.Material == "Glass" ? .55f : 0), 0, 1);
 
-    private static bool IsRenderable(SceneNode node) => SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Decal" or "Texture";
+    private bool IsRenderable(SceneNode node) => SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Decal" or "Texture" || showAttachmentGizmos && node.Type == "Attachment";
+
+    private void UpdateAttachmentVisual(SceneNode attachment, GameProject project)
+    {
+        if (!visuals.TryGetValue(attachment.Id, out var visual)) return;
+        visual.Transform = AttachmentTransformFor(attachment, project);
+    }
+
+    private static Transform3D AttachmentTransformFor(SceneNode attachment, GameProject project)
+    {
+        var parent = FindPartParent(project, attachment);
+        if (parent is null) return Transform3D.Identity;
+        var point = TransformFor(parent, false).Transform(new Point3D(attachment.Position[0], attachment.Position[1], attachment.Position[2]));
+        return new TranslateTransform3D(point.X, point.Y, point.Z);
+    }
+
+    private void RefreshBeams(GameProject project)
+    {
+        var workspaceNodes = GameProjectStore.Flatten(project.Workspace.Children);
+        var parts = workspaceNodes.Where(SceneNodeTypes.IsBasePart).ToArray();
+        var attachments = workspaceNodes.Where(node => node.Type == "Attachment")
+            .ToDictionary(node => node.Id, StringComparer.Ordinal);
+        var beams = workspaceNodes.Where(node => node.Type == "Beam" && node.Enabled).ToArray();
+        hasBeamNodes = beams.Length > 0;
+        var activeIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var beam in beams)
+        {
+            if (!attachments.TryGetValue(beam.Attachment0, out var first)
+                || !attachments.TryGetValue(beam.Attachment1, out var second)
+                || ReferenceEquals(first, second)) continue;
+            var firstPart = parts.FirstOrDefault(part => part.Children.Contains(first));
+            var secondPart = parts.FirstOrDefault(part => part.Children.Contains(second));
+            if (firstPart is null || secondPart is null) continue;
+            var start = TransformFor(firstPart, false).Transform(new Point3D(first.Position[0], first.Position[1], first.Position[2]));
+            var end = TransformFor(secondPart, false).Transform(new Point3D(second.Position[0], second.Position[1], second.Position[2]));
+            if ((end - start).Length < .001 || beam.Width0 <= 0 && beam.Width1 <= 0) continue;
+            activeIds.Add(beam.Id);
+            var state = new BeamState(start, end, beam.Width0, beam.Width1, beam.Color, beam.Transparency);
+            if (beamStates.TryGetValue(beam.Id, out var oldState) && oldState == state) continue;
+            if (beamVisuals.Remove(beam.Id, out var previous)) viewport.Items.Remove(previous);
+            var builder = new MeshBuilder();
+            var startVector = ToVector(start);
+            var endVector = ToVector(end);
+            var axis = Vector3.Normalize(endVector - startVector);
+            var radialX = Vector3.Normalize(Vector3.Cross(axis, Math.Abs(axis.Y) < .9f ? Vector3.UnitY : Vector3.UnitX));
+            var radialY = Vector3.Cross(axis, radialX);
+            const int sides = 12;
+            for (var side = 0; side < sides; side++)
+            {
+                var angle0 = side * MathF.Tau / sides;
+                var angle1 = (side + 1) * MathF.Tau / sides;
+                var direction0 = radialX * MathF.Cos(angle0) + radialY * MathF.Sin(angle0);
+                var direction1 = radialX * MathF.Cos(angle1) + radialY * MathF.Sin(angle1);
+                builder.AddQuad(startVector + direction0 * beam.Width0 * .5f,
+                    startVector + direction1 * beam.Width0 * .5f,
+                    endVector + direction1 * beam.Width1 * .5f,
+                    endVector + direction0 * beam.Width1 * .5f);
+            }
+            var visual = new OutLineMeshGeometryModel3D
+            {
+                Geometry = builder.ToMeshGeometry3D(), Material = MakeMaterial(beam),
+                IsTransparent = beam.Transparency > 0, IsThrowingShadow = false,
+                IsHitTestVisible = false, EnableOutline = beam.Id == selectedId,
+                OutlineColor = Colors.Orange
+            };
+            beamVisuals[beam.Id] = visual;
+            beamStates[beam.Id] = state;
+            viewport.Items.Add(visual);
+        }
+        foreach (var id in beamVisuals.Keys.Where(id => !activeIds.Contains(id)).ToArray())
+        {
+            viewport.Items.Remove(beamVisuals[id]);
+            beamVisuals.Remove(id);
+            beamStates.Remove(id);
+        }
+    }
 
     private static SceneNode? FindPartParent(GameProject project, SceneNode child) =>
         GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(parent => SceneNodeTypes.IsBasePart(parent) && parent.Children.Contains(child));
