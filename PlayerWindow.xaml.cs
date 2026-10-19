@@ -15,7 +15,10 @@ public partial class PlayerWindow : Window
     private readonly GameProject project;
     private readonly SceneRenderService renderer;
     private readonly PhysicsSimulationService physics;
-    private readonly PlayerCharacterService character;
+    private readonly PlayerCharacterService? character;
+    private readonly SceneNode localPlayer;
+    private readonly SeatInteractionService? seats;
+    private readonly SoundPlaybackService soundPlayback;
     private LuaXRuntime? runtime;
     private readonly DispatcherTimer updateTimer;
     private bool isDragging;
@@ -30,10 +33,21 @@ public partial class PlayerWindow : Window
         GameGuiCanvas.SizeChanged += (_, _) => RefreshGameGui();
         this.project = project;
         GameProjectStore.EnsureProject(project);
-        character = new PlayerCharacterService(project);
+        project.Players.Children.RemoveAll(node => node.Type == "Player" && node.Name == "LocalPlayer");
+        localPlayer = new SceneNode { Type = "Player", Name = "LocalPlayer" };
+        project.Players.Children.Add(localPlayer);
+        if (project.Workspace.AutoManageCharacter)
+        {
+            character = new PlayerCharacterService(project);
+            localPlayer.Character = character.Model.Id;
+        }
         var camera = project.Workspace.Children.First(node => node.Type == "Camera");
-        camera.CameraMode = "Subject";
-        camera.Subject = character.Root.Id;
+        if (character is not null)
+        {
+            camera.CameraMode = "Subject";
+            camera.Subject = character.Root.Id;
+            seats = new SeatInteractionService(project, character);
+        }
         GameTitle.Text = project.Name;
         Title = project.Name;
         renderer = new SceneRenderService(GameViewport, camera);
@@ -41,6 +55,7 @@ public partial class PlayerWindow : Window
         var gameRuntime = new LuaXRuntime(project,
             (node, property, _) => Dispatcher.Invoke(() =>
             {
+                if (node.Type == "Sound") return;
                 if (property == "Parent" || node.Type == "Workspace" && property.StartsWith("Skybox", StringComparison.Ordinal)) renderer.Refresh(project);
                 else renderer.UpdateNode(node, project);
                 renderer.UpdateCamera(project);
@@ -57,12 +72,14 @@ public partial class PlayerWindow : Window
             renderer.UpdateNode(node, project);
             renderer.UpdateCamera(project);
         });
+        soundPlayback = new SoundPlaybackService(project, node => runtime?.SynchronizeExternalProperty(node, "Playing"));
+        soundPlayback.Update(character?.Root.Position ?? camera.Position);
         RefreshGameGui();
         updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
         lastUpdateTimestamp = Stopwatch.GetTimestamp();
         updateTimer.Tick += UpdateTimer_Tick;
         updateTimer.Start();
-        Closed += (_, _) => updateTimer.Stop();
+        Closed += (_, _) => { updateTimer.Stop(); soundPlayback.Dispose(); };
         Loaded += (_, _) => GameViewport.Focus();
         Deactivated += (_, _) =>
         {
@@ -79,20 +96,29 @@ public partial class PlayerWindow : Window
         var canMove = IsActive && Keyboard.FocusedElement is not TextBox && Keyboard.FocusedElement is not Button;
         var forward = canMove ? (Keyboard.IsKeyDown(Key.W) ? 1 : 0) - (Keyboard.IsKeyDown(Key.S) ? 1 : 0) : 0;
         var strafe = canMove ? (Keyboard.IsKeyDown(Key.D) ? 1 : 0) - (Keyboard.IsKeyDown(Key.A) ? 1 : 0) : 0;
-        character.ApplyInput(physics, renderer.CameraYaw, forward, strafe, canMove && jumpRequested);
+        if (seats is not null)
+            foreach (var node in seats.BeforePhysics(canMove && jumpRequested)) SyncSeatNode(node);
+        if (seats?.IsSeated != true)
+            character?.ApplyInput(physics, renderer.CameraYaw, forward, strafe, canMove && jumpRequested);
         jumpRequested = false;
-        runtime?.SynchronizeExternalProperty(character.Root, "Velocity");
+        if (character is not null) runtime?.SynchronizeExternalProperty(character.Root, "Velocity");
         physics.Step(elapsed);
-        if (character.NeedsRespawn)
+        if (seats is not null)
+            foreach (var node in seats.AfterPhysics()) SyncSeatNode(node);
+        runtime?.UpdateHumanoidDeaths();
+        if (character?.NeedsRespawn == true)
         {
+            if (seats is not null)
+                foreach (var node in seats.BeforePhysics(true)) SyncSeatNode(node);
             foreach (var node in character.Respawn()) SyncCharacterNode(node);
+            runtime?.SynchronizeExternalProperty(character.Humanoid, "Health");
         }
-        else
+        else if (character is not null)
         {
             foreach (var node in character.UpdatePose()) SyncCharacterNode(node);
         }
         runtime?.UpdateTouched(elapsed);
-        var nearbyPrompt = ProximityPromptService.FindNearest(project, character.Root);
+        var nearbyPrompt = character is null ? null : ProximityPromptService.FindNearest(project, character.Root);
         PromptBorder.Visibility = nearbyPrompt is null ? Visibility.Collapsed : Visibility.Visible;
         if (nearbyPrompt is not null)
         {
@@ -100,9 +126,10 @@ public partial class PlayerWindow : Window
                 ? nearbyPrompt.Parent.Name : nearbyPrompt.Prompt.ObjectText;
             PromptActionText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ActionText)
                 ? "Interact" : nearbyPrompt.Prompt.ActionText;
-            if (promptRequested) runtime?.InvokePromptTriggered(nearbyPrompt.Prompt.Id, character.Model.Id);
+            if (promptRequested) runtime?.InvokePromptTriggered(nearbyPrompt.Prompt.Id, localPlayer.Id);
         }
         promptRequested = false;
+        soundPlayback.Update(character?.Root.Position ?? project.Workspace.Children.First(node => node.Type == "Camera").Position);
     }
 
     private void SyncCharacterNode(SceneNode node)
@@ -110,7 +137,14 @@ public partial class PlayerWindow : Window
         runtime?.SynchronizeExternalProperty(node, "Position");
         runtime?.SynchronizeExternalProperty(node, "Rotation");
         runtime?.SynchronizeExternalProperty(node, "Velocity");
+        runtime?.SynchronizeExternalProperty(node, "Anchored");
         renderer.UpdateNode(node, project);
+    }
+
+    private void SyncSeatNode(SceneNode node)
+    {
+        if (node.Type == "Seat") runtime?.SynchronizeExternalProperty(node, "Occupant");
+        else SyncCharacterNode(node);
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -206,12 +240,13 @@ public partial class PlayerWindow : Window
         if (Mouse.LeftButton != MouseButtonState.Pressed) return;
         var detector = FindPointedClickDetector();
         if (detector is null) return;
-        runtime?.InvokeClickDetector(detector.Id, character.Model.Id);
+        runtime?.InvokeClickDetector(detector.Id, localPlayer.Id);
         e.Handled = true;
     }
 
     private SceneNode? FindPointedClickDetector()
     {
+        if (character is null) return null;
         var hit = GameViewport.FindHits(Mouse.GetPosition(GameViewport)).FirstOrDefault()?.ModelHit;
         if (hit is not MeshGeometryModel3D model) return null;
         var partId = renderer.Visuals.FirstOrDefault(entry => ReferenceEquals(entry.Value, model)).Key;

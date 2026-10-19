@@ -8,6 +8,7 @@ public sealed class GameProject
     public string Name { get; set; } = "Untitled Game";
     public ProjectSettings Settings { get; set; } = new();
     public SceneNode Workspace { get; set; } = new() { Id = "workspace", Type = "Workspace", Name = "Workspace" };
+    public SceneNode Players { get; set; } = new() { Id = "players", Type = "Players", Name = "Players" };
     public SceneNode Gui { get; set; } = new() { Id = "gui", Type = "Gui", Name = "Gui", Children = [new SceneNode { Id = "screen-gui-main", Type = "ScreenGui", Name = "ScreenGui" }] };
     public List<ProjectAsset> Assets { get; set; } = [];
     public List<GameScript> Scripts { get; set; } = [];
@@ -81,6 +82,13 @@ public sealed class SceneNode
     public float[] Velocity { get; set; } = [0, 0, 0];
     public bool CastShadow { get; set; } = true;
     public float Gravity { get; set; } = 24;
+    public bool AutoManageCharacter { get; set; } = true;
+    public string Character { get; set; } = string.Empty;
+    public string Occupant { get; set; } = string.Empty;
+    public float Health { get; set; } = 100;
+    public float MaxHealth { get; set; } = 100;
+    public float WalkSpeed { get; set; } = 7.5f;
+    public float JumpPower { get; set; } = 10;
     public string Asset { get; set; } = string.Empty;
     public string Texture { get; set; } = string.Empty;
     public string CameraMode { get; set; } = "Custom";

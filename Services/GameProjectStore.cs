@@ -246,6 +246,11 @@ public static class GameProjectStore
         project.Workspace ??= new SceneNode { Id = "workspace", Type = "Workspace", Name = "Workspace" };
         project.Workspace.Children ??= [];
         project.Workspace.Gravity = float.IsFinite(project.Workspace.Gravity) ? Math.Clamp(project.Workspace.Gravity, 0, 1000) : 24;
+        project.Players ??= new SceneNode { Id = "players", Type = "Players", Name = "Players" };
+        project.Players.Id = "players";
+        project.Players.Type = "Players";
+        project.Players.Name = "Players";
+        project.Players.Children ??= [];
         project.Gui ??= new SceneNode { Id = "gui", Type = "Gui", Name = "Gui" };
         project.Gui.Id = "gui";
         project.Gui.Type = "Gui";
@@ -253,7 +258,7 @@ public static class GameProjectStore
         project.Gui.Children ??= [];
         if (!project.Gui.Children.Any(node => node.Type == "ScreenGui"))
             project.Gui.Children.Add(new SceneNode { Id = Guid.NewGuid().ToString("N"), Type = "ScreenGui", Name = "ScreenGui" });
-        foreach (var node in Flatten(project.Workspace.Children).Concat(Flatten(project.Gui.Children)))
+        foreach (var node in Flatten(project.Workspace.Children).Concat(Flatten(project.Players.Children)).Concat(Flatten(project.Gui.Children)))
         {
             node.Children ??= [];
             node.Position = EnsureVector(node.Position, [0, 0, 0]);
@@ -285,6 +290,12 @@ public static class GameProjectStore
             node.RollOffMaxDistance = float.IsFinite(node.RollOffMaxDistance) ? Math.Clamp(node.RollOffMaxDistance, node.RollOffMinDistance + .01f, 10000) : 100;
             node.Part0 ??= string.Empty;
             node.Part1 ??= string.Empty;
+            node.Character ??= string.Empty;
+            node.Occupant ??= string.Empty;
+            node.MaxHealth = float.IsFinite(node.MaxHealth) ? Math.Clamp(node.MaxHealth, 1, 100000) : 100;
+            node.Health = float.IsFinite(node.Health) ? Math.Clamp(node.Health, 0, node.MaxHealth) : node.MaxHealth;
+            node.WalkSpeed = float.IsFinite(node.WalkSpeed) ? Math.Clamp(node.WalkSpeed, 0, 1000) : 7.5f;
+            node.JumpPower = float.IsFinite(node.JumpPower) ? Math.Clamp(node.JumpPower, 0, 1000) : 10;
         }
         var scriptNames = Flatten(project.Workspace.Children).Concat(Flatten(project.Gui.Children))
             .Where(node => node.Type == "Script")
@@ -328,13 +339,16 @@ public static class GameProjectStore
         return result;
     }
 
-    public static IReadOnlyList<SceneNode> Flatten(GameProject project) => Flatten([project.Workspace, project.Gui]);
+    public static IReadOnlyList<SceneNode> Flatten(GameProject project) => Flatten([project.Workspace, project.Players, project.Gui]);
 
     public static bool CanParentNode(GameProject project, SceneNode source, SceneNode destinationParent)
     {
-        if (source.Id == project.Workspace.Id || source.Id == project.Gui.Id || source.Id == destinationParent.Id) return false;
+        if (source.Id == project.Workspace.Id || source.Id == project.Players.Id || source.Id == project.Gui.Id || source.Id == destinationParent.Id) return false;
         if (!IsNodeInTree(project.Workspace, destinationParent.Id) && !IsNodeInTree(project.Gui, destinationParent.Id)) return false;
         if (Flatten(source.Children).Any(node => node.Id == destinationParent.Id)) return false;
+        if (source.Type == "Humanoid")
+            return destinationParent.Type == "Model" && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => child.Type == "Humanoid" && child.Id != source.Id);
         if (source.Type == "Camera")
             return destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
 
@@ -350,6 +364,20 @@ public static class GameProjectStore
 
         if (destinationParent.Type is not ("Workspace" or "Folder" or "Model") && !SceneNodeTypes.IsBasePart(destinationParent)) return false;
         return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
+    }
+
+    public static bool CanParentDetachedNode(SceneNode source, SceneNode destinationParent)
+    {
+        if (source.Id == destinationParent.Id || Flatten(source.Children).Any(child => child.Id == destinationParent.Id)) return false;
+        if (source.Type is "Workspace" or "Players" or "Gui" or "Camera") return false;
+        if (source.Type == "Humanoid")
+            return destinationParent.Type == "Model" && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => child.Type == "Humanoid" && child.Id != source.Id);
+        if (destinationParent.Type == "Model" || SceneNodeTypes.IsBasePart(destinationParent))
+            return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
+        if (destinationParent.Type == "Folder")
+            return IsWorkspaceSubtreeCompatible(source, "Folder") || IsGuiSubtreeCompatible(source, false, "Folder");
+        return IsGuiContainer(destinationParent.Type) && IsGuiSubtreeCompatible(source, false, destinationParent.Type);
     }
 
     public static bool MoveNodeToParent(GameProject project, SceneNode source, SceneNode destinationParent)
@@ -438,6 +466,7 @@ public static class GameProjectStore
 
     private static bool IsWorkspaceSubtreeCompatible(SceneNode node, string? parentType)
     {
+        if (node.Type == "Humanoid") return parentType == "Model" && node.Children.Count == 0;
         if (node.Type is "Decal" or "Texture")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type is "ProximityPrompt" or "ClickDetector")

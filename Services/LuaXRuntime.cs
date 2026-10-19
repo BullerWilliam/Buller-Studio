@@ -12,11 +12,15 @@ public sealed class LuaXRuntime
     private readonly Action<SceneNode, string, DynValue>? propertyChanged;
     private readonly Action<string>? output;
     private readonly Dictionary<string, Table> instances = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SceneNode> createdNodes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> linkedChildKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> touchedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> guiActivatedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> guiTextChangedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> promptTriggeredCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> clickDetectorCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<ScriptCallback>> humanoidDiedCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> humanoidWasAlive = new(StringComparer.Ordinal);
     private readonly HashSet<string> activeContacts = new(StringComparer.Ordinal);
     private readonly List<ScriptExecution> activeScripts = [];
     private readonly ConditionalWeakTable<Table, LuaXTypeTag> runtimeTypeTags = new();
@@ -27,6 +31,13 @@ public sealed class LuaXRuntime
     private sealed record LuaXTypeTag(string Name);
     private sealed record ScriptCallback(GameScript GameScript, DynValue Function, string Name);
     private sealed record ScriptExecution(GameScript GameScript, Coroutine Coroutine, bool ReportFinished, string? CallbackName = null);
+    private static readonly HashSet<string> CreatableClasses = new(StringComparer.Ordinal)
+    {
+        "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Humanoid",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint",
+        "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
+        "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"
+    };
 
     public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null)
     {
@@ -142,7 +153,8 @@ public sealed class LuaXRuntime
         {
             var instance = CreateInstance(node);
             instances[node.Id] = instance;
-            if (node.Type is not ("Workspace" or "Gui")) script.Globals.Set(node.Name, DynValue.NewTable(instance));
+            if (node.Type == "Humanoid") humanoidWasAlive[node.Id] = node.Health > 0;
+            if (node.Type is not ("Workspace" or "Players" or "Gui")) script.Globals.Set(node.Name, DynValue.NewTable(instance));
         }
         foreach (var node in GameProjectStore.Flatten(project))
         {
@@ -154,8 +166,10 @@ public sealed class LuaXRuntime
         var game = new Table(script);
         runtimeTypeTags.Add(game, new LuaXTypeTag("DataModel"));
         var workspace = instances[project.Workspace.Id];
+        var players = instances[project.Players.Id];
         var gui = instances[project.Gui.Id];
         game.Set("Workspace", DynValue.NewTable(workspace));
+        game.Set("Players", DynValue.NewTable(players));
         game.Set("Gui", DynValue.NewTable(gui));
         game.Set("GetService", DynValue.NewCallback((_, args) =>
         {
@@ -163,13 +177,18 @@ public sealed class LuaXRuntime
             return serviceName switch
             {
                 "Workspace" => DynValue.NewTable(workspace),
+                "Players" => DynValue.NewTable(players),
                 "Gui" => DynValue.NewTable(gui),
                 _ => DynValue.Nil
             };
         }));
         script.Globals.Set("game", DynValue.NewTable(game));
         script.Globals.Set("workspace", DynValue.NewTable(workspace));
+        script.Globals.Set("Players", DynValue.NewTable(players));
         script.Globals.Set("Gui", DynValue.NewTable(gui));
+        var instanceLibrary = new Table(script);
+        instanceLibrary.Set("new", DynValue.NewCallback((_, args) => NewInstance(args)));
+        script.Globals.Set("Instance", DynValue.NewTable(instanceLibrary));
         var cameraModeEnum = new Table(script);
         cameraModeEnum.Set("Custom", DynValue.NewString("Custom"));
         cameraModeEnum.Set("Subject", DynValue.NewString("Subject"));
@@ -374,6 +393,13 @@ public sealed class LuaXRuntime
         instance.Set("AssemblyLinearVelocity", VectorValue(node.Velocity));
         instance.Set("CastShadow", DynValue.NewBoolean(node.CastShadow));
         instance.Set("Gravity", DynValue.NewNumber(node.Gravity));
+        instance.Set("AutoManageCharacter", DynValue.NewBoolean(node.AutoManageCharacter));
+        instance.Set("Character", GetCharacterValue(node));
+        instance.Set("Occupant", GetOccupantValue(node));
+        instance.Set("Health", DynValue.NewNumber(node.Health));
+        instance.Set("MaxHealth", DynValue.NewNumber(node.MaxHealth));
+        instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
+        instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
         instance.Set("Asset", DynValue.NewString(node.Asset));
         instance.Set("CameraMode", DynValue.NewString(node.CameraMode));
         instance.Set("Mode", DynValue.NewString(node.CameraMode));
@@ -407,10 +433,24 @@ public sealed class LuaXRuntime
             var className = args.Count > index ? args[index].CastToString() : null;
             return DynValue.NewBoolean(className is not null && IsA(node, className));
         }));
+        instance.Set("Destroy", DynValue.NewCallback((_, _) => DestroyInstance(node)));
         if (node.Type == "Sound")
         {
             instance.Set("Play", DynValue.NewCallback((_, _) => SetPropertyValue(node, "Playing", DynValue.NewBoolean(true))));
             instance.Set("Stop", DynValue.NewCallback((_, _) => SetPropertyValue(node, "Playing", DynValue.NewBoolean(false))));
+        }
+        if (node.Type == "Humanoid")
+        {
+            var died = new Table(script);
+            died.Set("Connect", DynValue.NewCallback((_, args) =>
+            {
+                var index = args.Count > 0 && args[0].Type == DataType.Table ? 1 : 0;
+                if (currentGameScript is null || args.Count <= index || args[index].Type != DataType.Function) return DynValue.Nil;
+                if (!humanoidDiedCallbacks.TryGetValue(node.Id, out var callbacks)) humanoidDiedCallbacks[node.Id] = callbacks = [];
+                callbacks.Add(new ScriptCallback(currentGameScript, args[index], "Died"));
+                return DynValue.Nil;
+            }));
+            instance.Set("Died", DynValue.NewTable(died));
         }
         var touched = new Table(script);
         touched.Set("Connect", DynValue.NewCallback((_, args) => RegisterTouch(node.Id, args[1])));
@@ -469,19 +509,19 @@ public sealed class LuaXRuntime
         return instance;
     }
 
-    public void InvokePromptTriggered(string promptId, string playerCharacterId)
+    public void InvokePromptTriggered(string promptId, string playerId)
     {
         if (!promptTriggeredCallbacks.TryGetValue(promptId, out var callbacks)) return;
-        var player = instances.TryGetValue(playerCharacterId, out var character)
-            ? DynValue.NewTable(character) : DynValue.Nil;
+        var player = instances.TryGetValue(playerId, out var playerInstance)
+            ? DynValue.NewTable(playerInstance) : DynValue.Nil;
         foreach (var callback in callbacks.ToArray()) StartCallback(callback, player);
     }
 
-    public void InvokeClickDetector(string detectorId, string playerCharacterId)
+    public void InvokeClickDetector(string detectorId, string playerId)
     {
         if (!clickDetectorCallbacks.TryGetValue(detectorId, out var callbacks)) return;
-        var player = instances.TryGetValue(playerCharacterId, out var character)
-            ? DynValue.NewTable(character) : DynValue.Nil;
+        var player = instances.TryGetValue(playerId, out var playerInstance)
+            ? DynValue.NewTable(playerInstance) : DynValue.Nil;
         foreach (var callback in callbacks.ToArray()) StartCallback(callback, player);
     }
 
@@ -489,6 +529,20 @@ public sealed class LuaXRuntime
     {
         if (!guiActivatedCallbacks.TryGetValue(nodeId, out var callbacks)) return;
         foreach (var callback in callbacks.ToArray()) StartCallback(callback);
+    }
+
+    public void UpdateHumanoidDeaths()
+    {
+        foreach (var humanoid in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "Humanoid"))
+        {
+            var alive = humanoid.Health > 0;
+            var wasAlive = humanoidWasAlive.GetValueOrDefault(humanoid.Id, alive);
+            humanoidWasAlive[humanoid.Id] = alive;
+            if (alive || !wasAlive) continue;
+            SynchronizeExternalProperty(humanoid, "Health");
+            if (humanoidDiedCallbacks.TryGetValue(humanoid.Id, out var callbacks))
+                foreach (var callback in callbacks.ToArray()) StartCallback(callback);
+        }
     }
 
     public void UpdateGuiTextInput(string nodeId, string value)
@@ -534,24 +588,89 @@ public sealed class LuaXRuntime
         return value.Type == DataType.String ? FindNode(value.String) : null;
     }
 
-    private bool TrySetParent(SceneNode source, DynValue value)
+    private DynValue NewInstance(CallbackArguments args)
     {
+        if (args.Count == 0 || args[0].Type != DataType.String || !CreatableClasses.Contains(args[0].String)) return DynValue.Nil;
+        var className = args[0].String;
+        var node = new SceneNode { Type = className, Name = className };
+        if (SceneNodeTypes.IsBasePart(node)) node.Position = [0, 1, 0];
+        if (className == "SpawnLocation") { node.Size = [6, 1, 6]; node.Position = [0, .5f, 0]; node.Color = "#72BF9D"; node.Material = "Metal"; }
+        if (className == "Seat") { node.Size = [2, 1, 2]; node.Position = [0, .5f, 0]; node.Color = "#596B89"; node.Material = "Metal"; }
+        createdNodes[node.Id] = node;
+        var instance = CreateInstance(node);
+        instances[node.Id] = instance;
+        if (className == "Humanoid") humanoidWasAlive[node.Id] = true;
+        if (args.Count > 1 && TrySetParent(node, args[1]))
+            propertyChanged?.Invoke(node, "Parent", DynValue.NewTable(instances[FindParentNode(node)!.Id]));
+        return DynValue.NewTable(instance);
+    }
+
+    private DynValue DestroyInstance(SceneNode node)
+    {
+        if (node.Type is "Workspace" or "Players" or "Gui" or "Camera" || !instances.ContainsKey(node.Id)) return DynValue.Nil;
+        var oldParent = FindParentNode(node);
+        var sourceCollection = FindSourceCollection(node);
+        sourceCollection?.Remove(node);
+        if (oldParent is not null) RefreshParentChildren(oldParent);
+        if (instances.TryGetValue(node.Id, out var removedInstance)) removedInstance.Set("Parent", DynValue.Nil);
+        foreach (var removed in new[] { node }.Concat(GameProjectStore.Flatten(node.Children)))
+        {
+            instances.Remove(removed.Id);
+            createdNodes.Remove(removed.Id);
+            linkedChildKeys.Remove(removed.Id);
+            humanoidWasAlive.Remove(removed.Id);
+            touchedCallbacks.Remove(removed.Id);
+            guiActivatedCallbacks.Remove(removed.Id);
+            guiTextChangedCallbacks.Remove(removed.Id);
+            promptTriggeredCallbacks.Remove(removed.Id);
+            clickDetectorCallbacks.Remove(removed.Id);
+            humanoidDiedCallbacks.Remove(removed.Id);
+            project.Scripts.RemoveAll(script => script.Id == removed.Id);
+        }
+        propertyChanged?.Invoke(node, "Parent", DynValue.Nil);
+        return DynValue.Nil;
+    }
+
+    private SceneNode[] KnownNodes()
+    {
+        var tree = GameProjectStore.Flatten(project);
+        var treeIds = tree.Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        return tree.Concat(createdNodes.Values.Where(node => !treeIds.Contains(node.Id))).ToArray();
+    }
+
+    private bool TrySetParent(SceneNode source, DynValue value, bool updateLinks = true)
+    {
+        if (source.Type is "Workspace" or "Players" or "Gui" or "Camera") return false;
+        if (value.Type == DataType.Nil)
+        {
+            var detachedOldParent = FindParentNode(source);
+            var oldCollection = FindSourceCollection(source);
+            if (oldCollection is null) return createdNodes.ContainsKey(source.Id);
+            oldCollection.Remove(source);
+            createdNodes[source.Id] = source;
+            if (updateLinks) RefreshLinksForMove(source, detachedOldParent, null);
+            return true;
+        }
         var parent = ReadNodeArgument(value);
-        if (parent is null || !GameProjectStore.CanParentNode(project, source, parent)) return false;
+        if (parent is null) return false;
+        var parentIsAttached = GameProjectStore.Flatten(project).Any(node => node.Id == parent.Id);
+        if (parentIsAttached ? !GameProjectStore.CanParentNode(project, source, parent)
+            : !createdNodes.ContainsKey(parent.Id) || !GameProjectStore.CanParentDetachedNode(source, parent)) return false;
         var oldParent = FindParentNode(source);
         if (ReferenceEquals(oldParent, parent)) return true;
-        var sourceCollection = FindParentCollection(project.Workspace, source) ?? FindParentCollection(project.Gui, source);
-        if (sourceCollection is null) return false;
-        sourceCollection.Remove(source);
+        var sourceCollection = FindSourceCollection(source);
+        if (sourceCollection is null && !createdNodes.ContainsKey(source.Id)) return false;
+        sourceCollection?.Remove(source);
         parent.Children.Add(source);
-        UpdateParentLinks();
+        if (updateLinks) RefreshLinksForMove(source, oldParent, parent);
         return true;
     }
 
     private SceneNode? FindParentNode(SceneNode target)
     {
-        if (ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Gui)) return null;
-        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Gui, target);
+        if (ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.Gui)) return null;
+        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.Gui, target)
+            ?? createdNodes.Values.Select(node => FindParentNode(node, target)).FirstOrDefault(parent => parent is not null);
     }
 
     private static SceneNode? FindParentNode(SceneNode parent, SceneNode target)
@@ -576,15 +695,56 @@ public sealed class LuaXRuntime
         return null;
     }
 
+    private List<SceneNode>? FindSourceCollection(SceneNode target) =>
+        FindParentCollection(project.Workspace, target) ?? FindParentCollection(project.Gui, target)
+        ?? createdNodes.Values.Select(node => FindParentCollection(node, target)).FirstOrDefault(collection => collection is not null);
+
+    private void RefreshLinksForMove(SceneNode source, SceneNode? oldParent, SceneNode? newParent)
+    {
+        if (instances.TryGetValue(source.Id, out var instance))
+            instance.Set("Parent", newParent is not null && instances.TryGetValue(newParent.Id, out var newParentTable)
+                ? DynValue.NewTable(newParentTable) : DynValue.Nil);
+        if (oldParent is not null) RefreshParentChildren(oldParent);
+        if (newParent is not null && !ReferenceEquals(oldParent, newParent)) RefreshParentChildren(newParent);
+    }
+
+    private void RefreshParentChildren(SceneNode parent)
+    {
+        if (!instances.TryGetValue(parent.Id, out var table)) return;
+        if (linkedChildKeys.TryGetValue(parent.Id, out var oldKeys))
+            foreach (var key in oldKeys) table.Set(key, DynValue.Nil);
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        var children = new Table(script);
+        var index = 1;
+        foreach (var child in parent.Children)
+        {
+            if (!instances.TryGetValue(child.Id, out var childTable)) continue;
+            var childValue = DynValue.NewTable(childTable);
+            children.Set(index++, childValue);
+            children.Set(child.Name, childValue);
+            children.Set(child.Id, childValue);
+            table.Set(child.Name, childValue);
+            keys.Add(child.Name);
+        }
+        table.Set("Children", DynValue.NewTable(children));
+        linkedChildKeys[parent.Id] = keys;
+    }
+
     private void UpdateParentLinks()
     {
-        var nodes = GameProjectStore.Flatten(project).ToArray();
+        var nodes = KnownNodes();
+        foreach (var (parentId, keys) in linkedChildKeys)
+            if (instances.TryGetValue(parentId, out var oldParent))
+                foreach (var key in keys) oldParent.Set(key, DynValue.Nil);
+        linkedChildKeys.Clear();
         foreach (var node in nodes)
         {
             if (!instances.TryGetValue(node.Id, out var instance)) continue;
             instance.Set("Children", DynValue.NewTable(new Table(script)));
             var parent = FindParentNode(node);
             instance.Set("Parent", parent is not null && instances.TryGetValue(parent.Id, out var parentTable) ? DynValue.NewTable(parentTable) : DynValue.Nil);
+            if (node.Type == "Player") instance.Set("Character", GetCharacterValue(node));
+            if (node.Type == "Seat") instance.Set("Occupant", GetOccupantValue(node));
             if (FindNode(node.Subject) is { } subjectNode && IsBasePart(subjectNode) && instances.TryGetValue(subjectNode.Id, out var subject)) instance.Set("Subject", DynValue.NewTable(subject));
             else if (!IsBasePart(ReadNodeArgument(instance.Get("Subject")))) instance.Set("Subject", DynValue.Nil);
             if (node.Type == "WeldConstraint")
@@ -592,7 +752,6 @@ public sealed class LuaXRuntime
                 instance.Set("Part0", GetPartReferenceValue(node.Part0));
                 instance.Set("Part1", GetPartReferenceValue(node.Part1));
             }
-            foreach (var child in nodes) if (!string.IsNullOrEmpty(child.Name)) instance.Set(child.Name, DynValue.Nil);
         }
         foreach (var node in nodes)
         {
@@ -607,6 +766,8 @@ public sealed class LuaXRuntime
                 childTable.Set(child.Name, childValue);
                 childTable.Set(child.Id, childValue);
                 instance.Set(child.Name, childValue);
+                if (!linkedChildKeys.TryGetValue(node.Id, out var keys)) linkedChildKeys[node.Id] = keys = new HashSet<string>(StringComparer.Ordinal);
+                keys.Add(child.Name);
             }
         }
     }
@@ -666,6 +827,13 @@ public sealed class LuaXRuntime
             "cantouch" => "CanTouch",
             "castshadow" => "CastShadow",
             "gravity" => "Gravity",
+            "automanagecharacter" => "AutoManageCharacter",
+            "character" => "Character",
+            "occupant" => "Occupant",
+            "health" => "Health",
+            "maxhealth" => "MaxHealth",
+            "walkspeed" => "WalkSpeed",
+            "jumppower" => "JumpPower",
             "asset" => "Asset",
             "subject" => "Subject",
             "part0" => "Part0",
@@ -803,8 +971,38 @@ public sealed class LuaXRuntime
                     if (node.Type != "Workspace" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.Gravity = (float)Math.Clamp(value.Number, 0, 1000);
                     break;
+                case "automanagecharacter":
+                    if (node.Type != "Workspace" || value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.AutoManageCharacter = value.Boolean;
+                    break;
+                case "character":
+                    if (node.Type != "Player") return DynValue.Nil;
+                    var assignedCharacter = ReadNodeArgument(value);
+                    if (value.Type != DataType.Nil && assignedCharacter?.Type != "Model") return DynValue.Nil;
+                    node.Character = assignedCharacter?.Id ?? string.Empty;
+                    break;
+                case "health":
+                    if (node.Type != "Humanoid" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.Health = (float)Math.Clamp(value.Number, 0, node.MaxHealth);
+                    break;
+                case "maxhealth":
+                    if (node.Type != "Humanoid" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.MaxHealth = (float)Math.Clamp(value.Number, 1, 100000);
+                    node.Health = Math.Min(node.Health, node.MaxHealth);
+                    break;
+                case "walkspeed":
+                    if (node.Type != "Humanoid" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.WalkSpeed = (float)Math.Clamp(value.Number, 0, 1000);
+                    break;
+                case "jumppower":
+                    if (node.Type != "Humanoid" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.JumpPower = (float)Math.Clamp(value.Number, 0, 1000);
+                    break;
                 case "asset": node.Asset = value.CastToString() ?? string.Empty; break;
-                case "name": SetNodeName(node, value.CastToString() ?? node.Name); break;
+                case "name":
+                    if (node.Type is "Workspace" or "Players" or "Gui") return DynValue.Nil;
+                    SetNodeName(node, value.CastToString() ?? node.Name);
+                    break;
                 case "cameramode":
                 case "mode":
                     var cameraMode = value.CastToString() is "Subject" ? "Subject" : "Custom";
@@ -851,7 +1049,11 @@ public sealed class LuaXRuntime
             }
         }
         if (instances.TryGetValue(node.Id, out var instance)) WriteInstanceProperty(node, instance, normalized);
-        if (normalized == "name") UpdateParentLinks();
+        if (normalized == "maxhealth" && instances.TryGetValue(node.Id, out var humanoidInstance))
+            humanoidInstance.Set("Health", DynValue.NewNumber(node.Health));
+        if (normalized == "rolloffmindistance" && instances.TryGetValue(node.Id, out var soundInstance))
+            soundInstance.Set("RollOffMaxDistance", DynValue.NewNumber(node.RollOffMaxDistance));
+        if (normalized == "name" && FindParentNode(node) is { } parent) RefreshParentChildren(parent);
         propertyChanged?.Invoke(node, property, value);
         return DynValue.Nil;
     }
@@ -882,6 +1084,7 @@ public sealed class LuaXRuntime
 
     private void SetNodeName(SceneNode node, string name)
     {
+        if (node.Type is "Workspace" or "Players" or "Gui") return;
         node.Name = name;
         if (node.Type == "Script" && project.Scripts.FirstOrDefault(item => item.Id == node.Id) is { } gameScript)
             gameScript.Name = name;
@@ -889,6 +1092,18 @@ public sealed class LuaXRuntime
 
     private DynValue GetPartReferenceValue(string id) =>
         !string.IsNullOrEmpty(id) && FindNode(id) is { } part && IsBasePart(part) && instances.TryGetValue(part.Id, out var instance)
+            ? DynValue.NewTable(instance) : DynValue.Nil;
+
+    private DynValue GetCharacterValue(SceneNode player) =>
+        player.Type == "Player" && !string.IsNullOrEmpty(player.Character)
+        && FindNode(player.Character) is { Type: "Model" } model
+        && instances.TryGetValue(model.Id, out var instance)
+            ? DynValue.NewTable(instance) : DynValue.Nil;
+
+    private DynValue GetOccupantValue(SceneNode seat) =>
+        seat.Type == "Seat" && !string.IsNullOrEmpty(seat.Occupant)
+        && FindNode(seat.Occupant) is { Type: "Humanoid" } humanoid
+        && instances.TryGetValue(humanoid.Id, out var instance)
             ? DynValue.NewTable(instance) : DynValue.Nil;
 
     private DynValue GetPropertyValue(SceneNode node, string property) => property.ToLowerInvariant() switch
@@ -933,6 +1148,13 @@ public sealed class LuaXRuntime
         "velocity" or "assemblylinearvelocity" => VectorValue(node.Velocity),
         "castshadow" => DynValue.NewBoolean(node.CastShadow),
         "gravity" => DynValue.NewNumber(node.Gravity),
+        "automanagecharacter" => DynValue.NewBoolean(node.AutoManageCharacter),
+        "character" => GetCharacterValue(node),
+        "occupant" => GetOccupantValue(node),
+        "health" => DynValue.NewNumber(node.Health),
+        "maxhealth" => DynValue.NewNumber(node.MaxHealth),
+        "walkspeed" => DynValue.NewNumber(node.WalkSpeed),
+        "jumppower" => DynValue.NewNumber(node.JumpPower),
         "asset" => DynValue.NewString(node.Asset),
         "name" => DynValue.NewString(node.Name),
         "children" => GetChildren(node),
@@ -1098,7 +1320,7 @@ public sealed class LuaXRuntime
             MarkChanged(node, property);
         }
 
-        foreach (var node in GameProjectStore.Flatten(project).ToArray())
+        foreach (var node in KnownNodes())
         {
             if (!instances.TryGetValue(node.Id, out var instance)) continue;
             if (instance.Get("Position").Type == DataType.Table)
@@ -1238,7 +1460,35 @@ public sealed class LuaXRuntime
             }
             if (node.Type == "Workspace" && instance.Get("Gravity").Type == DataType.Number && double.IsFinite(instance.Get("Gravity").Number))
                 Assign(node, "Gravity", node.Gravity, (float)Math.Clamp(instance.Get("Gravity").Number, 0, 1000), value => node.Gravity = value);
-            if (instance.Get("Name").CastToString() is { } name) Assign(node, "Name", node.Name, name, value => SetNodeName(node, value));
+            if (node.Type == "Workspace" && instance.Get("AutoManageCharacter").Type == DataType.Boolean)
+                Assign(node, "AutoManageCharacter", node.AutoManageCharacter, instance.Get("AutoManageCharacter").Boolean, value => node.AutoManageCharacter = value);
+            if (node.Type == "Player")
+            {
+                var characterValue = instance.Get("Character");
+                var characterNode = ReadNodeArgument(characterValue);
+                if (characterValue.Type == DataType.Nil || characterNode?.Type == "Model")
+                    Assign(node, "Character", node.Character, characterNode?.Id ?? string.Empty, value => node.Character = value);
+            }
+            if (node.Type == "Humanoid")
+            {
+                if (instance.Get("MaxHealth").Type == DataType.Number && double.IsFinite(instance.Get("MaxHealth").Number))
+                    Assign(node, "MaxHealth", node.MaxHealth, (float)Math.Clamp(instance.Get("MaxHealth").Number, 1, 100000), value => node.MaxHealth = value);
+                if (instance.Get("Health").Type == DataType.Number && double.IsFinite(instance.Get("Health").Number))
+                    Assign(node, "Health", node.Health, (float)Math.Clamp(instance.Get("Health").Number, 0, node.MaxHealth), value => node.Health = value);
+                if (node.Health > node.MaxHealth) Assign(node, "Health", node.Health, node.MaxHealth, value => node.Health = value);
+                if (instance.Get("WalkSpeed").Type == DataType.Number && double.IsFinite(instance.Get("WalkSpeed").Number))
+                    Assign(node, "WalkSpeed", node.WalkSpeed, (float)Math.Clamp(instance.Get("WalkSpeed").Number, 0, 1000), value => node.WalkSpeed = value);
+                if (instance.Get("JumpPower").Type == DataType.Number && double.IsFinite(instance.Get("JumpPower").Number))
+                    Assign(node, "JumpPower", node.JumpPower, (float)Math.Clamp(instance.Get("JumpPower").Number, 0, 1000), value => node.JumpPower = value);
+                instance.Set("MaxHealth", DynValue.NewNumber(node.MaxHealth));
+                instance.Set("Health", DynValue.NewNumber(node.Health));
+                instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
+                instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
+            }
+            if (node.Type is not ("Workspace" or "Players" or "Gui") && instance.Get("Name").CastToString() is { } name)
+                Assign(node, "Name", node.Name, name, value => SetNodeName(node, value));
+            else if (node.Type is "Workspace" or "Players" or "Gui")
+                instance.Set("Name", DynValue.NewString(node.Name));
             if (node.Type == "Workspace")
             {
                 if (instance.Get("SkyboxFront").CastToString() is { } skyboxFront) Assign(node, "SkyboxFront", node.SkyboxFront, skyboxFront, value => node.SkyboxFront = value);
@@ -1248,10 +1498,13 @@ public sealed class LuaXRuntime
                 if (instance.Get("SkyboxTop").CastToString() is { } skyboxTop) Assign(node, "SkyboxTop", node.SkyboxTop, skyboxTop, value => node.SkyboxTop = value);
                 if (instance.Get("SkyboxBottom").CastToString() is { } skyboxBottom) Assign(node, "SkyboxBottom", node.SkyboxBottom, skyboxBottom, value => node.SkyboxBottom = value);
             }
-            if (ReadNodeArgument(instance.Get("Parent")) is { } newParent && FindParentNode(node)?.Id != newParent.Id)
+            var parentValue = instance.Get("Parent");
+            if (ReadNodeArgument(parentValue) is { } newParent && FindParentNode(node)?.Id != newParent.Id)
             {
-                if (TrySetParent(node, DynValue.NewTable(instances[newParent.Id]))) MarkChanged(node, "Parent");
+                if (TrySetParent(node, parentValue, false)) MarkChanged(node, "Parent");
             }
+            else if (parentValue.Type == DataType.Nil && FindParentNode(node) is not null && TrySetParent(node, DynValue.Nil, false))
+                MarkChanged(node, "Parent");
             if (node.Type == "Camera")
             {
                 var modeValue = instance.Get("Mode").CastToString();
@@ -1277,6 +1530,7 @@ public sealed class LuaXRuntime
         UpdateParentLinks();
         foreach (var (key, node) in changed)
             propertyChanged?.Invoke(node, key.Property, GetPropertyValue(node, key.Property));
+        UpdateHumanoidDeaths();
     }
 
     private static bool Overlaps(SceneNode first, SceneNode second)
@@ -1531,5 +1785,7 @@ public sealed class LuaXRuntime
             ? (float)value.Number : fallback;
     }
 
-    private SceneNode? FindNode(string id) => GameProjectStore.Flatten(project).FirstOrDefault(node => node.Id == id || node.Name == id);
+    private SceneNode? FindNode(string id) =>
+        GameProjectStore.Flatten(project).FirstOrDefault(node => node.Id == id || node.Name == id)
+        ?? createdNodes.Values.FirstOrDefault(node => node.Id == id || node.Name == id);
 }

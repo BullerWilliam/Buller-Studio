@@ -4,8 +4,6 @@ namespace BullerStudio.Services;
 
 public sealed class PlayerCharacterService
 {
-    private const float WalkSpeed = 7.5f;
-    private const float JumpSpeed = 10f;
     private readonly GameProject project;
     private readonly (SceneNode Node, float[] Offset)[] body;
     private float facingYaw;
@@ -25,6 +23,8 @@ public sealed class PlayerCharacterService
             Transparency = 1, CastShadow = false, Color = "#6688CC"
         };
         Model.Children.Add(Root);
+        Humanoid = new SceneNode { Type = "Humanoid", Name = "Humanoid" };
+        Model.Children.Add(Humanoid);
         body =
         [
             (CreateBodyPart("Torso", "Block", [1.35f, 1.7f, .8f], "#3973CF"), [0, .12f, 0]),
@@ -41,18 +41,28 @@ public sealed class PlayerCharacterService
 
     public SceneNode Model { get; }
     public SceneNode Root { get; }
-    public bool NeedsRespawn => Root.Position[1] < -60;
+    public SceneNode Humanoid { get; }
+    public bool IsSeated { get; set; }
+    public bool NeedsRespawn => Root.Position[1] < -60 || Humanoid.Health <= 0;
+
+    public void SetFacingYaw(float yaw) => facingYaw = yaw;
 
     public void ApplyInput(PhysicsSimulationService physics, float cameraYaw, float forward, float strafe, bool jump)
     {
+        if (Humanoid.Health <= 0)
+        {
+            Root.Velocity[0] = 0;
+            Root.Velocity[2] = 0;
+            return;
+        }
         var yaw = cameraYaw * MathF.PI / 180;
         var x = strafe * MathF.Cos(yaw) - forward * MathF.Sin(yaw);
         var z = -strafe * MathF.Sin(yaw) - forward * MathF.Cos(yaw);
         var length = MathF.Sqrt(x * x + z * z);
         if (length > 1) { x /= length; z /= length; }
-        Root.Velocity[0] = x * WalkSpeed;
-        Root.Velocity[2] = z * WalkSpeed;
-        if (jump && physics.IsGrounded(Root)) Root.Velocity[1] = JumpSpeed;
+        Root.Velocity[0] = x * Math.Clamp(Humanoid.WalkSpeed, 0, 1000);
+        Root.Velocity[2] = z * Math.Clamp(Humanoid.WalkSpeed, 0, 1000);
+        if (jump && physics.IsGrounded(Root)) Root.Velocity[1] = Math.Clamp(Humanoid.JumpPower, 0, 1000);
         if (length > .001f) facingYaw = MathF.Atan2(-x, -z) * 180 / MathF.PI;
     }
 
@@ -64,11 +74,13 @@ public sealed class PlayerCharacterService
         var sine = MathF.Sin(yaw);
         foreach (var (part, offset) in body)
         {
+            var localY = IsSeated && part.Name.EndsWith("Leg", StringComparison.Ordinal) ? -.5f : offset[1];
+            var localZ = IsSeated && part.Name.EndsWith("Leg", StringComparison.Ordinal) ? -.45f : offset[2];
             var position = new[]
             {
-                Root.Position[0] + offset[0] * cosine + offset[2] * sine,
-                Root.Position[1] + offset[1],
-                Root.Position[2] - offset[0] * sine + offset[2] * cosine
+                Root.Position[0] + offset[0] * cosine + localZ * sine,
+                Root.Position[1] + localY,
+                Root.Position[2] - offset[0] * sine + localZ * cosine
             };
             if (part.Position.SequenceEqual(position) && part.Rotation[1] == facingYaw) continue;
             part.Position = position;
@@ -82,6 +94,9 @@ public sealed class PlayerCharacterService
     {
         Root.Position = FindSpawnPosition();
         Root.Velocity = [0, 0, 0];
+        Root.Anchored = false;
+        IsSeated = false;
+        Humanoid.Health = Humanoid.MaxHealth;
         facingYaw = 0;
         return new[] { Root }.Concat(UpdatePose()).ToArray();
     }

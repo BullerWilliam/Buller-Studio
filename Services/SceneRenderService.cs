@@ -233,6 +233,7 @@ public sealed class SceneRenderService
         else if (node.Type == "WedgePart") AddWedge(builder);
         else if (node.Type == "CornerWedgePart") AddCornerWedge(builder);
         else if (node.Type == "SpawnLocation") AddSpawnLocation(builder);
+        else if (node.Type == "Seat") AddSeat(builder);
         else if (node.Type == "TrussPart") AddTruss(builder);
         else builder.AddBox(Vector3.Zero, 1, 1, 1);
         var decalParent = node.Type is "Decal" or "Texture" ? FindPartParent(project, node) : null;
@@ -255,7 +256,7 @@ public sealed class SceneRenderService
         "Texture" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency}|{node.StudsPerTileU}|{node.StudsPerTileV}|{node.OffsetStudsU}|{node.OffsetStudsV}|{string.Join(',', FindPartParent(project, node)?.Size ?? [])}",
         "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}",
         "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}",
-        "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" => MaterialKey(node),
+        "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat" => MaterialKey(node),
         _ => string.Empty
     };
 
@@ -365,6 +366,12 @@ public sealed class SceneRenderService
         builder.AddBox(new Vector3(0, -.06f, 0), 1, .88, 1);
         builder.AddBox(new Vector3(0, .41f, 0), .65, .06, .13);
         builder.AddBox(new Vector3(0, .41f, 0), .13, .06, .65);
+    }
+
+    private static void AddSeat(MeshBuilder builder)
+    {
+        builder.AddBox(new Vector3(0, .25f, 0), 1, .5, 1);
+        builder.AddBox(new Vector3(0, .08f, .42f), 1, .84, .16);
     }
 
     private static void AddTruss(MeshBuilder builder)

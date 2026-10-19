@@ -4,7 +4,7 @@ public static class SceneNodeTypes
 {
     public static bool IsBasePart(SceneNode? node) => IsBasePartType(node?.Type);
 
-    public static bool IsBasePartType(string? type) => type is "Part" or "MeshPart" or "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart";
+    public static bool IsBasePartType(string? type) => type is "Part" or "MeshPart" or "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat";
 
     public static bool IsLight(SceneNode? node) => node?.Type is "PointLight" or "SpotLight" or "SurfaceLight";
 
