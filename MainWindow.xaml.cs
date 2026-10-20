@@ -415,7 +415,7 @@ public partial class MainWindow : Window
         var item = GetTreeItem(source);
         if (item is null || IsExplorerInteractiveSource(source, item)) return;
         var node = item.DataContext as SceneNode;
-        if (node is not { Type: "Script" }) return;
+        if (node is not { Type: "Script" or "ModuleScript" }) return;
         var script = project.Scripts.FirstOrDefault(item => item.Id == node.Id);
         if (script is not null) ShowScript(script);
     }
@@ -719,13 +719,13 @@ public partial class MainWindow : Window
             AddLabel("The generated character uses these values for movement and respawns at zero Health.", "Health");
         }
         if (IsGuiNode(selected) && selected.Type != "Gui") RenderGuiProperties(selected);
-        if (selected.Type == "Script")
+        if (selected.Type is "Script" or "ModuleScript")
         {
             var script = project.Scripts.FirstOrDefault(item => item.Id == selected.Id);
             if (script is not null)
             {
-                propertyTarget = AddPropertySection("Script");
-                AddCheckField("Enabled", selected.Enabled);
+                propertyTarget = AddPropertySection(selected.Type);
+                if (selected.Type == "Script") AddCheckField("Enabled", selected.Enabled);
                 AddLabel("Double-click this script in Explorer to open it.", "Source");
             }
         }
@@ -1103,7 +1103,7 @@ public partial class MainWindow : Window
         else if (property == "Name" && target.Type is not ("Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") && !string.IsNullOrWhiteSpace(text))
         {
             target.Name = text;
-            if (target.Type == "Script")
+            if (target.Type is "Script" or "ModuleScript")
             {
                 var gameScript = project.Scripts.FirstOrDefault(script => script.Id == target.Id);
                 if (gameScript is not null)
@@ -1387,13 +1387,13 @@ public partial class MainWindow : Window
     private async Task AddNodeToParentAsync(SceneNode parent, string type, string name)
     {
         if (project is null) return;
-        if (type == "Script")
+        if (type is "Script" or "ModuleScript")
         {
-            var script = new GameScript { Name = name };
-            var scriptNode = new SceneNode { Id = script.Id, Type = "Script", Name = script.Name };
+            var script = new GameScript { Name = name, Source = type == "ModuleScript" ? "local module = {}\nreturn module" : "print('Hello from Lua X')" };
+            var scriptNode = new SceneNode { Id = script.Id, Type = type, Name = script.Name };
             if (!GameProjectStore.CanParentNode(project, scriptNode, parent))
             {
-                SetStatus("Scripts cannot be added under this object.");
+                SetStatus($"{type} cannot be added under this object.");
                 return;
             }
             project.Scripts.Add(script);
@@ -1440,7 +1440,7 @@ public partial class MainWindow : Window
                 ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") }
                 : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIListLayout", "UIListLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
             : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
-        choices = choices.Concat(new (string Type, string Name)[] { ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky") })
+        choices = choices.Concat(new (string Type, string Name)[] { ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
         var search = new TextBox { Width = 190, Margin = new Thickness(5), Padding = new Thickness(5, 3, 5, 3), ToolTip = "Search objects" };
@@ -2502,7 +2502,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -2579,6 +2579,8 @@ public partial class MainWindow : Window
         if (node.Type == "Seat") members.Add("Occupant");
         if (node.Type == "Humanoid") members.AddRange(["Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died"]);
         if (SceneNodeTypes.IsValueObject(node) || node.Type == "ValueBase") members.AddRange(["Value", "Changed"]);
+        if (node.Type == "BindableEvent") members.AddRange(["Event", "Fire"]);
+        if (node.Type == "BindableFunction") members.AddRange(["OnInvoke", "Invoke"]);
         if (node.Type == "MeshPart") members.Add("Asset");
         if (node.Type == "Light" || SceneNodeTypes.IsLight(node)) members.AddRange(["Enabled", "Color", "Brightness", "Range", "Position"]);
         if (node.Type is "SpotLight" or "SurfaceLight") members.Add("Angle");
@@ -2956,19 +2958,19 @@ public partial class MainWindow : Window
     private static readonly string[] LuaXGlobalCompletions =
     [
         "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
-        "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs", "pcall", "print", "warn", "rawequal", "rawget", "rawlen", "rawset", "select", "setmetatable", "tonumber", "tostring", "type", "typeof", "unpack", "xpcall",
+        "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs", "pcall", "print", "require", "warn", "rawequal", "rawget", "rawlen", "rawset", "select", "setmetatable", "tonumber", "tostring", "type", "typeof", "unpack", "xpcall",
         "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Instance", "Enum", "Vector3", "Color3", "UDim", "UDim2",
-        "SetProperty", "GetProperty", "WaitForChild", "GetAssetPath", "ConnectTouched"
+        "SetProperty", "GetProperty", "WaitForChild", "GetAssetPath", "ConnectTouched", "LookAtRotation"
     ];
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Archivable", "Value", "Changed", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Ambient", "ClockTime", "GlobalShadows", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"
+        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Ambient", "ClockTime", "GlobalShadows", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"
     ];
 
-    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Fire", "Invoke", "Disconnect"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -3030,11 +3032,11 @@ public partial class MainWindow : Window
                 <Keywords color="Self"><Word>self</Word></Keywords>
                 <Keywords color="LuauKeyword"><Word>continue</Word><Word>export</Word><Word>type</Word><Word>typeof</Word></Keywords>
                 <Keywords color="Builtin">
-                  <Word>assert</Word><Word>collectgarbage</Word><Word>error</Word><Word>getmetatable</Word><Word>ipairs</Word><Word>next</Word><Word>pairs</Word><Word>pcall</Word><Word>print</Word><Word>warn</Word><Word>rawequal</Word><Word>rawget</Word><Word>rawlen</Word><Word>rawset</Word><Word>select</Word><Word>setmetatable</Word><Word>tonumber</Word><Word>tostring</Word><Word>type</Word><Word>unpack</Word><Word>xpcall</Word>
+                  <Word>assert</Word><Word>collectgarbage</Word><Word>error</Word><Word>getmetatable</Word><Word>ipairs</Word><Word>next</Word><Word>pairs</Word><Word>pcall</Word><Word>print</Word><Word>require</Word><Word>warn</Word><Word>rawequal</Word><Word>rawget</Word><Word>rawlen</Word><Word>rawset</Word><Word>select</Word><Word>setmetatable</Word><Word>tonumber</Word><Word>tostring</Word><Word>type</Word><Word>unpack</Word><Word>xpcall</Word>
                   <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word><Word>task</Word><Word>wait</Word>
-                  <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>Lighting</Word><Word>ReplicatedStorage</Word><Word>ServerScriptService</Word><Word>ServerStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>Color3</Word><Word>GetService</Word>
+                  <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>Lighting</Word><Word>ReplicatedStorage</Word><Word>ServerScriptService</Word><Word>ServerStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>LookAtRotation</Word><Word>Color3</Word><Word>GetService</Word>
                 </Keywords>
-                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
+                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
                 <Rule color="LuauKeyword">(?m)^\s*(?:export\s+)?type\b</Rule>
                 <Rule color="Method">(?&lt;=[:.])[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
                 <Rule color="FunctionName">(?&lt;=function\s+)[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*</Rule>
@@ -3314,7 +3316,7 @@ public partial class MainWindow : Window
     {
         if (project is null || sender is not Button button) return;
         var parent = selected is not null && !IsGuiNode(selected)
-            && (SceneNodeTypes.IsBasePart(selected) || selected.Type is "Workspace" or "Folder" or "Model")
+            && (SceneNodeTypes.IsBasePart(selected) || selected.Type is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model")
             ? selected : project.Workspace;
         ShowInsertMenu(parent, button);
     }
@@ -3382,8 +3384,18 @@ public partial class MainWindow : Window
     private void RunSelectedScript_Click(object sender, RoutedEventArgs e)
     {
         if (project is null) return;
+        if (selected is { Type: "ModuleScript" })
+        {
+            SetStatus("ModuleScripts run when another script calls require(module).");
+            return;
+        }
         var script = selected is { Type: "Script" } ? project.Scripts.FirstOrDefault(item => item.Id == selected.Id) : selectedScript ?? project.Scripts.FirstOrDefault();
         if (script is null) { SetStatus("Add a Script object before running Lua X."); return; }
+        if (GameProjectStore.Flatten(project).Any(node => node.Id == script.Id && node.Type == "ModuleScript"))
+        {
+            SetStatus("ModuleScripts run when another script calls require(module).");
+            return;
+        }
         RunScript(script);
     }
 
@@ -3764,7 +3776,7 @@ public partial class MainWindow : Window
             clone.Position[1] += 20;
         }
         if (!GameProjectStore.CanParentNode(project, clone, parent)) return;
-        foreach (var oldNode in new[] { original }.Concat(GameProjectStore.Flatten(original.Children)).Where(node => node.Type == "Script"))
+        foreach (var oldNode in new[] { original }.Concat(GameProjectStore.Flatten(original.Children)).Where(node => node.Type is "Script" or "ModuleScript"))
         {
             if (!newIds.TryGetValue(oldNode.Id, out var newId)) continue;
             var oldScript = project.Scripts.FirstOrDefault(script => script.Id == oldNode.Id);
@@ -3910,6 +3922,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["coroutine.yield"] = "yield(...: any): (...any) — Suspends the current Lua X script until the runtime resumes it.",
         ["GetService"] = "GetService(name: string): Instance? — Returns Workspace, Players, Lighting, ReplicatedStorage, ServerScriptService, ServerStorage, or Gui.",
         ["Instance.new"] = "Instance.new(className: string, parent: Instance?): Instance? — Creates a supported object during play.",
+        ["require"] = "require(module: ModuleScript | string): any — Runs once per play runtime; paths may start ./, ../, @self/, or @game/.",
         ["task.wait"] = "task.wait(duration: number?): number — Resumes on a later play update after at least this many seconds.",
         ["task.spawn"] = "task.spawn(callback: function, ...: any): coroutine — Starts a function immediately in a separate task.",
         ["task.defer"] = "task.defer(callback: function, ...: any): coroutine — Runs a function after the current script resume point.",
@@ -3926,6 +3939,12 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["GetAssetPath"] = "GetAssetPath(pathOrName: string): string? — Resolves a project asset to its local file path.",
         ["ConnectTouched"] = "ConnectTouched(object: BasePart, callback: (other: BasePart) -> ()) — Connects to the part's Touched event.",
         ["Connect"] = "Connect(callback: (...any) -> ()) — Registers a callback for this signal.",
+        ["Event"] = "RBXScriptSignal — BindableEvent callbacks receive the arguments passed to Fire.",
+        ["OnInvoke"] = "function? — Write-only callback used by BindableFunction.Invoke.",
+        ["Invoke"] = "Invoke(...arguments: any): (...any) — Waits for OnInvoke and returns its results.",
+        ["Fire"] = "Fire(...arguments: any): () — Schedules connected BindableEvent callbacks without yielding.",
+        ["Disconnect"] = "Disconnect(): () — Stops a BindableEvent connection from receiving future fires.",
+        ["Connected"] = "boolean — Whether a BindableEvent connection is active.",
         ["Touched"] = "RBXScriptSignal — Fires when another BasePart overlaps this part during Lua X execution.",
         ["Activated"] = "RBXScriptSignal — Fires when a TextButton or ImageButton is activated.",
         ["MouseButton1Click"] = "RBXScriptSignal — Alias for the TextButton or ImageButton Activated signal.",
@@ -3938,6 +3957,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Id"] = "string — Stable project identifier for this object.",
         ["Children"] = "{Instance} — The object's direct children, available by index, name, or ID.",
         ["Value"] = "any — Stored value of a ValueBase object. ObjectValue holds an Instance or nil.",
+        ["LookAtRotation"] = "LookAtRotation(fromPosition: Vector3, toPosition: Vector3): Vector3 — Rotation in degrees that points a 3D part or Custom camera at the target.",
         ["Position"] = "Vector3 for 3D objects; UDim2 for GUI objects.",
         ["Rotation"] = "Vector3 — Rotation in degrees; GUI objects use the Z component.",
         ["Size"] = "Vector3 for 3D objects; UDim2 for GUI objects.",

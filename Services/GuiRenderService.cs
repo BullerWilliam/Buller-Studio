@@ -149,7 +149,7 @@ public static class GuiRenderService
         foreach (var child in parent.Children)
         {
             if (!child.Visible) continue;
-            if (child.Type == "Folder")
+            if (child.Type is "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript")
             {
                 foreach (var descendant in GetRenderableChildren(child)) yield return descendant;
             }

@@ -1,7 +1,6 @@
 using BullerStudio.Models;
 using System.IO;
 using System.Runtime.CompilerServices;
-using System.Numerics;
 using System.Windows.Media;
 using WattleScript.Interpreter;
 
@@ -22,6 +21,9 @@ public sealed class LuaXRuntime
     private readonly Dictionary<string, List<ScriptCallback>> clickDetectorCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> humanoidDiedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> valueChangedCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<BindableConnection>> bindableEventCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ScriptCallback> bindableFunctionCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<Coroutine, Stack<BindableInvocationScope>> bindableInvocationScopes = new();
     private readonly Dictionary<string, bool> humanoidWasAlive = new(StringComparer.Ordinal);
     private readonly HashSet<string> activeContacts = new(StringComparer.Ordinal);
     private readonly List<ScriptExecution> activeScripts = [];
@@ -30,16 +32,28 @@ public sealed class LuaXRuntime
     private readonly HashSet<string> queuedScriptIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> startedScriptIds = new(StringComparer.Ordinal);
     private readonly ConditionalWeakTable<Table, LuaXTypeTag> runtimeTypeTags = new();
-    private readonly ConditionalWeakTable<Table, CFrameData> cframeData = new();
-    private readonly Dictionary<string, Table> cframeSnapshots = new(StringComparer.Ordinal);
     private Script script = null!;
+    private DynValue bindableInvokeFactory = DynValue.Nil;
+    private DynValue contextualRequireFactory = DynValue.Nil;
     private GameScript? currentGameScript;
     private Table vector3Metatable = null!;
-    private Table cframeMetatable = null!;
 
     private sealed record LuaXTypeTag(string Name);
-    private sealed record CFrameData(Vector3 Position, Quaternion Rotation);
     private sealed record ScriptCallback(GameScript GameScript, DynValue Function, string Name);
+    private sealed record BindableInvocationScope(GameScript? Previous, GameScript Owner);
+    private sealed class BindableConnection(GameScript owner, DynValue function, Table table)
+    {
+        public GameScript Owner { get; } = owner;
+        public DynValue Function { get; } = function;
+        public Table Table { get; } = table;
+        public bool Connected { get; private set; } = true;
+
+        public void Disconnect()
+        {
+            Connected = false;
+            Table.Set("Connected", DynValue.NewBoolean(false));
+        }
+    }
     private sealed record ScriptExecution(GameScript GameScript, Coroutine Coroutine, bool ReportFinished, string? CallbackName = null);
     private sealed class ScheduledTask(GameScript owner, DynValue handle, DynValue[] arguments, float remaining, bool deferred)
     {
@@ -51,7 +65,7 @@ public sealed class LuaXRuntime
     }
     private static readonly HashSet<string> CreatableClasses = new(StringComparer.Ordinal)
     {
-        "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Humanoid",
+        "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue",
         "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam",
         "Sky", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
@@ -71,6 +85,11 @@ public sealed class LuaXRuntime
 
     public void RunAll()
     {
+        foreach (var callbacks in bindableEventCallbacks.Values)
+            foreach (var connection in callbacks) connection.Disconnect();
+        bindableEventCallbacks.Clear();
+        bindableFunctionCallbacks.Clear();
+        bindableInvocationScopes.Clear();
         activeScripts.Clear();
         scheduledTasks.Clear();
         pendingScriptStarts.Clear();
@@ -90,7 +109,7 @@ public sealed class LuaXRuntime
     public void Run(string scriptId)
     {
         var gameScript = project.Scripts.FirstOrDefault(item => item.Id == scriptId);
-        if (gameScript is null) return;
+        if (gameScript is null || FindScriptNode(scriptId) is { Type: "ModuleScript" }) return;
         startedScriptIds.Add(scriptId);
         StartScript(gameScript, true);
         StartQueuedScripts();
@@ -147,7 +166,7 @@ public sealed class LuaXRuntime
         BindCurrentScript(gameScript);
         try
         {
-            var coroutine = script.CreateCoroutine(script.LoadString(gameScript.Source, null, gameScript.Name)).Coroutine;
+            var coroutine = script.CreateCoroutine(script.LoadString(gameScript.Source, CreateExecutionEnvironment(FindScriptNode(gameScript.Id)), gameScript.Name)).Coroutine;
             var execution = new ScriptExecution(gameScript, coroutine, reportFinished);
             coroutine.Resume();
             SynchronizeInstances();
@@ -177,7 +196,18 @@ public sealed class LuaXRuntime
                 activeScripts.Remove(execution);
                 continue;
             }
-            BindCurrentScript(execution.GameScript);
+            if (bindableInvocationScopes.TryGetValue(execution.Coroutine, out var scopes) && scopes.Count > 0)
+            {
+                if (!IsTaskOwnerActive(scopes.Peek().Owner))
+                {
+                    activeScripts.Remove(execution);
+                    bindableInvocationScopes.Remove(execution.Coroutine);
+                    output?.Invoke($"{execution.GameScript.Name}: BindableFunction callback stopped.");
+                    continue;
+                }
+                BindCurrentScript(scopes.Peek().Owner);
+            }
+            else BindCurrentScript(execution.GameScript);
             try
             {
                 execution.Coroutine.Resume(DynValue.NewNumber(elapsedSeconds));
@@ -185,11 +215,13 @@ public sealed class LuaXRuntime
                 if (execution.Coroutine.State != CoroutineState.Dead && project.Scripts.Any(item => item.Id == execution.GameScript.Id)
                     && (FindScriptNode(execution.GameScript.Id) is not { } resumedNode || resumedNode.Enabled && IsScriptAttachedForExecution(resumedNode))) continue;
                 activeScripts.Remove(execution);
+                bindableInvocationScopes.Remove(execution.Coroutine);
                 if (execution.ReportFinished) output?.Invoke($"{execution.GameScript.Name} finished.");
             }
             catch (Exception exception)
             {
                 activeScripts.Remove(execution);
+                bindableInvocationScopes.Remove(execution.Coroutine);
                 output?.Invoke(execution.CallbackName is null
                     ? $"{execution.GameScript.Name}: {exception.Message}"
                     : $"{execution.GameScript.Name} {execution.CallbackName} callback: {exception.Message}");
@@ -234,7 +266,26 @@ public sealed class LuaXRuntime
         script = new Script(CoreModules.Preset_SoftSandbox);
         InstallLuauMath();
         InstallVector3Metatable();
-        InstallCFrameMetatable();
+        bindableInvokeFactory = script.DoString("""
+            local function pack(...)
+                return { n = select('#', ...), ... }
+            end
+            return function(getCallback, beginCallback, endCallback)
+                return function(self, ...)
+                    local callback = getCallback()
+                    while type(callback) ~= "function" do
+                        coroutine.yield()
+                        callback = getCallback()
+                    end
+                    local thread = coroutine.running()
+                    if not beginCallback(thread) then error('BindableFunction callback is unavailable') end
+                    local result = pack(pcall(callback, ...))
+                    endCallback(thread)
+                    if not result[1] then error(result[2]) end
+                    return table.unpack(result, 2, result.n)
+                end
+            end
+            """);
         foreach (var node in GameProjectStore.Flatten(project))
         {
             var instance = CreateInstance(node);
@@ -245,7 +296,9 @@ public sealed class LuaXRuntime
         foreach (var node in GameProjectStore.Flatten(project))
         {
             var target = instances[node.Id];
-            foreach (var child in node.Children) if (instances.TryGetValue(child.Id, out var childTable)) target.Set(child.Name, DynValue.NewTable(childTable));
+            foreach (var child in node.Children)
+                if (!IsReservedBindableMember(node, child.Name) && instances.TryGetValue(child.Id, out var childTable))
+                    target.Set(child.Name, DynValue.NewTable(childTable));
             var parent = FindParentNode(node);
             target.Set("Parent", parent is not null && instances.TryGetValue(parent.Id, out var parentTable) ? DynValue.NewTable(parentTable) : DynValue.Nil);
         }
@@ -308,17 +361,7 @@ public sealed class LuaXRuntime
         vector3.Set("zero", VectorValue([0, 0, 0]));
         vector3.Set("one", VectorValue([1, 1, 1]));
         script.Globals.Set("Vector3", DynValue.NewTable(vector3));
-        var cframe = new Table(script);
-        cframe.Set("new", DynValue.NewCallback((_, args) =>
-        {
-            if (args.Count > 0 && IsTypedValue(args[0], "Vector3"))
-                return CFrameValue(ToVector3(ReadVector(args[0], [0, 0, 0])), Quaternion.Identity);
-            return CFrameValue(new Vector3(NumberArgument(args, 0), NumberArgument(args, 1), NumberArgument(args, 2)), Quaternion.Identity);
-        }));
-        cframe.Set("Angles", DynValue.NewCallback((_, args) => CFrameValue(Vector3.Zero, QuaternionFromRadians(NumberArgument(args, 0), NumberArgument(args, 1), NumberArgument(args, 2)))));
-        cframe.Set("fromEulerAnglesXYZ", cframe.Get("Angles"));
-        cframe.Set("identity", CFrameValue(Vector3.Zero, Quaternion.Identity));
-        script.Globals.Set("CFrame", DynValue.NewTable(cframe));
+        script.Globals.Set("LookAtRotation", DynValue.NewCallback((_, args) => CreateLookAtRotation(args)));
         var color3 = new Table(script);
         color3.Set("new", DynValue.NewCallback((_, args) => CreateColor(NumberArgument(args, 0), NumberArgument(args, 1), NumberArgument(args, 2))));
         color3.Set("fromRGB", DynValue.NewCallback((_, args) => CreateColor(NumberArgument(args, 0) / 255f, NumberArgument(args, 1) / 255f, NumberArgument(args, 2) / 255f)));
@@ -349,6 +392,165 @@ public sealed class LuaXRuntime
         script.Globals.Set("warn", DynValue.NewCallback((_, args) => { var values = new List<string>(); for (var index = 0; index < args.Count; index++) values.Add(args[index].ToPrintString()); output?.Invoke($"Warning: {string.Join("\t", values)}"); return DynValue.Nil; }));
         InstallWaitForChild();
         InstallTaskLibrary();
+        InstallModuleRequire();
+    }
+
+    private void InstallModuleRequire()
+    {
+        var requireFactory = script.DoString("""
+            return function(resolveModule, loadModule)
+                local cache = {}
+                local loading = {}
+                return function(reference, origin)
+                    local module = resolveModule(reference, origin)
+                    if module == nil then error('require could not find a ModuleScript') end
+                    if cache[module] ~= nil then return cache[module] end
+                    local caller = coroutine.running()
+                    while loading[module] do
+                        if loading[module] == caller then error('Requested module was required recursively') end
+                        coroutine.yield()
+                        if cache[module] ~= nil then return cache[module] end
+                    end
+                    local loader = loadModule(module)
+                    if type(loader) ~= 'function' then error('require expects a ModuleScript instance') end
+                    loading[module] = caller
+                    local succeeded, result = pcall(loader)
+                    loading[module] = nil
+                    if not succeeded then error(result) end
+                    if result == nil then error('ModuleScript must return one value') end
+                    cache[module] = result
+                    return result
+                end
+            end
+            """);
+        var resolve = DynValue.NewCallback((_, args) => ResolveModuleReference(args));
+        var load = DynValue.NewCallback((_, args) => LoadModule(args));
+        script.Globals.Set("require", script.Call(requireFactory, resolve, load));
+        contextualRequireFactory = script.DoString("""
+            return function(baseRequire, origin)
+                return function(reference)
+                    return baseRequire(reference, origin)
+                end
+            end
+            """);
+    }
+
+    private Table CreateExecutionEnvironment(SceneNode? source)
+    {
+        var environment = new Table(script);
+        if (source is not null && instances.TryGetValue(source.Id, out var instance))
+        {
+            var origin = DynValue.NewTable(instance);
+            environment.Set("script", origin);
+            environment.Set("require", script.Call(contextualRequireFactory, script.Globals.Get("require"), origin));
+        }
+        var metatable = new Table(script);
+        metatable.Set("__index", DynValue.NewTable(script.Globals));
+        environment.MetaTable = metatable;
+        return environment;
+    }
+
+    private DynValue ResolveModuleReference(CallbackArguments args)
+    {
+        if (args.Count == 0) return DynValue.Nil;
+        SceneNode? module = null;
+        if (args[0].Type == DataType.Table)
+        {
+            var candidate = ReadNodeArgument(args[0]);
+            if (candidate is not null && instances.TryGetValue(candidate.Id, out var actual)
+                && ReferenceEquals(args[0].Table, actual)) module = candidate;
+        }
+        else if (args[0].Type == DataType.String)
+        {
+            SceneNode? origin = null;
+            if (args.Count > 1 && args[1].Type == DataType.Table)
+            {
+                var candidate = ReadNodeArgument(args[1]);
+                if (candidate is not null && instances.TryGetValue(candidate.Id, out var actual)
+                    && ReferenceEquals(args[1].Table, actual)) origin = candidate;
+            }
+            module = ResolveModulePath(args[0].String, origin);
+        }
+        return module is { Type: "ModuleScript" } && instances.TryGetValue(module.Id, out var instance)
+            ? DynValue.NewTable(instance) : DynValue.Nil;
+    }
+
+    private SceneNode? ResolveModulePath(string path, SceneNode? origin)
+    {
+        SceneNode? current;
+        string remaining;
+        var atGameRoot = false;
+        if (path.StartsWith("@game/", StringComparison.Ordinal))
+        {
+            current = null;
+            atGameRoot = true;
+            remaining = path[6..];
+        }
+        else if (path.StartsWith("@self/", StringComparison.Ordinal))
+        {
+            current = origin;
+            remaining = path[6..];
+        }
+        else if (path.StartsWith("./", StringComparison.Ordinal))
+        {
+            current = origin is null ? null : FindParentNode(origin);
+            remaining = path[2..];
+        }
+        else if (path.StartsWith("../", StringComparison.Ordinal))
+        {
+            var parent = origin is null ? null : FindParentNode(origin);
+            current = parent is null ? null : FindParentNode(parent);
+            atGameRoot = parent is not null && IsServiceRoot(parent);
+            remaining = path[3..];
+        }
+        else return null;
+        if ((current is null && !atGameRoot) || remaining.Length == 0) return null;
+        foreach (var segment in remaining.Split('/'))
+        {
+            if (segment.Length == 0) return null;
+            if (segment == "..")
+            {
+                if (atGameRoot || current is null) return null;
+                var parent = FindParentNode(current);
+                atGameRoot = parent is null && IsServiceRoot(current);
+                current = parent;
+            }
+            else if (segment != ".")
+            {
+                current = atGameRoot ? GetServiceRoot(segment) : current?.Children.FirstOrDefault(child => child.Name == segment);
+                atGameRoot = false;
+            }
+            if (current is null && !atGameRoot) return null;
+        }
+        return current;
+    }
+
+    private SceneNode? GetServiceRoot(string name) => name switch
+    {
+        "Workspace" => project.Workspace,
+        "Players" => project.Players,
+        "Lighting" => project.Lighting,
+        "ReplicatedStorage" => project.ReplicatedStorage,
+        "ServerScriptService" => project.ServerScriptService,
+        "ServerStorage" => project.ServerStorage,
+        "Gui" => project.Gui,
+        _ => null
+    };
+
+    private bool IsServiceRoot(SceneNode node) =>
+        ReferenceEquals(node, project.Workspace) || ReferenceEquals(node, project.Players)
+        || ReferenceEquals(node, project.Lighting) || ReferenceEquals(node, project.ReplicatedStorage)
+        || ReferenceEquals(node, project.ServerScriptService) || ReferenceEquals(node, project.ServerStorage)
+        || ReferenceEquals(node, project.Gui);
+
+    private DynValue LoadModule(CallbackArguments args)
+    {
+        if (args.Count != 1 || args[0].Type != DataType.Table) return DynValue.Nil;
+        var node = ReadNodeArgument(args[0]);
+        if (node is not { Type: "ModuleScript" } || !instances.TryGetValue(node.Id, out var instance)
+            || !ReferenceEquals(args[0].Table, instance)
+            || project.Scripts.FirstOrDefault(item => item.Id == node.Id) is not { } module) return DynValue.Nil;
+        return script.LoadString(module.Source, CreateExecutionEnvironment(node), module.Name);
     }
 
     private void InstallWaitForChild()
@@ -440,6 +642,7 @@ public sealed class LuaXRuntime
     private void StartScheduledTask(ScheduledTask scheduled)
     {
         if (!IsTaskOwnerActive(scheduled.Owner)) return;
+        var previousScript = currentGameScript;
         BindCurrentScript(scheduled.Owner);
         try
         {
@@ -454,6 +657,7 @@ public sealed class LuaXRuntime
             output?.Invoke($"{scheduled.Owner.Name} task: {exception.Message}");
             SynchronizeInstances();
         }
+        finally { currentGameScript = previousScript; }
     }
 
     private void RunDeferredTasks()
@@ -524,29 +728,6 @@ public sealed class LuaXRuntime
         }));
     }
 
-    private void InstallCFrameMetatable()
-    {
-        cframeMetatable = new Table(script);
-        cframeMetatable.Set("__mul", DynValue.NewCallback((_, args) =>
-        {
-            if (args.Count < 2 || !TryReadCFrame(args[0], out var left)) return DynValue.Nil;
-            if (TryReadCFrame(args[1], out var right))
-                return CFrameValue(left.Position + Vector3.Transform(right.Position, left.Rotation), Quaternion.Normalize(left.Rotation * right.Rotation));
-            if (IsTypedValue(args[1], "Vector3")) return VectorValue(ToArray(left.Position + Vector3.Transform(ToVector3(ReadVector(args[1], [0, 0, 0])), left.Rotation)));
-            return DynValue.Nil;
-        }));
-        cframeMetatable.Set("__add", DynValue.NewCallback((_, args) => OffsetCFrame(args, 1)));
-        cframeMetatable.Set("__sub", DynValue.NewCallback((_, args) => OffsetCFrame(args, -1)));
-        cframeMetatable.Set("__tostring", DynValue.NewCallback((_, args) => TryReadCFrame(args.Count > 0 ? args[0] : DynValue.Nil, out var value)
-            ? DynValue.NewString($"{value.Position.X}, {value.Position.Y}, {value.Position.Z}") : DynValue.NewString("CFrame")));
-    }
-
-    private DynValue OffsetCFrame(CallbackArguments args, int direction)
-    {
-        if (args.Count < 2 || !TryReadCFrame(args[0], out var frame) || !IsTypedValue(args[1], "Vector3")) return DynValue.Nil;
-        return CFrameValue(frame.Position + direction * ToVector3(ReadVector(args[1], [0, 0, 0])), frame.Rotation);
-    }
-
     private float[] CombineVectors(CallbackArguments args, Func<float, float, float> operation)
     {
         var left = ReadVector(args[0], [0, 0, 0]);
@@ -586,7 +767,6 @@ public sealed class LuaXRuntime
         instance.Set("ClassName", DynValue.NewString(node.Type));
         instance.Set("Position", IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Position));
         instance.Set("Rotation", VectorValue(node.Rotation));
-        if (IsBasePart(node)) WriteCFrame(node, instance);
         instance.Set("Size", IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size));
         instance.Set("Color", ColorValue(node.Color));
         instance.Set("FillColor", ColorValue(node.FillColor));
@@ -712,6 +892,14 @@ public sealed class LuaXRuntime
             }));
             instance.Set("Changed", DynValue.NewTable(changed));
         }
+        if (node.Type == "BindableEvent") InstallBindableEvent(node, instance);
+        if (node.Type == "BindableFunction")
+        {
+            var getCallback = DynValue.NewCallback((_, _) => bindableFunctionCallbacks.TryGetValue(node.Id, out var callback) && IsTaskOwnerActive(callback.GameScript) ? callback.Function : DynValue.Nil);
+            var beginCallback = DynValue.NewCallback((_, args) => BeginBindableInvocation(node, args));
+            var endCallback = DynValue.NewCallback((_, args) => EndBindableInvocation(args));
+            instance.Set("Invoke", script.Call(bindableInvokeFactory, getCallback, beginCallback, endCallback));
+        }
         if (node.Type == "Sound")
         {
             instance.Set("Play", DynValue.NewCallback((_, _) => SetPropertyValue(node, "Playing", DynValue.NewBoolean(true))));
@@ -784,7 +972,107 @@ public sealed class LuaXRuntime
             }));
             instance.Set("MouseClick", DynValue.NewTable(mouseClick));
         }
+        var instanceMetatable = new Table(script);
+        instanceMetatable.Set("__index", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count < 2 || args[1].Type != DataType.String) return DynValue.Nil;
+            var name = args[1].String;
+            foreach (var child in node.Children)
+            {
+                if (IsReservedBindableMember(node, child.Name)) continue;
+                if (!instances.TryGetValue(child.Id, out var childInstance)) continue;
+                if (string.Equals(childInstance.Get("Name").CastToString(), name, StringComparison.Ordinal))
+                    return DynValue.NewTable(childInstance);
+            }
+            return DynValue.Nil;
+        }));
+        if (node.Type == "BindableFunction")
+            instanceMetatable.Set("__newindex", DynValue.NewCallback((_, args) =>
+            {
+                if (args.Count < 3) return DynValue.Nil;
+                if (args[1].Type == DataType.String && args[1].String == "OnInvoke")
+                {
+                    SetBindableFunctionCallback(node, args[2]);
+                    return DynValue.Nil;
+                }
+                instance.Set(args[1], args[2]);
+                return DynValue.Nil;
+            }));
+        instance.MetaTable = instanceMetatable;
         return instance;
+    }
+
+    private static bool IsReservedBindableMember(SceneNode node, string name) =>
+        node.Type == "BindableFunction" && name is ("OnInvoke" or "Invoke")
+        || node.Type == "BindableEvent" && name is ("Event" or "Fire");
+
+    private void SetBindableFunctionCallback(SceneNode node, DynValue value)
+    {
+        if (value.Type == DataType.Function && currentGameScript is { } owner)
+            bindableFunctionCallbacks[node.Id] = new ScriptCallback(owner, value, "OnInvoke");
+        else if (value.Type == DataType.Nil) bindableFunctionCallbacks.Remove(node.Id);
+    }
+
+    private DynValue BeginBindableInvocation(SceneNode node, CallbackArguments args)
+    {
+        if (args.Count == 0 || args[0].Type != DataType.Thread
+            || !bindableFunctionCallbacks.TryGetValue(node.Id, out var callback)
+            || !IsTaskOwnerActive(callback.GameScript)) return DynValue.NewBoolean(false);
+        var coroutine = args[0].Coroutine;
+        if (!bindableInvocationScopes.TryGetValue(coroutine, out var scopes))
+            bindableInvocationScopes[coroutine] = scopes = new Stack<BindableInvocationScope>();
+        scopes.Push(new BindableInvocationScope(currentGameScript, callback.GameScript));
+        BindCurrentScript(callback.GameScript);
+        return DynValue.NewBoolean(true);
+    }
+
+    private DynValue EndBindableInvocation(CallbackArguments args)
+    {
+        if (args.Count == 0 || args[0].Type != DataType.Thread
+            || !bindableInvocationScopes.TryGetValue(args[0].Coroutine, out var scopes)
+            || scopes.Count == 0) return DynValue.Nil;
+        var previous = scopes.Pop().Previous;
+        if (scopes.Count == 0) bindableInvocationScopes.Remove(args[0].Coroutine);
+        currentGameScript = previous;
+        return DynValue.Nil;
+    }
+
+    private void InstallBindableEvent(SceneNode node, Table instance)
+    {
+        var signal = new Table(script);
+        runtimeTypeTags.Add(signal, new LuaXTypeTag("RBXScriptSignal"));
+        signal.Set("Connect", DynValue.NewCallback((_, args) =>
+        {
+            var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, signal) ? 1 : 0;
+            if (currentGameScript is not { } owner || args.Count <= index || args[index].Type != DataType.Function) return DynValue.Nil;
+            var connectionTable = new Table(script);
+            runtimeTypeTags.Add(connectionTable, new LuaXTypeTag("RBXScriptConnection"));
+            var connection = new BindableConnection(owner, args[index], connectionTable);
+            connectionTable.Set("Connected", DynValue.NewBoolean(true));
+            connectionTable.Set("Disconnect", DynValue.NewCallback((_, _) =>
+            {
+                connection.Disconnect();
+                if (bindableEventCallbacks.TryGetValue(node.Id, out var current)) current.Remove(connection);
+                return DynValue.Nil;
+            }));
+            if (!bindableEventCallbacks.TryGetValue(node.Id, out var callbacks)) bindableEventCallbacks[node.Id] = callbacks = [];
+            callbacks.Add(connection);
+            return DynValue.NewTable(connectionTable);
+        }));
+        instance.Set("Event", DynValue.NewTable(signal));
+        instance.Set("Fire", DynValue.NewCallback((_, args) =>
+        {
+            if (!bindableEventCallbacks.TryGetValue(node.Id, out var callbacks)) return DynValue.Nil;
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            var arguments = new DynValue[args.Count - index];
+            for (var argument = 0; argument < arguments.Length; argument++) arguments[argument] = args[argument + index];
+            foreach (var connection in callbacks.ToArray())
+            {
+                if (!connection.Connected) continue;
+                scheduledTasks.Add(new ScheduledTask(connection.Owner, script.CreateCoroutine(connection.Function), arguments, 0, true));
+            }
+            return DynValue.Nil;
+        }));
     }
 
     public void InvokePromptTriggered(string promptId, string playerId)
@@ -839,13 +1127,13 @@ public sealed class LuaXRuntime
     private void BindCurrentScript(GameScript gameScript)
     {
         currentGameScript = gameScript;
-        script.Globals.Set("script", instances.TryGetValue(gameScript.Id, out var instance) ? DynValue.NewTable(instance) : DynValue.Nil);
     }
 
     private void StartCallback(ScriptCallback callback, params DynValue[] arguments)
     {
         if (!project.Scripts.Any(item => item.Id == callback.GameScript.Id)
             || FindScriptNode(callback.GameScript.Id) is { } owner && (!owner.Enabled || !IsScriptAttachedForExecution(owner))) return;
+        var previousScript = currentGameScript;
         BindCurrentScript(callback.GameScript);
         try
         {
@@ -862,6 +1150,7 @@ public sealed class LuaXRuntime
             output?.Invoke($"{callback.GameScript.Name} {callback.Name} callback: {exception.Message}");
             SynchronizeInstances();
         }
+        finally { currentGameScript = previousScript; }
     }
 
     private SceneNode? ReadNodeArgument(DynValue value)
@@ -881,6 +1170,8 @@ public sealed class LuaXRuntime
         createdNodes[node.Id] = node;
         var instance = CreateInstance(node);
         instances[node.Id] = instance;
+        if (className == "ModuleScript")
+            project.Scripts.Add(new GameScript { Id = node.Id, Name = node.Name, Source = "local module = {}\nreturn module" });
         if (className == "Humanoid") humanoidWasAlive[node.Id] = true;
         if (args.Count > 1 && TrySetParent(node, args[1]))
             propertyChanged?.Invoke(node, "Parent", DynValue.NewTable(instances[FindParentNode(node)!.Id]));
@@ -921,7 +1212,7 @@ public sealed class LuaXRuntime
             instances[node.Id].Set("Value", GetValueObjectValue(node));
         foreach (var original in new[] { source }.Concat(GameProjectStore.Flatten(source.Children)))
         {
-            if (original.Type != "Script" || !renewedIds.TryGetValue(original.Id, out var clonedId)) continue;
+            if (original.Type is not ("Script" or "ModuleScript") || !renewedIds.TryGetValue(original.Id, out var clonedId)) continue;
             var originalScript = project.Scripts.FirstOrDefault(item => item.Id == original.Id);
             if (originalScript is null) continue;
             var clonedScript = clonedNodes.First(node => node.Id == clonedId);
@@ -953,6 +1244,9 @@ public sealed class LuaXRuntime
             clickDetectorCallbacks.Remove(removed.Id);
             humanoidDiedCallbacks.Remove(removed.Id);
             valueChangedCallbacks.Remove(removed.Id);
+            if (bindableEventCallbacks.Remove(removed.Id, out var bindableConnections))
+                foreach (var connection in bindableConnections) connection.Disconnect();
+            bindableFunctionCallbacks.Remove(removed.Id);
             queuedScriptIds.Remove(removed.Id);
             startedScriptIds.Remove(removed.Id);
             project.Scripts.RemoveAll(script => script.Id == removed.Id);
@@ -987,6 +1281,14 @@ public sealed class LuaXRuntime
         RemoveCallbacksOwnedBy(scriptIds, clickDetectorCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, humanoidDiedCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, valueChangedCallbacks);
+        foreach (var callbacks in bindableEventCallbacks.Values)
+            foreach (var connection in callbacks.Where(item => scriptIds.Contains(item.Owner.Id)).ToArray())
+            {
+                connection.Disconnect();
+                callbacks.Remove(connection);
+            }
+        foreach (var id in bindableFunctionCallbacks.Where(item => scriptIds.Contains(item.Value.GameScript.Id)).Select(item => item.Key).ToArray())
+            bindableFunctionCallbacks.Remove(id);
     }
 
     private void StopInactiveScripts(SceneNode source)
@@ -1101,8 +1403,11 @@ public sealed class LuaXRuntime
             children.Set(index++, childValue);
             children.Set(child.Name, childValue);
             children.Set(child.Id, childValue);
-            table.Set(child.Name, childValue);
-            keys.Add(child.Name);
+            if (!IsReservedBindableMember(parent, child.Name))
+            {
+                table.Set(child.Name, childValue);
+                keys.Add(child.Name);
+            }
         }
         table.Set("Children", DynValue.NewTable(children));
         linkedChildKeys[parent.Id] = keys;
@@ -1148,22 +1453,18 @@ public sealed class LuaXRuntime
                 childTable.Set(index++, childValue);
                 childTable.Set(child.Name, childValue);
                 childTable.Set(child.Id, childValue);
-                instance.Set(child.Name, childValue);
-                if (!linkedChildKeys.TryGetValue(node.Id, out var keys)) linkedChildKeys[node.Id] = keys = new HashSet<string>(StringComparer.Ordinal);
-                keys.Add(child.Name);
+                if (!IsReservedBindableMember(node, child.Name))
+                {
+                    instance.Set(child.Name, childValue);
+                    if (!linkedChildKeys.TryGetValue(node.Id, out var keys)) linkedChildKeys[node.Id] = keys = new HashSet<string>(StringComparer.Ordinal);
+                    keys.Add(child.Name);
+                }
             }
         }
     }
 
     private void WriteInstanceProperty(SceneNode node, Table instance, string normalizedProperty)
     {
-        if (IsBasePart(node) && normalizedProperty is ("position" or "rotation" or "cframe"))
-        {
-            instance.Set("Position", VectorValue(node.Position));
-            instance.Set("Rotation", VectorValue(node.Rotation));
-            WriteCFrame(node, instance);
-            return;
-        }
         if (normalizedProperty is "velocity" or "assemblylinearvelocity")
         {
             instance.Set("Velocity", VectorValue(node.Velocity));
@@ -1182,7 +1483,6 @@ public sealed class LuaXRuntime
             "name" => "Name",
             "archivable" => "Archivable",
             "position" => "Position",
-            "cframe" => "CFrame",
             "rotation" => "Rotation",
             "size" => "Size",
             "color" => "Color",
@@ -1281,6 +1581,11 @@ public sealed class LuaXRuntime
     private DynValue SetPropertyValue(SceneNode node, string property, DynValue value)
     {
         var normalized = property.ToLowerInvariant();
+        if (normalized == "oninvoke" && node.Type == "BindableFunction")
+        {
+            SetBindableFunctionCallback(node, value);
+            return DynValue.Nil;
+        }
         if (normalized == "value")
         {
             if (!TrySetValueObjectValue(node, value, out var changed)) return DynValue.Nil;
@@ -1303,10 +1608,6 @@ public sealed class LuaXRuntime
             {
                 case "position": SetPositionProperty(node, value); break;
                 case "rotation": node.Rotation = ReadVector(value, node.Rotation); break;
-                case "cframe":
-                    if (!IsBasePart(node) || !TryReadCFrame(value, out var frame)) return DynValue.Nil;
-                    ApplyCFrame(node, frame);
-                    break;
                 case "size": SetSizeProperty(node, value); break;
                 case "color": node.Color = ReadColor(value, node.Color); break;
                 case "fillcolor": if (node.Type != "Highlight") return DynValue.Nil; node.FillColor = ReadColor(value, node.FillColor); break;
@@ -1556,7 +1857,7 @@ public sealed class LuaXRuntime
     {
         if (node.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
         node.Name = name;
-        if (node.Type == "Script" && project.Scripts.FirstOrDefault(item => item.Id == node.Id) is { } gameScript)
+        if ((node.Type is "Script" or "ModuleScript") && project.Scripts.FirstOrDefault(item => item.Id == node.Id) is { } gameScript)
             gameScript.Name = name;
     }
 
@@ -1582,6 +1883,8 @@ public sealed class LuaXRuntime
 
     private DynValue GetPropertyValue(SceneNode node, string property)
     {
+        if (node.Type == "BindableFunction" && property.Equals("OnInvoke", StringComparison.OrdinalIgnoreCase))
+            return DynValue.Nil;
         if (node.Type == "Lighting" && instances.TryGetValue(node.Id, out var lightingInstance))
         {
             var pendingLighting = lightingInstance.Get(property.ToLowerInvariant() switch
@@ -1607,7 +1910,6 @@ public sealed class LuaXRuntime
         "id" => DynValue.NewString(node.Id),
         "classname" or "type" => DynValue.NewString(node.Type),
         "position" => IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Position),
-        "cframe" => IsBasePart(node) ? CFrameValue(ToVector3(node.Position), QuaternionFromDegrees(node.Rotation)) : DynValue.Nil,
         "rotation" => VectorValue(node.Rotation),
         "size" => IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
         "color" => ColorValue(node.Color),
@@ -1820,6 +2122,8 @@ public sealed class LuaXRuntime
         "BasePart" => IsBasePart(node),
         "Light" => SceneNodeTypes.IsLight(node),
         "ValueBase" => SceneNodeTypes.IsValueObject(node),
+        "LuaSourceContainer" => node.Type is "Script" or "ModuleScript",
+        "BaseScript" => node.Type == "Script",
         "FaceInstance" or "Decal" => node.Type is "Decal" or "Texture",
         "GuiObject" => node.Type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox",
         "GuiBase2d" => node.Type is "ScreenGui" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox",
@@ -1913,19 +2217,6 @@ public sealed class LuaXRuntime
         foreach (var node in KnownNodes())
         {
             if (!instances.TryGetValue(node.Id, out var instance)) continue;
-            if (IsBasePart(node) && instance.Get("CFrame") is { Type: DataType.Table } pendingFrame
-                && (!cframeSnapshots.TryGetValue(node.Id, out var snapshot) || !ReferenceEquals(snapshot, pendingFrame.Table))
-                && TryReadCFrame(pendingFrame, out var frame))
-            {
-                var oldPosition = node.Position;
-                var oldRotation = node.Rotation;
-                ApplyCFrame(node, frame);
-                if (!oldPosition.SequenceEqual(node.Position)) MarkChanged(node, "Position");
-                if (!oldRotation.SequenceEqual(node.Rotation)) MarkChanged(node, "Rotation");
-                instance.Set("Position", VectorValue(node.Position));
-                instance.Set("Rotation", VectorValue(node.Rotation));
-                WriteCFrame(node, instance);
-            }
             if (SceneNodeTypes.IsValueObject(node))
             {
                 if (TrySetValueObjectValue(node, instance.Get("Value"), out var valueChanged) && valueChanged)
@@ -1954,7 +2245,6 @@ public sealed class LuaXRuntime
                 var rotation = ReadVector(instance.Get("Rotation"), node.Rotation);
                 if (!node.Rotation.SequenceEqual(rotation)) { node.Rotation = rotation; MarkChanged(node, "Rotation"); }
             }
-            if (IsBasePart(node)) WriteCFrame(node, instance);
             if (instance.Get("Size").Type == DataType.Table)
             {
                 if (IsGuiObject(node) && TryReadUDim2(instance.Get("Size"), out var sizeScale, out var sizeOffset))
@@ -2199,92 +2489,21 @@ public sealed class LuaXRuntime
         return true;
     }
 
-    private static Vector3 ToVector3(float[] values) => new(values[0], values[1], values[2]);
-    private static float[] ToArray(Vector3 value) => [value.X, value.Y, value.Z];
-    private static Quaternion QuaternionFromRadians(float x, float y, float z) => Quaternion.Normalize(
-        Quaternion.CreateFromAxisAngle(Vector3.UnitX, x) * Quaternion.CreateFromAxisAngle(Vector3.UnitY, y) * Quaternion.CreateFromAxisAngle(Vector3.UnitZ, z));
-    private static Quaternion QuaternionFromDegrees(float[] degrees) => QuaternionFromRadians(
-        degrees[0] * MathF.PI / 180, degrees[1] * MathF.PI / 180, degrees[2] * MathF.PI / 180);
-
-    private bool TryReadCFrame(DynValue value, out CFrameData frame)
+    private DynValue CreateLookAtRotation(CallbackArguments args)
     {
-        if (value.Type == DataType.Table && cframeData.TryGetValue(value.Table, out var found))
-        {
-            frame = found;
-            return true;
-        }
-        frame = new CFrameData(Vector3.Zero, Quaternion.Identity);
-        return false;
+        if (args.Count < 2 || !IsTypedValue(args[0], "Vector3") || !IsTypedValue(args[1], "Vector3")) return DynValue.Nil;
+        var from = ReadVector(args[0], [float.NaN, float.NaN, float.NaN]);
+        var to = ReadVector(args[1], [float.NaN, float.NaN, float.NaN]);
+        if (!from.All(float.IsFinite) || !to.All(float.IsFinite)) return DynValue.Nil;
+        var x = (double)to[0] - from[0];
+        var y = (double)to[1] - from[1];
+        var z = (double)to[2] - from[2];
+        var distance = Math.Sqrt(x * x + y * y + z * z);
+        if (distance < 0.000001) return VectorValue([0, 0, 0]);
+        var pitch = Math.Asin(Math.Clamp(y / distance, -1, 1)) * 180 / Math.PI;
+        var yaw = x * x + z * z < 0.000000000001 ? 0 : Math.Atan2(-x, -z) * 180 / Math.PI;
+        return VectorValue([(float)pitch, (float)yaw, 0]);
     }
-
-    private DynValue CFrameValue(Vector3 position, Quaternion rotation, bool includeRotation = true)
-    {
-        var frame = new Table(script);
-        rotation = Quaternion.Normalize(rotation);
-        cframeData.Add(frame, new CFrameData(position, rotation));
-        runtimeTypeTags.Add(frame, new LuaXTypeTag("CFrame"));
-        frame.Set("X", DynValue.NewNumber(position.X));
-        frame.Set("Y", DynValue.NewNumber(position.Y));
-        frame.Set("Z", DynValue.NewNumber(position.Z));
-        frame.Set("Position", VectorValue(ToArray(position)));
-        if (includeRotation) frame.Set("Rotation", CFrameValue(Vector3.Zero, rotation, false));
-        frame.Set("RightVector", VectorValue(ToArray(Vector3.Transform(Vector3.UnitX, rotation))));
-        frame.Set("UpVector", VectorValue(ToArray(Vector3.Transform(Vector3.UnitY, rotation))));
-        frame.Set("LookVector", VectorValue(ToArray(Vector3.Transform(-Vector3.UnitZ, rotation))));
-        frame.Set("Inverse", DynValue.NewCallback((_, _) =>
-        {
-            var inverse = Quaternion.Inverse(rotation);
-            return CFrameValue(Vector3.Transform(-position, inverse), inverse);
-        }));
-        frame.Set("ToWorldSpace", DynValue.NewCallback((_, args) =>
-        {
-            var index = GetVectorMethodArgumentIndex(frame, args);
-            if (args.Count <= index || !TryReadCFrame(args[index], out var other)) return DynValue.Nil;
-            return CFrameValue(position + Vector3.Transform(other.Position, rotation), Quaternion.Normalize(rotation * other.Rotation));
-        }));
-        frame.Set("ToObjectSpace", DynValue.NewCallback((_, args) =>
-        {
-            var index = GetVectorMethodArgumentIndex(frame, args);
-            if (args.Count <= index || !TryReadCFrame(args[index], out var other)) return DynValue.Nil;
-            var inverse = Quaternion.Inverse(rotation);
-            return CFrameValue(Vector3.Transform(other.Position - position, inverse), Quaternion.Normalize(inverse * other.Rotation));
-        }));
-        frame.Set("PointToWorldSpace", DynValue.NewCallback((_, args) =>
-        {
-            var index = GetVectorMethodArgumentIndex(frame, args);
-            return args.Count > index && IsTypedValue(args[index], "Vector3")
-                ? VectorValue(ToArray(position + Vector3.Transform(ToVector3(ReadVector(args[index], [0, 0, 0])), rotation))) : DynValue.Nil;
-        }));
-        frame.Set("PointToObjectSpace", DynValue.NewCallback((_, args) =>
-        {
-            var index = GetVectorMethodArgumentIndex(frame, args);
-            return args.Count > index && IsTypedValue(args[index], "Vector3")
-                ? VectorValue(ToArray(Vector3.Transform(ToVector3(ReadVector(args[index], [0, 0, 0])) - position, Quaternion.Inverse(rotation)))) : DynValue.Nil;
-        }));
-        frame.MetaTable = cframeMetatable;
-        frame.ReadOnly = true;
-        return DynValue.NewTable(frame);
-    }
-
-    private void WriteCFrame(SceneNode node, Table instance)
-    {
-        var value = CFrameValue(ToVector3(node.Position), QuaternionFromDegrees(node.Rotation));
-        instance.Set("CFrame", value);
-        cframeSnapshots[node.Id] = value.Table;
-    }
-
-    private static void ApplyCFrame(SceneNode node, CFrameData frame)
-    {
-        node.Position = ToArray(frame.Position);
-        var right = Vector3.Transform(Vector3.UnitX, frame.Rotation);
-        var up = Vector3.Transform(Vector3.UnitY, frame.Rotation);
-        var back = Vector3.Transform(Vector3.UnitZ, frame.Rotation);
-        var y = MathF.Asin(Math.Clamp(back.X, -1, 1));
-        var x = MathF.Atan2(-back.Y, back.Z);
-        var z = MathF.Atan2(-up.X, right.X);
-        node.Rotation = [x * 180 / MathF.PI, y * 180 / MathF.PI, z * 180 / MathF.PI];
-    }
-
     private DynValue VectorValue(float[] values)
     {
         var table = new Table(script);

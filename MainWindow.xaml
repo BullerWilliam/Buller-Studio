@@ -51,7 +51,11 @@
         <DataTrigger Binding="{Binding Type}" Value="ObjectValue"><Setter TargetName="NodeIcon" Property="Text" Value="↗"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E2BE86"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="ImageLabel"><Setter TargetName="NodeIcon" Property="Text" Value="▧"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D9B67A"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Folder"><Setter TargetName="NodeIcon" Property="Text" Value="▱"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D4BD75"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Configuration"><Setter TargetName="NodeIcon" Property="Text" Value="⚙"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D4BD75"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="BindableEvent"><Setter TargetName="NodeIcon" Property="Text" Value="⚡"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E7CA86"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="BindableFunction"><Setter TargetName="NodeIcon" Property="Text" Value="⇄"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E7CA86"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Script"><Setter TargetName="NodeIcon" Property="Text" Value="{}"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#B5A1DA"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="ModuleScript"><Setter TargetName="NodeIcon" Property="Text" Value="⬡"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#B5A1DA"/></DataTrigger>
       </HierarchicalDataTemplate.Triggers>
     </HierarchicalDataTemplate>
     <Style x:Key="DockCaption" TargetType="Border">

@@ -332,7 +332,7 @@ public static class GameProjectStore
         foreach (var objectValue in Flatten(project).Where(node => node.Type == "ObjectValue" && node.ObjectValueId.Length > 0))
             if (!validObjectIds.Contains(objectValue.ObjectValueId)) objectValue.ObjectValueId = string.Empty;
         var scriptNames = Flatten(project.Workspace.Children).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.Gui.Children))
-            .Where(node => node.Type == "Script")
+            .Where(node => node.Type is "Script" or "ModuleScript")
             .GroupBy(node => node.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.Ordinal);
         foreach (var script in project.Scripts)
@@ -426,7 +426,7 @@ public static class GameProjectStore
         if (destinationIsGui)
         {
             if (destinationParent.Id == project.Gui.Id)
-                return (source.Type is "ScreenGui" or "Folder" or "Script" || SceneNodeTypes.IsValueObject(source)) && IsGuiSubtreeCompatible(source, true);
+                return (source.Type is "ScreenGui" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Script" || SceneNodeTypes.IsValueObject(source)) && IsGuiSubtreeCompatible(source, true);
             if (!IsGuiContainer(destinationParent.Type) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
             if (source.Type == "ScreenGui") return false;
             return IsGuiSubtreeCompatible(source, false, destinationParent.Type);
@@ -436,12 +436,12 @@ public static class GameProjectStore
             || IsNodeInTree(project.ServerScriptService, destinationParent.Id)
             || IsNodeInTree(project.ServerStorage, destinationParent.Id))
         {
-            if (destinationParent.Type is not ("ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Folder" or "Model" or "Attachment")
+            if (destinationParent.Type is not ("ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Attachment")
                 && !SceneNodeTypes.IsBasePart(destinationParent) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
             return IsWorkspaceSubtreeCompatible(source, destinationParent.Type is "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" ? "Workspace" : destinationParent.Type);
         }
 
-        if (destinationParent.Type is not ("Workspace" or "Folder" or "Model" or "Attachment") && !SceneNodeTypes.IsBasePart(destinationParent) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
+        if (destinationParent.Type is not ("Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Attachment") && !SceneNodeTypes.IsBasePart(destinationParent) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
         return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
     }
 
@@ -456,8 +456,8 @@ public static class GameProjectStore
                 && !destinationParent.Children.Any(child => child.Type == "Humanoid" && child.Id != source.Id);
         if (destinationParent.Type is "Model" or "Attachment" || SceneNodeTypes.IsBasePart(destinationParent))
             return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
-        if (destinationParent.Type == "Folder")
-            return IsWorkspaceSubtreeCompatible(source, "Folder") || IsGuiSubtreeCompatible(source, false, "Folder");
+        if (destinationParent.Type is "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript")
+            return IsWorkspaceSubtreeCompatible(source, destinationParent.Type) || IsGuiSubtreeCompatible(source, false, destinationParent.Type);
         if (SceneNodeTypes.IsValueObject(destinationParent))
             return IsWorkspaceSubtreeCompatible(source, destinationParent.Type) || IsGuiSubtreeCompatible(source, false, destinationParent.Type);
         return IsGuiContainer(destinationParent.Type) && IsGuiSubtreeCompatible(source, false, destinationParent.Type);
@@ -539,7 +539,7 @@ public static class GameProjectStore
     private static bool IsNodeInTree(SceneNode root, string nodeId) =>
         root.Id == nodeId || Flatten(root.Children).Any(node => node.Id == nodeId);
 
-    private static bool IsGuiContainer(string type) => type is "Gui" or "ScreenGui" or "Folder" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
+    private static bool IsGuiContainer(string type) => type is "Gui" or "ScreenGui" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
 
     private static bool IsGuiObject(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
 
@@ -548,7 +548,7 @@ public static class GameProjectStore
     private static bool IsGuiSubtreeCompatible(SceneNode node, bool isGuiServiceChild, string? destinationType = null)
     {
         if (node.Type == "ScreenGui") return isGuiServiceChild && node.Children.All(child => IsGuiSubtreeCompatible(child, false, "ScreenGui"));
-        if (node.Type == "Folder") return node.Children.All(child => IsGuiSubtreeCompatible(child, false, "Folder"));
+        if (node.Type is "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript") return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (node.Type == "Script") return node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node)) return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (IsGuiComponent(node.Type)) return destinationType is not null && IsGuiObject(destinationType) && node.Children.Count == 0;
@@ -563,25 +563,25 @@ public static class GameProjectStore
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
         if (node.Type == "Beam")
-            return (parentType is "Workspace" or "Folder" or "Model" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node))
-            return (parentType is "Workspace" or "Folder" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType))
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType))
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
         if (node.Type is "Decal" or "Texture")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type is "ProximityPrompt" or "ClickDetector")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type == "Sound")
-            return (parentType is "Workspace" or "Folder" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
         if (node.Type == "Highlight")
             return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Model") && node.Children.Count == 0;
         if (node.Type == "WeldConstraint")
-            return (parentType is "Workspace" or "Folder" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
         if (SceneNodeTypes.IsLight(node))
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.Count == 0;
-        if (!SceneNodeTypes.IsBasePart(node) && node.Type is not ("ImageLabel" or "Folder" or "Model" or "Script")) return false;
+        if (!SceneNodeTypes.IsBasePart(node) && node.Type is not ("ImageLabel" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Script")) return false;
         if (node.Type is "Script" or "ImageLabel" && node.Children.Count > 0) return false;
         return node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
     }

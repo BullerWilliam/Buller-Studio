@@ -719,8 +719,8 @@ public sealed class SceneRenderService
         var transform = new Transform3DGroup();
         if (includeScale) transform.Children.Add(new ScaleTransform3D(node.Size[0], node.Size[1], node.Size[2]));
         transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 0, 1), node.Rotation[2])));
-        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), node.Rotation[1])));
         transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(1, 0, 0), node.Rotation[0])));
+        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), node.Rotation[1])));
         transform.Children.Add(new TranslateTransform3D(node.Position[0], node.Position[1], node.Position[2]));
         return transform;
     }
