@@ -27,7 +27,7 @@ public sealed class SeatInteractionService
         oldSeat.Occupant = string.Empty;
         character.IsSeated = false;
         character.Root.Anchored = false;
-        character.Root.Position[1] = oldSeat.Position[1] + Math.Abs(oldSeat.Size[1]) * .5f + Math.Abs(character.Root.Size[1]) * .5f + .001f;
+        character.Root.Position[1] = SeatCenterTop(oldSeat) + Math.Abs(character.Root.Size[1]) * .5f + .001f;
         character.Root.Velocity = [0, 0, 0];
         return [oldSeat, character.Root];
     }
@@ -39,13 +39,10 @@ public sealed class SeatInteractionService
         {
             var root = character.Root;
             if (root.Velocity[1] > .01f) return [];
-            var bottom = root.Position[1] - Math.Abs(root.Size[1]) * .5f;
             seat = GameProjectStore.Flatten(project.Workspace.Children)
                 .Where(node => node.Type == "Seat" && node.CanCollide && (string.IsNullOrEmpty(node.Occupant) || node.Occupant == character.Humanoid.Id))
-                .FirstOrDefault(node =>
-                    Math.Abs(bottom - (node.Position[1] + Math.Abs(node.Size[1]) * .5f)) <= .08f
-                    && Math.Abs(root.Position[0] - node.Position[0]) < (Math.Abs(root.Size[0]) + Math.Abs(node.Size[0])) * .5f
-                    && Math.Abs(root.Position[2] - node.Position[2]) < (Math.Abs(root.Size[2]) + Math.Abs(node.Size[2])) * .5f);
+                .FirstOrDefault(node => CollisionGeometry.SweepFraction(root, node, 1, -.08f) < 1
+                    && root.Position[1] >= node.Position[1]);
             if (seat is null) return [];
             seat.Occupant = character.Humanoid.Id;
             root.Anchored = true;
@@ -53,11 +50,14 @@ public sealed class SeatInteractionService
         }
 
         character.Root.Position[0] = seat.Position[0];
-        character.Root.Position[1] = seat.Position[1] + Math.Abs(seat.Size[1]) * .5f + 1.25f;
+        character.Root.Position[1] = SeatCenterTop(seat) + 1.25f;
         character.Root.Position[2] = seat.Position[2];
         character.Root.Velocity = [0, 0, 0];
         seat.Occupant = character.Humanoid.Id;
         character.SetFacingYaw(seat.Rotation[1]);
         return [seat, character.Root];
     }
+
+    private static float SeatCenterTop(SceneNode node) =>
+        CollisionGeometry.TopYAt(node, node.Position[0], node.Position[2]) ?? CollisionGeometry.TopY(node);
 }

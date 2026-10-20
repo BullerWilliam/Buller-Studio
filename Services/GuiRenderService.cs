@@ -9,7 +9,7 @@ namespace BullerStudio.Services;
 
 public static class GuiRenderService
 {
-    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIListLayout", "UITableLayout", "UIAspectRatio"];
 
     public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null)
     {
@@ -111,7 +111,7 @@ public static class GuiRenderService
                 Content = childCanvas,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                Background = BrushFrom(node.Color, Brushes.Transparent),
+                Background = BackgroundFor(node),
                 BorderThickness = new Thickness(0)
             };
             content.Children.Add(scroll);
@@ -125,7 +125,7 @@ public static class GuiRenderService
 
     private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged)
     {
-        var background = BrushFrom(node.Color, Brushes.Transparent);
+        var background = BackgroundFor(node);
         FrameworkElement? visual = node.Type switch
         {
             "Frame" => new Border { Background = background },
@@ -230,5 +230,29 @@ public static class GuiRenderService
         {
             return fallback;
         }
+    }
+
+    private static Brush GradientBrush(SceneNode gradient)
+    {
+        var start = ColorFrom(gradient.StartColor, Colors.White);
+        var end = ColorFrom(gradient.EndColor, Colors.Gray);
+        var angle = gradient.Rotation[2] * Math.PI / 180;
+        var dx = Math.Cos(angle) * .5;
+        var dy = Math.Sin(angle) * .5;
+        var brush = new LinearGradientBrush(start, end, new System.Windows.Point(.5 - dx, .5 - dy), new System.Windows.Point(.5 + dx, .5 + dy));
+        brush.Freeze();
+        return brush;
+    }
+
+    private static Brush BackgroundFor(SceneNode node)
+    {
+        var gradient = node.Children.FirstOrDefault(child => child.Type == "UIGradient" && child.Enabled);
+        return gradient is null ? BrushFrom(node.Color, Brushes.Transparent) : GradientBrush(gradient);
+    }
+
+    private static Color ColorFrom(string value, Color fallback)
+    {
+        try { return (Color)ColorConverter.ConvertFromString(value); }
+        catch (Exception exception) when (exception is FormatException or NotSupportedException or InvalidOperationException or ArgumentException) { return fallback; }
     }
 }

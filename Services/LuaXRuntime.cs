@@ -194,6 +194,7 @@ public sealed class LuaXRuntime
                 || FindScriptNode(execution.GameScript.Id) is { } node && (!node.Enabled || !IsScriptAttachedForExecution(node)))
             {
                 activeScripts.Remove(execution);
+                bindableInvocationScopes.Remove(execution.Coroutine);
                 continue;
             }
             if (bindableInvocationScopes.TryGetValue(execution.Coroutine, out var scopes) && scopes.Count > 0)
@@ -244,7 +245,7 @@ public sealed class LuaXRuntime
         for (var first = 0; first < parts.Length; first++)
         for (var second = first + 1; second < parts.Length; second++)
         {
-            if (!Overlaps(parts[first], parts[second])) continue;
+            if (!CollisionGeometry.Intersects(parts[first], parts[second])) continue;
             var key = string.CompareOrdinal(parts[first].Id, parts[second].Id) < 0 ? $"{parts[first].Id}:{parts[second].Id}" : $"{parts[second].Id}:{parts[first].Id}";
             touchingNow.Add(key);
             if (activeContacts.Contains(key)) continue;
@@ -605,6 +606,7 @@ public sealed class LuaXRuntime
             var coroutine = args[0].Coroutine;
             scheduledTasks.RemoveAll(item => ReferenceEquals(item.Handle.Coroutine, coroutine));
             activeScripts.RemoveAll(item => ReferenceEquals(item.Coroutine, coroutine));
+            bindableInvocationScopes.Remove(coroutine);
             return DynValue.Nil;
         }));
         script.Globals.Set("task", DynValue.NewTable(taskLibrary));
@@ -1272,6 +1274,8 @@ public sealed class LuaXRuntime
             queuedScriptIds.Remove(id);
             startedScriptIds.Remove(id);
         }
+        foreach (var execution in activeScripts.Where(item => scriptIds.Contains(item.GameScript.Id)))
+            bindableInvocationScopes.Remove(execution.Coroutine);
         activeScripts.RemoveAll(execution => scriptIds.Contains(execution.GameScript.Id));
         scheduledTasks.RemoveAll(item => scriptIds.Contains(item.Owner.Id));
         RemoveCallbacksOwnedBy(scriptIds, touchedCallbacks);
@@ -2481,12 +2485,6 @@ public sealed class LuaXRuntime
             if (key.Property == "Value") FireValueChanged(node, currentValue);
         }
         UpdateHumanoidDeaths();
-    }
-
-    private static bool Overlaps(SceneNode first, SceneNode second)
-    {
-        for (var axis = 0; axis < 3; axis++) if (Math.Abs(first.Position[axis] - second.Position[axis]) > (Math.Abs(first.Size[axis]) + Math.Abs(second.Size[axis])) * .5f) return false;
-        return true;
     }
 
     private DynValue CreateLookAtRotation(CallbackArguments args)

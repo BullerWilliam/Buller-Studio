@@ -543,7 +543,7 @@ public static class GameProjectStore
 
     private static bool IsGuiObject(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
 
-    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIListLayout" or "UITableLayout" or "UIAspectRatio";
+    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIListLayout" or "UITableLayout" or "UIAspectRatio";
 
     private static bool IsGuiSubtreeCompatible(SceneNode node, bool isGuiServiceChild, string? destinationType = null)
     {

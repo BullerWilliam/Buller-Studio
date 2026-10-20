@@ -112,14 +112,13 @@ public sealed class PlayerCharacterService
         var parts = GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
         var pad = parts.FirstOrDefault(node => node.Type == "SpawnLocation" && node.Enabled);
         if (pad is not null)
-            return [pad.Position[0], pad.Position[1] + Math.Abs(pad.Size[1]) * .5f + 1.801f, pad.Position[2]];
+            return [pad.Position[0], (CollisionGeometry.TopYAt(pad, pad.Position[0], pad.Position[2]) ?? CollisionGeometry.TopY(pad)) + 1.801f, pad.Position[2]];
 
         var ground = parts.Where(node => node.Type != "SpawnLocation" && node.Anchored && node.CanCollide
-                && Math.Abs(node.Position[0]) < Math.Abs(node.Size[0]) * .5f
-                && Math.Abs(node.Position[2]) < Math.Abs(node.Size[2]) * .5f)
+                && CollisionGeometry.TopYAt(node, 0, 0) is not null)
             .OrderByDescending(node => Math.Abs(node.Size[0] * node.Size[2]))
             .FirstOrDefault();
-        var top = ground is null ? 0 : ground.Position[1] + Math.Abs(ground.Size[1]) * .5f;
+        var top = ground is null ? 0 : CollisionGeometry.TopYAt(ground, 0, 0) ?? 0;
         return [0, top + 1.801f, 0];
     }
 }

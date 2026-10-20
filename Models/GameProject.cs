@@ -40,6 +40,8 @@ public sealed class SceneNode
     public string Color { get; set; } = "#4E9DFF";
     public string FillColor { get; set; } = "#00BFFF";
     public string OutlineColor { get; set; } = "#FFFFFF";
+    public string StartColor { get; set; } = "#FFFFFF";
+    public string EndColor { get; set; } = "#808080";
     public float FillTransparency { get; set; } = .5f;
     public float OutlineTransparency { get; set; }
     public string Shape { get; set; } = "Block";

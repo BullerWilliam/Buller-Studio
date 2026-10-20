@@ -93,6 +93,17 @@ project.Scripts.Add(new GameScript { Id = ownershipCaller.Id, Name = ownershipCa
 var ownershipDisabler = new SceneNode { Type = "Script", Name = "OwnershipDisabler" };
 project.ServerScriptService.Children.Add(ownershipDisabler);
 project.Scripts.Add(new GameScript { Id = ownershipDisabler.Id, Name = ownershipDisabler.Name, Source = "game.ServerScriptService.OwnershipScript.Enabled = false" });
+var errorOwner = new SceneNode { Type = "Script", Name = "ErrorOwner" };
+project.ServerScriptService.Children.Add(errorOwner);
+project.Scripts.Add(new GameScript { Id = errorOwner.Id, Name = errorOwner.Name, Source = "game.ReplicatedStorage.AskServer.OnInvoke = function() error('intentional callback failure') end" });
+var errorCaller = new SceneNode { Type = "Script", Name = "ErrorCaller" };
+project.ServerScriptService.Children.Add(errorCaller);
+project.Scripts.Add(new GameScript
+{
+    Id = errorCaller.Id,
+    Name = errorCaller.Name,
+    Source = "local ok = pcall(function() game.ReplicatedStorage.AskServer:Invoke() end); print('invoke-error-caught', ok); task.delay(0.05, function() print('post-error-task') end); game.ServerScriptService.ErrorOwner.Enabled = false"
+});
 var parentModule = new SceneNode { Type = "ModuleScript", Name = "ParentModule" };
 project.ReplicatedStorage.Children.Add(parentModule);
 var childModule = new SceneNode { Type = "ModuleScript", Name = "ChildModule" };
@@ -331,6 +342,13 @@ if (output.Any(line => line.Contains("stale-owned-event", StringComparison.Ordin
     || line.Contains("stale-owned-task", StringComparison.Ordinal)))
     throw new Exception("A stopped callback owner left events or tasks active: " + string.Join(" | ", output));
 
+runtime.Run(errorOwner.Id);
+runtime.Run(errorCaller.Id);
+runtime.Update(0.05f);
+if (!output.Any(line => line.Contains("invoke-error-caught\tfalse", StringComparison.Ordinal))
+    || !output.Any(line => line.Contains("post-error-task", StringComparison.Ordinal)))
+    throw new Exception("Callback errors did not restore the caller's task ownership: " + string.Join(" | ", output));
+
 Run("""
     local part = Instance.new('Part', workspace)
     part.Position = Vector3.new(1, 2, 3)
@@ -339,5 +357,121 @@ Run("""
     """);
 if (!output.Any(line => line.Contains("rotation-only\ttrue\ttrue\t1\t-90", StringComparison.Ordinal)))
     throw new Exception("Position, Rotation, or LookAtRotation regressed: " + string.Join(" | ", output));
+
+static SceneNode RotatedBarrier() => new()
+{
+    Type = "Part", Name = "RotatedBarrier", Anchored = true,
+    Position = [0, 0, 0], Size = [10, 1, 1], Rotation = [0, 45, 0]
+};
+
+var clearProject = new GameProject();
+clearProject.Workspace.Gravity = 0;
+clearProject.Workspace.Children.Add(RotatedBarrier());
+var clearProbe = new SceneNode
+{
+    Type = "Part", Name = "ClearProbe", Anchored = false,
+    Position = [3, 0, 0], Size = [.5f, .5f, .5f], Velocity = [50, 0, 0]
+};
+clearProject.Workspace.Children.Add(clearProbe);
+new PhysicsSimulationService(clearProject, _ => { }).Step(.02f);
+if (clearProbe.Position[0] < 3.99f)
+    throw new Exception($"Rotated part blocked a clear path: {clearProbe.Position[0]}");
+
+var hitProject = new GameProject();
+hitProject.Workspace.Gravity = 0;
+hitProject.Workspace.Children.Add(RotatedBarrier());
+var hitProbe = new SceneNode
+{
+    Type = "Part", Name = "HitProbe", Anchored = false,
+    Position = [3, 0, -5], Size = [.5f, .5f, .5f], Velocity = [0, 0, 200]
+};
+hitProject.Workspace.Children.Add(hitProbe);
+new PhysicsSimulationService(hitProject, _ => { }).Step(.02f);
+if (hitProbe.Position[2] > -3.5f || hitProbe.Velocity[2] != 0)
+    throw new Exception($"Rotated part failed to stop a crossing probe: {hitProbe.Position[2]}");
+
+var touchProject = new GameProject();
+touchProject.Workspace.Children.Add(RotatedBarrier());
+var touchProbe = new SceneNode
+{
+    Type = "Part", Name = "TouchProbe", Position = [3, 0, 0], Size = [.5f, .5f, .5f]
+};
+touchProject.Workspace.Children.Add(touchProbe);
+var touchOutput = new List<string>();
+var touchRuntime = new LuaXRuntime(touchProject, output: touchOutput.Add);
+var touchScript = new GameScript { Source = "workspace.RotatedBarrier.Touched:Connect(function(hit) print('rotated-touch', hit.Name) end)" };
+touchProject.Scripts.Add(touchScript);
+touchRuntime.Run(touchScript.Id);
+touchRuntime.UpdateTouched();
+if (touchOutput.Any(line => line.Contains("rotated-touch", StringComparison.Ordinal)))
+    throw new Exception("Rotated Touched reported a false contact.");
+var moveTouchScript = new GameScript { Source = "workspace.TouchProbe.Position = Vector3.new(3, 0, -3)" };
+touchProject.Scripts.Add(moveTouchScript);
+touchRuntime.Run(moveTouchScript.Id);
+touchRuntime.UpdateTouched();
+if (!touchOutput.Any(line => line.Contains("rotated-touch\tTouchProbe", StringComparison.Ordinal)))
+    throw new Exception("Rotated Touched missed a real contact: " + string.Join(" | ", touchOutput));
+
+var floorProject = new GameProject();
+floorProject.Workspace.Gravity = 0;
+floorProject.Workspace.Children.Add(new SceneNode
+{
+    Type = "Part", Name = "Floor", Position = [0, 0, 0], Size = [10, 1, 10]
+});
+var falling = new SceneNode
+{
+    Type = "Part", Name = "Falling", Anchored = false,
+    Position = [0, 2, 0], Size = [1, 1, 1], Velocity = [0, -100, 0]
+};
+floorProject.Workspace.Children.Add(falling);
+var floorPhysics = new PhysicsSimulationService(floorProject, _ => { });
+floorPhysics.Step(.02f);
+if (Math.Abs(falling.Position[1] - 1) > .001f || falling.Velocity[1] != 0 || !floorPhysics.IsGrounded(falling))
+    throw new Exception($"Ordinary floor collision regressed: {falling.Position[1]}");
+
+var seatProject = new GameProject();
+var rotatedSeat = new SceneNode
+{
+    Type = "Seat", Name = "RotatedSeat", Position = [0, 0, 0],
+    Size = [4, .5f, 1], Rotation = [0, 45, 0]
+};
+seatProject.Workspace.Children.Add(rotatedSeat);
+var seatedCharacter = new PlayerCharacterService(seatProject);
+var seatInteraction = new SeatInteractionService(seatProject, seatedCharacter);
+seatedCharacter.Root.Position = [2.3f, 2.05f, 0];
+seatInteraction.AfterPhysics();
+if (seatInteraction.IsSeated)
+    throw new Exception("Rotated Seat claimed a character outside its footprint.");
+seatedCharacter.Root.Position = [0, 2.05f, 0];
+seatInteraction.AfterPhysics();
+if (!seatInteraction.IsSeated || rotatedSeat.Occupant != seatedCharacter.Humanoid.Id)
+    throw new Exception("Rotated Seat failed to accept a character on its surface.");
+rotatedSeat.Rotation = [30, 0, 0];
+seatInteraction.AfterPhysics();
+if (seatedCharacter.Root.Position[1] <= 1.52f || seatedCharacter.Root.Position[1] >= 1.6f)
+    throw new Exception("Character sank into a tilted Seat.");
+seatInteraction.BeforePhysics(true);
+if (seatInteraction.IsSeated || seatedCharacter.Root.Position[1] <= 2.08f)
+    throw new Exception("Jumping failed to leave the rotated Seat.");
+
+var emptySpawnProject = new GameProject();
+emptySpawnProject.Workspace.Children.Add(new SceneNode
+{
+    Type = "Part", Name = "RotatedDistantGround", Position = [2, 0, 0],
+    Size = [6, 1, 1], Rotation = [0, 45, 0]
+});
+var emptySpawnCharacter = new PlayerCharacterService(emptySpawnProject);
+if (Math.Abs(emptySpawnCharacter.Root.Position[1] - 1.801f) > .001f)
+    throw new Exception("Character spawned above empty space beside a rotated part.");
+
+var tiltedSpawnProject = new GameProject();
+tiltedSpawnProject.Workspace.Children.Add(new SceneNode
+{
+    Type = "Part", Name = "TiltedGround", Position = [0, 0, 0],
+    Size = [4, 1, 4], Rotation = [30, 0, 0]
+});
+var tiltedSpawnCharacter = new PlayerCharacterService(tiltedSpawnProject);
+if (tiltedSpawnCharacter.Root.Position[1] < 2.37f || tiltedSpawnCharacter.Root.Position[1] > 2.39f)
+    throw new Exception($"Character spawned at the wrong height over tilted ground: {tiltedSpawnCharacter.Root.Position[1]}");
 
 Console.WriteLine("Object and runtime smoke passed.");

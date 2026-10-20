@@ -35,13 +35,10 @@ public sealed class PhysicsSimulationService
     public bool IsGrounded(SceneNode part)
     {
         if (part.Anchored || !part.CanCollide || part.Velocity[1] > .01f) return false;
-        var bottom = part.Position[1] - Math.Abs(part.Size[1]) * .5f;
         foreach (var other in GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart))
         {
             if (ReferenceEquals(other, part) || !other.CanCollide) continue;
-            var top = other.Position[1] + Math.Abs(other.Size[1]) * .5f;
-            if (Math.Abs(bottom - top) > .08f) continue;
-            if (OverlapsOnOtherAxes(part, other, 1)) return true;
+            if (CollisionGeometry.SweepFraction(part, other, 1, -.08f) < 1) return true;
         }
         return false;
     }
@@ -123,21 +120,10 @@ public sealed class PhysicsSimulationService
             foreach (var member in group.Where(part => part.CanCollide))
             foreach (var other in parts)
             {
-                if (memberIds.Contains(other.Id) || !other.CanCollide || !OverlapsOnOtherAxes(member, other, axis)) continue;
-                var halfSize = Math.Abs(member.Size[axis]) * .5f;
-                var otherHalf = Math.Abs(other.Size[axis]) * .5f;
-                var lower = other.Position[axis] - otherHalf - halfSize;
-                var upper = other.Position[axis] + otherHalf + halfSize;
-                var origin = member.Position[axis];
-                if (origin > lower && origin < upper)
-                {
-                    if (Math.Abs(origin + desiredMotion - other.Position[axis]) <= Math.Abs(origin - other.Position[axis]))
-                        allowedMotion = 0;
-                }
-                else if (desiredMotion > 0 && origin <= lower && origin + allowedMotion >= lower)
-                    allowedMotion = Math.Min(allowedMotion, lower - origin);
-                else if (desiredMotion < 0 && origin >= upper && origin + allowedMotion <= upper)
-                    allowedMotion = Math.Max(allowedMotion, upper - origin);
+                if (memberIds.Contains(other.Id) || !other.CanCollide) continue;
+                var fraction = CollisionGeometry.SweepFraction(member, other, axis, desiredMotion);
+                if (desiredMotion > 0) allowedMotion = Math.Min(allowedMotion, desiredMotion * fraction);
+                else allowedMotion = Math.Max(allowedMotion, desiredMotion * fraction);
             }
             if (allowedMotion != desiredMotion) velocity[axis] = 0;
             if (Math.Abs(allowedMotion) < .000001f) continue;
@@ -200,25 +186,19 @@ public sealed class PhysicsSimulationService
             var motion = velocity[axis] * deltaTime;
             if (motion == 0) continue;
             var origin = part.Position[axis];
-            var destination = origin + motion;
+            var allowedMotion = motion;
             if (part.CanCollide)
             {
-                var halfSize = Math.Abs(part.Size[axis]) * .5f;
                 foreach (var other in parts)
                 {
-                    if (ReferenceEquals(part, other) || !other.CanCollide || !OverlapsOnOtherAxes(part, other, axis)) continue;
-                    var otherHalf = Math.Abs(other.Size[axis]) * .5f;
-                    var lower = other.Position[axis] - otherHalf - halfSize;
-                    var upper = other.Position[axis] + otherHalf + halfSize;
-                    if (motion > 0 && origin < upper && destination >= lower && origin <= lower)
-                        destination = Math.Min(destination, lower);
-                    else if (motion < 0 && origin > lower && destination <= upper && origin >= upper)
-                        destination = Math.Max(destination, upper);
-                    else if (origin > lower && origin < upper)
-                        destination = motion > 0 ? Math.Min(destination, lower) : Math.Max(destination, upper);
+                    if (ReferenceEquals(part, other) || !other.CanCollide) continue;
+                    var fraction = CollisionGeometry.SweepFraction(part, other, axis, motion);
+                    if (motion > 0) allowedMotion = Math.Min(allowedMotion, motion * fraction);
+                    else allowedMotion = Math.Max(allowedMotion, motion * fraction);
                 }
-                if (destination != origin + motion) velocity[axis] = 0;
+                if (allowedMotion != motion) velocity[axis] = 0;
             }
+            var destination = origin + allowedMotion;
             if (Math.Abs(destination - origin) < .000001f) continue;
             part.Position[axis] = destination;
             changed = true;
@@ -226,14 +206,4 @@ public sealed class PhysicsSimulationService
         if (changed || !oldVelocity.SequenceEqual(velocity)) moved(part);
     }
 
-    private static bool OverlapsOnOtherAxes(SceneNode first, SceneNode second, int motionAxis)
-    {
-        for (var axis = 0; axis < 3; axis++)
-        {
-            if (axis == motionAxis) continue;
-            var combinedHalfSize = (Math.Abs(first.Size[axis]) + Math.Abs(second.Size[axis])) * .5f;
-            if (Math.Abs(first.Position[axis] - second.Position[axis]) >= combinedHalfSize) return false;
-        }
-        return true;
-    }
 }
