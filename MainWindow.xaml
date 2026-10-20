@@ -20,6 +20,12 @@
       </DockPanel>
       <HierarchicalDataTemplate.Triggers>
         <DataTrigger Binding="{Binding Type}" Value="Workspace"><Setter TargetName="NodeIcon" Property="Text" Value="◈"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#8AB8E8"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Lighting"><Setter TargetName="NodeIcon" Property="Text" Value="☀"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#F2D587"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Sky"><Setter TargetName="NodeIcon" Property="Text" Value="☁"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#8AB8E8"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Players"><Setter TargetName="NodeIcon" Property="Text" Value="♟"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#8AB8E8"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="ReplicatedStorage"><Setter TargetName="NodeIcon" Property="Text" Value="▤"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#8AB8E8"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="ServerScriptService"><Setter TargetName="NodeIcon" Property="Text" Value="{}"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#B5A1DA"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="ServerStorage"><Setter TargetName="NodeIcon" Property="Text" Value="▥"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D4BD75"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Camera"><Setter TargetName="NodeIcon" Property="Text" Value="◉"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#9ACD86"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Part"><Setter TargetName="NodeIcon" Property="Text" Value="▰"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#91B9DF"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="MeshPart"><Setter TargetName="NodeIcon" Property="Text" Value="◇"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#A89BE4"/></DataTrigger>
@@ -27,6 +33,7 @@
         <DataTrigger Binding="{Binding Type}" Value="CornerWedgePart"><Setter TargetName="NodeIcon" Property="Text" Value="◣"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#91B9DF"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="SpawnLocation"><Setter TargetName="NodeIcon" Property="Text" Value="✚"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#7ED9B7"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="TrussPart"><Setter TargetName="NodeIcon" Property="Text" Value="▤"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#C6B28F"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Seat"><Setter TargetName="NodeIcon" Property="Text" Value="▣"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#C6B28F"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Model"><Setter TargetName="NodeIcon" Property="Text" Value="▣"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#78D49C"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="PointLight"><Setter TargetName="NodeIcon" Property="Text" Value="☀"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#F2D587"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="SpotLight"><Setter TargetName="NodeIcon" Property="Text" Value="◉"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#F2D587"/></DataTrigger>
@@ -36,6 +43,12 @@
         <DataTrigger Binding="{Binding Type}" Value="ClickDetector"><Setter TargetName="NodeIcon" Property="Text" Value="◎"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#9DD5EC"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Highlight"><Setter TargetName="NodeIcon" Property="Text" Value="✦"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#FFE4A0"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="WeldConstraint"><Setter TargetName="NodeIcon" Property="Text" Value="⊟"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#C9B9F3"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Attachment"><Setter TargetName="NodeIcon" Property="Text" Value="⊕"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#C9B9F3"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Beam"><Setter TargetName="NodeIcon" Property="Text" Value="〰"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#C9B9F3"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Humanoid"><Setter TargetName="NodeIcon" Property="Text" Value="♙"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#7ED9B7"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Vector3Value"><Setter TargetName="NodeIcon" Property="Text" Value="XYZ"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E2BE86"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="Color3Value"><Setter TargetName="NodeIcon" Property="Text" Value="◈"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E2BE86"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="ObjectValue"><Setter TargetName="NodeIcon" Property="Text" Value="↗"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E2BE86"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="ImageLabel"><Setter TargetName="NodeIcon" Property="Text" Value="▧"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D9B67A"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Folder"><Setter TargetName="NodeIcon" Property="Text" Value="▱"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D4BD75"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Script"><Setter TargetName="NodeIcon" Property="Text" Value="{}"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#B5A1DA"/></DataTrigger>

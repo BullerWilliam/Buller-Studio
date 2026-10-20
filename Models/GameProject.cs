@@ -9,6 +9,7 @@ public sealed class GameProject
     public ProjectSettings Settings { get; set; } = new();
     public SceneNode Workspace { get; set; } = new() { Id = "workspace", Type = "Workspace", Name = "Workspace" };
     public SceneNode Players { get; set; } = new() { Id = "players", Type = "Players", Name = "Players" };
+    public SceneNode Lighting { get; set; } = new() { Id = "lighting", Type = "Lighting", Name = "Lighting", Ambient = "#808080", ClockTime = 14, Children = [new SceneNode { Id = "sky-main", Type = "Sky", Name = "Sky" }] };
     public SceneNode ReplicatedStorage { get; set; } = new() { Id = "replicated-storage", Type = "ReplicatedStorage", Name = "ReplicatedStorage" };
     public SceneNode ServerScriptService { get; set; } = new() { Id = "server-script-service", Type = "ServerScriptService", Name = "ServerScriptService" };
     public SceneNode ServerStorage { get; set; } = new() { Id = "server-storage", Type = "ServerStorage", Name = "ServerStorage" };
@@ -51,6 +52,8 @@ public sealed class SceneNode
     public float Transparency { get; set; }
     public bool Enabled { get; set; } = true;
     public float Brightness { get; set; } = 1;
+    public string Ambient { get; set; } = "#808080";
+    public float ClockTime { get; set; } = 14;
     public float Range { get; set; } = 16;
     public float Angle { get; set; } = 45;
     public string ActionText { get; set; } = "Interact";
@@ -101,6 +104,9 @@ public sealed class SceneNode
     public long IntegerValue { get; set; }
     public double NumberValue { get; set; }
     public string StringValueText { get; set; } = string.Empty;
+    public float[] Vector3Value { get; set; } = [0, 0, 0];
+    public string Color3Value { get; set; } = "#000000";
+    public string ObjectValueId { get; set; } = string.Empty;
     public string Asset { get; set; } = string.Empty;
     public string Texture { get; set; } = string.Empty;
     public string CameraMode { get; set; } = "Custom";

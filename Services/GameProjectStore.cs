@@ -251,6 +251,14 @@ public static class GameProjectStore
         project.Players.Type = "Players";
         project.Players.Name = "Players";
         project.Players.Children ??= [];
+        project.Lighting ??= new SceneNode { Id = "lighting", Type = "Lighting", Name = "Lighting", Ambient = "#808080", ClockTime = 14, Children = [new SceneNode { Id = "sky-main", Type = "Sky", Name = "Sky" }] };
+        project.Lighting.Id = "lighting";
+        project.Lighting.Type = "Lighting";
+        project.Lighting.Name = "Lighting";
+        project.Lighting.Children ??= [];
+        if (project.Lighting.Ambient is null || !System.Text.RegularExpressions.Regex.IsMatch(project.Lighting.Ambient, "^#[0-9A-Fa-f]{6}$")) project.Lighting.Ambient = "#808080";
+        project.Lighting.ClockTime = float.IsFinite(project.Lighting.ClockTime) ? Math.Clamp(project.Lighting.ClockTime, 0, 24) : 14;
+        project.Lighting.Brightness = float.IsFinite(project.Lighting.Brightness) ? Math.Clamp(project.Lighting.Brightness, 0, 8) : 1;
         project.ReplicatedStorage ??= new SceneNode { Id = "replicated-storage", Type = "ReplicatedStorage", Name = "ReplicatedStorage" };
         project.ReplicatedStorage.Id = "replicated-storage";
         project.ReplicatedStorage.Type = "ReplicatedStorage";
@@ -273,7 +281,7 @@ public static class GameProjectStore
         project.Gui.Children ??= [];
         if (!project.Gui.Children.Any(node => node.Type == "ScreenGui"))
             project.Gui.Children.Add(new SceneNode { Id = Guid.NewGuid().ToString("N"), Type = "ScreenGui", Name = "ScreenGui" });
-        foreach (var node in Flatten(project.Workspace.Children).Concat(Flatten(project.Players.Children)).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.Gui.Children)))
+        foreach (var node in Flatten(project.Workspace.Children).Concat(Flatten(project.Players.Children)).Concat(Flatten(project.Lighting.Children)).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.Gui.Children)))
         {
             node.Children ??= [];
             node.Position = EnsureVector(node.Position, [0, 0, 0]);
@@ -314,9 +322,15 @@ public static class GameProjectStore
             node.IntegerValue = Math.Clamp(node.IntegerValue, -9007199254740991L, 9007199254740991L);
             node.NumberValue = double.IsFinite(node.NumberValue) ? node.NumberValue : 0;
             node.StringValueText ??= string.Empty;
+            node.Vector3Value = EnsureVector(node.Vector3Value, [0, 0, 0]);
+            if (node.Color3Value is null || !System.Text.RegularExpressions.Regex.IsMatch(node.Color3Value, "^#[0-9A-Fa-f]{6}$")) node.Color3Value = "#000000";
+            node.ObjectValueId ??= string.Empty;
             node.Width0 = float.IsFinite(node.Width0) ? Math.Clamp(node.Width0, 0, 100) : .2f;
             node.Width1 = float.IsFinite(node.Width1) ? Math.Clamp(node.Width1, 0, 100) : .2f;
         }
+        var validObjectIds = Flatten(project).Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var objectValue in Flatten(project).Where(node => node.Type == "ObjectValue" && node.ObjectValueId.Length > 0))
+            if (!validObjectIds.Contains(objectValue.ObjectValueId)) objectValue.ObjectValueId = string.Empty;
         var scriptNames = Flatten(project.Workspace.Children).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.Gui.Children))
             .Where(node => node.Type == "Script")
             .GroupBy(node => node.Id, StringComparer.Ordinal)
@@ -359,7 +373,7 @@ public static class GameProjectStore
         return result;
     }
 
-    public static IReadOnlyList<SceneNode> Flatten(GameProject project) => Flatten([project.Workspace, project.Players, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.Gui]);
+    public static IReadOnlyList<SceneNode> Flatten(GameProject project) => Flatten([project.Workspace, project.Players, project.Lighting, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.Gui]);
 
     public static SceneNode? CloneSubtree(SceneNode source, out Dictionary<string, string> renewedIds, bool respectArchivable = true)
     {
@@ -387,6 +401,7 @@ public static class GameProjectStore
             if (idMap.TryGetValue(node.Subject, out var subject)) node.Subject = subject;
             if (idMap.TryGetValue(node.Character, out var character)) node.Character = character;
             if (idMap.TryGetValue(node.Occupant, out var occupant)) node.Occupant = occupant;
+            if (idMap.TryGetValue(node.ObjectValueId, out var referencedObject)) node.ObjectValueId = referencedObject;
         }
         if (!respectArchivable) clone.Archivable = true;
         return clone;
@@ -394,14 +409,18 @@ public static class GameProjectStore
 
     public static bool CanParentNode(GameProject project, SceneNode source, SceneNode destinationParent)
     {
-        if (source.Id == project.Workspace.Id || source.Id == project.Players.Id || source.Id == project.ReplicatedStorage.Id || source.Id == project.ServerScriptService.Id || source.Id == project.ServerStorage.Id || source.Id == project.Gui.Id || source.Id == destinationParent.Id) return false;
-        if (!IsNodeInTree(project.Workspace, destinationParent.Id) && !IsNodeInTree(project.ReplicatedStorage, destinationParent.Id) && !IsNodeInTree(project.ServerScriptService, destinationParent.Id) && !IsNodeInTree(project.ServerStorage, destinationParent.Id) && !IsNodeInTree(project.Gui, destinationParent.Id)) return false;
+        if (source.Id == project.Workspace.Id || source.Id == project.Players.Id || source.Id == project.Lighting.Id || source.Id == project.ReplicatedStorage.Id || source.Id == project.ServerScriptService.Id || source.Id == project.ServerStorage.Id || source.Id == project.Gui.Id || source.Id == destinationParent.Id) return false;
+        if (!IsNodeInTree(project.Workspace, destinationParent.Id) && !IsNodeInTree(project.Lighting, destinationParent.Id) && !IsNodeInTree(project.ReplicatedStorage, destinationParent.Id) && !IsNodeInTree(project.ServerScriptService, destinationParent.Id) && !IsNodeInTree(project.ServerStorage, destinationParent.Id) && !IsNodeInTree(project.Gui, destinationParent.Id)) return false;
         if (Flatten(source.Children).Any(node => node.Id == destinationParent.Id)) return false;
         if (source.Type == "Humanoid")
             return destinationParent.Type == "Model" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == "Humanoid" && child.Id != source.Id);
         if (source.Type == "Camera")
             return destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
+        if (destinationParent.Id == project.Lighting.Id)
+            return source.Type == "Sky" && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => child.Type == "Sky" && child.Id != source.Id);
+        if (source.Type == "Sky" || IsNodeInTree(project.Lighting, destinationParent.Id)) return false;
 
         var destinationIsGui = IsNodeInTree(project.Gui, destinationParent.Id);
         if (destinationIsGui)
@@ -429,7 +448,9 @@ public static class GameProjectStore
     public static bool CanParentDetachedNode(SceneNode source, SceneNode destinationParent)
     {
         if (source.Id == destinationParent.Id || Flatten(source.Children).Any(child => child.Id == destinationParent.Id)) return false;
-        if (source.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return false;
+        if (source.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return false;
+        if (destinationParent.Type == "Lighting") return source.Type == "Sky" && source.Children.Count == 0 && destinationParent.Children.All(child => child.Type != "Sky");
+        if (source.Type == "Sky") return false;
         if (source.Type == "Humanoid")
             return destinationParent.Type == "Model" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == "Humanoid" && child.Id != source.Id);
@@ -446,6 +467,7 @@ public static class GameProjectStore
     {
         if (!CanParentNode(project, source, destinationParent)) return false;
         var sourceCollection = FindParentCollection(project.Workspace.Children, source)
+            ?? FindParentCollection(project.Lighting.Children, source)
             ?? FindParentCollection(project.ReplicatedStorage.Children, source)
             ?? FindParentCollection(project.ServerScriptService.Children, source)
             ?? FindParentCollection(project.ServerStorage.Children, source)
@@ -459,9 +481,10 @@ public static class GameProjectStore
     public static bool MoveNodeBeside(GameProject project, SceneNode source, SceneNode target, bool after)
     {
         if (source.Type == "Camera" || target.Type == "Camera" || ReferenceEquals(source, target) || source.Id == target.Id) return false;
-        var destinationParent = FindParentNode(project.Workspace, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.Gui, target);
+        var destinationParent = FindParentNode(project.Workspace, target) ?? FindParentNode(project.Lighting, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.Gui, target);
         if (destinationParent is null || !CanParentNode(project, source, destinationParent)) return false;
         var sourceCollection = FindParentCollection(project.Workspace.Children, source)
+            ?? FindParentCollection(project.Lighting.Children, source)
             ?? FindParentCollection(project.ReplicatedStorage.Children, source)
             ?? FindParentCollection(project.ServerScriptService.Children, source)
             ?? FindParentCollection(project.ServerStorage.Children, source)

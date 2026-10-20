@@ -1,6 +1,7 @@
 using BullerStudio.Models;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Numerics;
 using System.Windows.Media;
 using WattleScript.Interpreter;
 
@@ -29,11 +30,15 @@ public sealed class LuaXRuntime
     private readonly HashSet<string> queuedScriptIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> startedScriptIds = new(StringComparer.Ordinal);
     private readonly ConditionalWeakTable<Table, LuaXTypeTag> runtimeTypeTags = new();
+    private readonly ConditionalWeakTable<Table, CFrameData> cframeData = new();
+    private readonly Dictionary<string, Table> cframeSnapshots = new(StringComparer.Ordinal);
     private Script script = null!;
     private GameScript? currentGameScript;
     private Table vector3Metatable = null!;
+    private Table cframeMetatable = null!;
 
     private sealed record LuaXTypeTag(string Name);
+    private sealed record CFrameData(Vector3 Position, Quaternion Rotation);
     private sealed record ScriptCallback(GameScript GameScript, DynValue Function, string Name);
     private sealed record ScriptExecution(GameScript GameScript, Coroutine Coroutine, bool ReportFinished, string? CallbackName = null);
     private sealed class ScheduledTask(GameScript owner, DynValue handle, DynValue[] arguments, float remaining, bool deferred)
@@ -47,9 +52,9 @@ public sealed class LuaXRuntime
     private static readonly HashSet<string> CreatableClasses = new(StringComparer.Ordinal)
     {
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Humanoid",
-        "BoolValue", "IntValue", "NumberValue", "StringValue",
+        "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue",
         "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam",
-        "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
+        "Sky", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"
     };
 
@@ -229,12 +234,13 @@ public sealed class LuaXRuntime
         script = new Script(CoreModules.Preset_SoftSandbox);
         InstallLuauMath();
         InstallVector3Metatable();
+        InstallCFrameMetatable();
         foreach (var node in GameProjectStore.Flatten(project))
         {
             var instance = CreateInstance(node);
             instances[node.Id] = instance;
             if (node.Type == "Humanoid") humanoidWasAlive[node.Id] = node.Health > 0;
-            if (node.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui")) script.Globals.Set(node.Name, DynValue.NewTable(instance));
+            if (node.Type is not ("Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui")) script.Globals.Set(node.Name, DynValue.NewTable(instance));
         }
         foreach (var node in GameProjectStore.Flatten(project))
         {
@@ -243,16 +249,20 @@ public sealed class LuaXRuntime
             var parent = FindParentNode(node);
             target.Set("Parent", parent is not null && instances.TryGetValue(parent.Id, out var parentTable) ? DynValue.NewTable(parentTable) : DynValue.Nil);
         }
+        foreach (var node in GameProjectStore.Flatten(project).Where(node => node.Type == "ObjectValue"))
+            instances[node.Id].Set("Value", GetValueObjectValue(node));
         var game = new Table(script);
         runtimeTypeTags.Add(game, new LuaXTypeTag("DataModel"));
         var workspace = instances[project.Workspace.Id];
         var players = instances[project.Players.Id];
+        var lighting = instances[project.Lighting.Id];
         var replicatedStorage = instances[project.ReplicatedStorage.Id];
         var serverScriptService = instances[project.ServerScriptService.Id];
         var serverStorage = instances[project.ServerStorage.Id];
         var gui = instances[project.Gui.Id];
         game.Set("Workspace", DynValue.NewTable(workspace));
         game.Set("Players", DynValue.NewTable(players));
+        game.Set("Lighting", DynValue.NewTable(lighting));
         game.Set("ReplicatedStorage", DynValue.NewTable(replicatedStorage));
         game.Set("ServerScriptService", DynValue.NewTable(serverScriptService));
         game.Set("ServerStorage", DynValue.NewTable(serverStorage));
@@ -264,6 +274,7 @@ public sealed class LuaXRuntime
             {
                 "Workspace" => DynValue.NewTable(workspace),
                 "Players" => DynValue.NewTable(players),
+                "Lighting" => DynValue.NewTable(lighting),
                 "ReplicatedStorage" => DynValue.NewTable(replicatedStorage),
                 "ServerScriptService" => DynValue.NewTable(serverScriptService),
                 "ServerStorage" => DynValue.NewTable(serverStorage),
@@ -274,6 +285,7 @@ public sealed class LuaXRuntime
         script.Globals.Set("game", DynValue.NewTable(game));
         script.Globals.Set("workspace", DynValue.NewTable(workspace));
         script.Globals.Set("Players", DynValue.NewTable(players));
+        script.Globals.Set("Lighting", DynValue.NewTable(lighting));
         script.Globals.Set("ReplicatedStorage", DynValue.NewTable(replicatedStorage));
         script.Globals.Set("ServerScriptService", DynValue.NewTable(serverScriptService));
         script.Globals.Set("ServerStorage", DynValue.NewTable(serverStorage));
@@ -296,6 +308,17 @@ public sealed class LuaXRuntime
         vector3.Set("zero", VectorValue([0, 0, 0]));
         vector3.Set("one", VectorValue([1, 1, 1]));
         script.Globals.Set("Vector3", DynValue.NewTable(vector3));
+        var cframe = new Table(script);
+        cframe.Set("new", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count > 0 && IsTypedValue(args[0], "Vector3"))
+                return CFrameValue(ToVector3(ReadVector(args[0], [0, 0, 0])), Quaternion.Identity);
+            return CFrameValue(new Vector3(NumberArgument(args, 0), NumberArgument(args, 1), NumberArgument(args, 2)), Quaternion.Identity);
+        }));
+        cframe.Set("Angles", DynValue.NewCallback((_, args) => CFrameValue(Vector3.Zero, QuaternionFromRadians(NumberArgument(args, 0), NumberArgument(args, 1), NumberArgument(args, 2)))));
+        cframe.Set("fromEulerAnglesXYZ", cframe.Get("Angles"));
+        cframe.Set("identity", CFrameValue(Vector3.Zero, Quaternion.Identity));
+        script.Globals.Set("CFrame", DynValue.NewTable(cframe));
         var color3 = new Table(script);
         color3.Set("new", DynValue.NewCallback((_, args) => CreateColor(NumberArgument(args, 0), NumberArgument(args, 1), NumberArgument(args, 2))));
         color3.Set("fromRGB", DynValue.NewCallback((_, args) => CreateColor(NumberArgument(args, 0) / 255f, NumberArgument(args, 1) / 255f, NumberArgument(args, 2) / 255f)));
@@ -501,6 +524,29 @@ public sealed class LuaXRuntime
         }));
     }
 
+    private void InstallCFrameMetatable()
+    {
+        cframeMetatable = new Table(script);
+        cframeMetatable.Set("__mul", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count < 2 || !TryReadCFrame(args[0], out var left)) return DynValue.Nil;
+            if (TryReadCFrame(args[1], out var right))
+                return CFrameValue(left.Position + Vector3.Transform(right.Position, left.Rotation), Quaternion.Normalize(left.Rotation * right.Rotation));
+            if (IsTypedValue(args[1], "Vector3")) return VectorValue(ToArray(left.Position + Vector3.Transform(ToVector3(ReadVector(args[1], [0, 0, 0])), left.Rotation)));
+            return DynValue.Nil;
+        }));
+        cframeMetatable.Set("__add", DynValue.NewCallback((_, args) => OffsetCFrame(args, 1)));
+        cframeMetatable.Set("__sub", DynValue.NewCallback((_, args) => OffsetCFrame(args, -1)));
+        cframeMetatable.Set("__tostring", DynValue.NewCallback((_, args) => TryReadCFrame(args.Count > 0 ? args[0] : DynValue.Nil, out var value)
+            ? DynValue.NewString($"{value.Position.X}, {value.Position.Y}, {value.Position.Z}") : DynValue.NewString("CFrame")));
+    }
+
+    private DynValue OffsetCFrame(CallbackArguments args, int direction)
+    {
+        if (args.Count < 2 || !TryReadCFrame(args[0], out var frame) || !IsTypedValue(args[1], "Vector3")) return DynValue.Nil;
+        return CFrameValue(frame.Position + direction * ToVector3(ReadVector(args[1], [0, 0, 0])), frame.Rotation);
+    }
+
     private float[] CombineVectors(CallbackArguments args, Func<float, float, float> operation)
     {
         var left = ReadVector(args[0], [0, 0, 0]);
@@ -540,6 +586,7 @@ public sealed class LuaXRuntime
         instance.Set("ClassName", DynValue.NewString(node.Type));
         instance.Set("Position", IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Position));
         instance.Set("Rotation", VectorValue(node.Rotation));
+        if (IsBasePart(node)) WriteCFrame(node, instance);
         instance.Set("Size", IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size));
         instance.Set("Color", ColorValue(node.Color));
         instance.Set("FillColor", ColorValue(node.FillColor));
@@ -590,6 +637,15 @@ public sealed class LuaXRuntime
         instance.Set("SkyboxRight", DynValue.NewString(node.SkyboxRight));
         instance.Set("SkyboxTop", DynValue.NewString(node.SkyboxTop));
         instance.Set("SkyboxBottom", DynValue.NewString(node.SkyboxBottom));
+        if (node.Type == "Sky")
+        {
+            instance.Set("SkyboxFt", DynValue.NewString(node.SkyboxFront));
+            instance.Set("SkyboxBk", DynValue.NewString(node.SkyboxBack));
+            instance.Set("SkyboxLf", DynValue.NewString(node.SkyboxLeft));
+            instance.Set("SkyboxRt", DynValue.NewString(node.SkyboxRight));
+            instance.Set("SkyboxUp", DynValue.NewString(node.SkyboxTop));
+            instance.Set("SkyboxDn", DynValue.NewString(node.SkyboxBottom));
+        }
         instance.Set("Anchored", DynValue.NewBoolean(node.Anchored));
         instance.Set("CanCollide", DynValue.NewBoolean(node.CanCollide));
         instance.Set("CanTouch", DynValue.NewBoolean(node.CanTouch));
@@ -597,6 +653,9 @@ public sealed class LuaXRuntime
         instance.Set("AssemblyLinearVelocity", VectorValue(node.Velocity));
         instance.Set("CastShadow", DynValue.NewBoolean(node.CastShadow));
         instance.Set("Gravity", DynValue.NewNumber(node.Gravity));
+        instance.Set("Ambient", ColorValue(node.Ambient));
+        instance.Set("ClockTime", DynValue.NewNumber(node.ClockTime));
+        instance.Set("GlobalShadows", DynValue.NewBoolean(project.Settings.Shadows));
         instance.Set("AutoManageCharacter", DynValue.NewBoolean(node.AutoManageCharacter));
         instance.Set("Character", GetCharacterValue(node));
         instance.Set("Occupant", GetOccupantValue(node));
@@ -830,7 +889,7 @@ public sealed class LuaXRuntime
 
     private DynValue CloneInstance(SceneNode source)
     {
-        if (source.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" || !instances.ContainsKey(source.Id)) return DynValue.Nil;
+        if (source.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" || !instances.ContainsKey(source.Id)) return DynValue.Nil;
         SynchronizeInstances();
         if (!instances.ContainsKey(source.Id)) return DynValue.Nil;
         var clone = GameProjectStore.CloneSubtree(source, out var renewedIds);
@@ -858,6 +917,8 @@ public sealed class LuaXRuntime
                 instances[node.Id].Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
             }
         }
+        foreach (var node in clonedNodes.Where(node => node.Type == "ObjectValue"))
+            instances[node.Id].Set("Value", GetValueObjectValue(node));
         foreach (var original in new[] { source }.Concat(GameProjectStore.Flatten(source.Children)))
         {
             if (original.Type != "Script" || !renewedIds.TryGetValue(original.Id, out var clonedId)) continue;
@@ -871,7 +932,7 @@ public sealed class LuaXRuntime
 
     private DynValue DestroyInstance(SceneNode node)
     {
-        if (node.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" || !instances.ContainsKey(node.Id)) return DynValue.Nil;
+        if (node.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" || !instances.ContainsKey(node.Id)) return DynValue.Nil;
         var oldParent = FindParentNode(node);
         var sourceCollection = FindSourceCollection(node);
         sourceCollection?.Remove(node);
@@ -895,6 +956,14 @@ public sealed class LuaXRuntime
             queuedScriptIds.Remove(removed.Id);
             startedScriptIds.Remove(removed.Id);
             project.Scripts.RemoveAll(script => script.Id == removed.Id);
+        }
+        var removedIds = removedNodes.Select(removed => removed.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var objectValue in KnownNodes().Where(item => item.Type == "ObjectValue" && removedIds.Contains(item.ObjectValueId)))
+        {
+            objectValue.ObjectValueId = string.Empty;
+            if (instances.TryGetValue(objectValue.Id, out var valueInstance)) valueInstance.Set("Value", DynValue.Nil);
+            propertyChanged?.Invoke(objectValue, "Value", DynValue.Nil);
+            FireValueChanged(objectValue, DynValue.Nil);
         }
         StopScripts(removedScriptIds);
         propertyChanged?.Invoke(node, "Parent", DynValue.Nil);
@@ -946,7 +1015,7 @@ public sealed class LuaXRuntime
 
     private bool TrySetParent(SceneNode source, DynValue value, bool updateLinks = true)
     {
-        if (source.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return false;
+        if (source.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return false;
         if (value.Type == DataType.Nil)
         {
             var detachedOldParent = FindParentNode(source);
@@ -977,8 +1046,8 @@ public sealed class LuaXRuntime
 
     private SceneNode? FindParentNode(SceneNode target)
     {
-        if (ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.Gui)) return null;
-        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.Gui, target)
+        if (ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.Lighting) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.Gui)) return null;
+        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.Lighting, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.Gui, target)
             ?? createdNodes.Values.Select(node => FindParentNode(node, target)).FirstOrDefault(parent => parent is not null);
     }
 
@@ -1005,7 +1074,7 @@ public sealed class LuaXRuntime
     }
 
     private List<SceneNode>? FindSourceCollection(SceneNode target) =>
-        FindParentCollection(project.Workspace, target) ?? FindParentCollection(project.ReplicatedStorage, target) ?? FindParentCollection(project.ServerScriptService, target) ?? FindParentCollection(project.ServerStorage, target) ?? FindParentCollection(project.Gui, target)
+        FindParentCollection(project.Workspace, target) ?? FindParentCollection(project.Lighting, target) ?? FindParentCollection(project.ReplicatedStorage, target) ?? FindParentCollection(project.ServerScriptService, target) ?? FindParentCollection(project.ServerStorage, target) ?? FindParentCollection(project.Gui, target)
         ?? createdNodes.Values.Select(node => FindParentCollection(node, target)).FirstOrDefault(collection => collection is not null);
 
     private void RefreshLinksForMove(SceneNode source, SceneNode? oldParent, SceneNode? newParent)
@@ -1088,6 +1157,13 @@ public sealed class LuaXRuntime
 
     private void WriteInstanceProperty(SceneNode node, Table instance, string normalizedProperty)
     {
+        if (IsBasePart(node) && normalizedProperty is ("position" or "rotation" or "cframe"))
+        {
+            instance.Set("Position", VectorValue(node.Position));
+            instance.Set("Rotation", VectorValue(node.Rotation));
+            WriteCFrame(node, instance);
+            return;
+        }
         if (normalizedProperty is "velocity" or "assemblylinearvelocity")
         {
             instance.Set("Velocity", VectorValue(node.Velocity));
@@ -1106,6 +1182,7 @@ public sealed class LuaXRuntime
             "name" => "Name",
             "archivable" => "Archivable",
             "position" => "Position",
+            "cframe" => "CFrame",
             "rotation" => "Rotation",
             "size" => "Size",
             "color" => "Color",
@@ -1142,6 +1219,9 @@ public sealed class LuaXRuntime
             "cantouch" => "CanTouch",
             "castshadow" => "CastShadow",
             "gravity" => "Gravity",
+            "ambient" => "Ambient",
+            "clocktime" => "ClockTime",
+            "globalshadows" => "GlobalShadows",
             "automanagecharacter" => "AutoManageCharacter",
             "character" => "Character",
             "occupant" => "Occupant",
@@ -1173,6 +1253,12 @@ public sealed class LuaXRuntime
             "skyboxright" => "SkyboxRight",
             "skyboxtop" => "SkyboxTop",
             "skyboxbottom" => "SkyboxBottom",
+            "skyboxft" => "SkyboxFt",
+            "skyboxbk" => "SkyboxBk",
+            "skyboxlf" => "SkyboxLf",
+            "skyboxrt" => "SkyboxRt",
+            "skyboxup" => "SkyboxUp",
+            "skyboxdn" => "SkyboxDn",
             _ => null
         };
         if (propertyName is not null) instance.Set(propertyName, GetPropertyValue(node, propertyName));
@@ -1217,6 +1303,10 @@ public sealed class LuaXRuntime
             {
                 case "position": SetPositionProperty(node, value); break;
                 case "rotation": node.Rotation = ReadVector(value, node.Rotation); break;
+                case "cframe":
+                    if (!IsBasePart(node) || !TryReadCFrame(value, out var frame)) return DynValue.Nil;
+                    ApplyCFrame(node, frame);
+                    break;
                 case "size": SetSizeProperty(node, value); break;
                 case "color": node.Color = ReadColor(value, node.Color); break;
                 case "fillcolor": if (node.Type != "Highlight") return DynValue.Nil; node.FillColor = ReadColor(value, node.FillColor); break;
@@ -1312,6 +1402,18 @@ public sealed class LuaXRuntime
                     if (node.Type != "Workspace" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.Gravity = (float)Math.Clamp(value.Number, 0, 1000);
                     break;
+                case "ambient":
+                    if (node.Type != "Lighting" || value.Type != DataType.Table || !IsTypedValue(value, "Color3")) return DynValue.Nil;
+                    node.Ambient = ReadColor(value, node.Ambient);
+                    break;
+                case "clocktime":
+                    if (node.Type != "Lighting" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.ClockTime = (float)Math.Clamp(value.Number, 0, 24);
+                    break;
+                case "globalshadows":
+                    if (node.Type != "Lighting" || value.Type != DataType.Boolean) return DynValue.Nil;
+                    project.Settings.Shadows = value.Boolean;
+                    break;
                 case "automanagecharacter":
                     if (node.Type != "Workspace" || value.Type != DataType.Boolean) return DynValue.Nil;
                     node.AutoManageCharacter = value.Boolean;
@@ -1345,7 +1447,7 @@ public sealed class LuaXRuntime
                     node.Archivable = value.Boolean;
                     break;
                 case "name":
-                    if (node.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return DynValue.Nil;
+                    if (node.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return DynValue.Nil;
                     SetNodeName(node, value.CastToString() ?? node.Name);
                     break;
                 case "cameramode":
@@ -1400,16 +1502,23 @@ public sealed class LuaXRuntime
                 case "tablecolumns": node.TableColumns = (int)Math.Clamp(value.Number, 1, 24); break;
                 case "aspectratio": node.AspectRatio = (float)Math.Max(.001, value.Number); break;
                 case "layoutdirection": node.LayoutDirection = value.CastToString() == "Horizontal" ? "Horizontal" : "Vertical"; break;
-                case "skyboxfront": node.SkyboxFront = value.CastToString() ?? string.Empty; break;
-                case "skyboxback": node.SkyboxBack = value.CastToString() ?? string.Empty; break;
-                case "skyboxleft": node.SkyboxLeft = value.CastToString() ?? string.Empty; break;
-                case "skyboxright": node.SkyboxRight = value.CastToString() ?? string.Empty; break;
-                case "skyboxtop": node.SkyboxTop = value.CastToString() ?? string.Empty; break;
-                case "skyboxbottom": node.SkyboxBottom = value.CastToString() ?? string.Empty; break;
+                case "skyboxfront" or "skyboxft": if (node.Type is not ("Workspace" or "Sky")) return DynValue.Nil; node.SkyboxFront = value.CastToString() ?? string.Empty; break;
+                case "skyboxback" or "skyboxbk": if (node.Type is not ("Workspace" or "Sky")) return DynValue.Nil; node.SkyboxBack = value.CastToString() ?? string.Empty; break;
+                case "skyboxleft" or "skyboxlf": if (node.Type is not ("Workspace" or "Sky")) return DynValue.Nil; node.SkyboxLeft = value.CastToString() ?? string.Empty; break;
+                case "skyboxright" or "skyboxrt": if (node.Type is not ("Workspace" or "Sky")) return DynValue.Nil; node.SkyboxRight = value.CastToString() ?? string.Empty; break;
+                case "skyboxtop" or "skyboxup": if (node.Type is not ("Workspace" or "Sky")) return DynValue.Nil; node.SkyboxTop = value.CastToString() ?? string.Empty; break;
+                case "skyboxbottom" or "skyboxdn": if (node.Type is not ("Workspace" or "Sky")) return DynValue.Nil; node.SkyboxBottom = value.CastToString() ?? string.Empty; break;
                 default: return DynValue.Nil;
             }
         }
-        if (instances.TryGetValue(node.Id, out var instance)) WriteInstanceProperty(node, instance, normalized);
+        if (instances.TryGetValue(node.Id, out var instance))
+        {
+            if (node.Type == "Lighting" && normalized == "ambient") instance.Set("Ambient", ColorValue(node.Ambient));
+            else if (node.Type == "Lighting" && normalized == "brightness") instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
+            else if (node.Type == "Lighting" && normalized == "clocktime") instance.Set("ClockTime", DynValue.NewNumber(node.ClockTime));
+            else if (node.Type == "Lighting" && normalized == "globalshadows") instance.Set("GlobalShadows", DynValue.NewBoolean(project.Settings.Shadows));
+            else WriteInstanceProperty(node, instance, normalized);
+        }
         if (normalized == "maxhealth" && instances.TryGetValue(node.Id, out var humanoidInstance))
             humanoidInstance.Set("Health", DynValue.NewNumber(node.Health));
         if (normalized == "rolloffmindistance" && instances.TryGetValue(node.Id, out var soundInstance))
@@ -1445,7 +1554,7 @@ public sealed class LuaXRuntime
 
     private void SetNodeName(SceneNode node, string name)
     {
-        if (node.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
+        if (node.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
         node.Name = name;
         if (node.Type == "Script" && project.Scripts.FirstOrDefault(item => item.Id == node.Id) is { } gameScript)
             gameScript.Name = name;
@@ -1473,6 +1582,21 @@ public sealed class LuaXRuntime
 
     private DynValue GetPropertyValue(SceneNode node, string property)
     {
+        if (node.Type == "Lighting" && instances.TryGetValue(node.Id, out var lightingInstance))
+        {
+            var pendingLighting = lightingInstance.Get(property.ToLowerInvariant() switch
+            {
+                "ambient" => "Ambient",
+                "brightness" => "Brightness",
+                "clocktime" => "ClockTime",
+                "globalshadows" => "GlobalShadows",
+                _ => property
+            });
+            if (property.Equals("Ambient", StringComparison.OrdinalIgnoreCase) && IsTypedValue(pendingLighting, "Color3")) return pendingLighting;
+            if (property.Equals("Brightness", StringComparison.OrdinalIgnoreCase) && pendingLighting.Type == DataType.Number && double.IsFinite(pendingLighting.Number)) return pendingLighting;
+            if (property.Equals("ClockTime", StringComparison.OrdinalIgnoreCase) && pendingLighting.Type == DataType.Number && double.IsFinite(pendingLighting.Number)) return pendingLighting;
+            if (property.Equals("GlobalShadows", StringComparison.OrdinalIgnoreCase) && pendingLighting.Type == DataType.Boolean) return pendingLighting;
+        }
         if (property.Equals("Value", StringComparison.OrdinalIgnoreCase) && instances.TryGetValue(node.Id, out var valueInstance))
         {
             var pending = valueInstance.Get("Value");
@@ -1483,6 +1607,7 @@ public sealed class LuaXRuntime
         "id" => DynValue.NewString(node.Id),
         "classname" or "type" => DynValue.NewString(node.Type),
         "position" => IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Position),
+        "cframe" => IsBasePart(node) ? CFrameValue(ToVector3(node.Position), QuaternionFromDegrees(node.Rotation)) : DynValue.Nil,
         "rotation" => VectorValue(node.Rotation),
         "size" => IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
         "color" => ColorValue(node.Color),
@@ -1520,6 +1645,9 @@ public sealed class LuaXRuntime
         "velocity" or "assemblylinearvelocity" => VectorValue(node.Velocity),
         "castshadow" => DynValue.NewBoolean(node.CastShadow),
         "gravity" => DynValue.NewNumber(node.Gravity),
+        "ambient" => ColorValue(node.Ambient),
+        "clocktime" => DynValue.NewNumber(node.ClockTime),
+        "globalshadows" => DynValue.NewBoolean(project.Settings.Shadows),
         "automanagecharacter" => DynValue.NewBoolean(node.AutoManageCharacter),
         "character" => GetCharacterValue(node),
         "occupant" => GetOccupantValue(node),
@@ -1550,36 +1678,50 @@ public sealed class LuaXRuntime
         "tablecolumns" => DynValue.NewNumber(node.TableColumns),
         "aspectratio" => DynValue.NewNumber(node.AspectRatio),
         "layoutdirection" => DynValue.NewString(node.LayoutDirection),
-        "skyboxfront" => DynValue.NewString(node.SkyboxFront),
-        "skyboxback" => DynValue.NewString(node.SkyboxBack),
-        "skyboxleft" => DynValue.NewString(node.SkyboxLeft),
-        "skyboxright" => DynValue.NewString(node.SkyboxRight),
-        "skyboxtop" => DynValue.NewString(node.SkyboxTop),
-        "skyboxbottom" => DynValue.NewString(node.SkyboxBottom),
+        "skyboxfront" or "skyboxft" => DynValue.NewString(node.SkyboxFront),
+        "skyboxback" or "skyboxbk" => DynValue.NewString(node.SkyboxBack),
+        "skyboxleft" or "skyboxlf" => DynValue.NewString(node.SkyboxLeft),
+        "skyboxright" or "skyboxrt" => DynValue.NewString(node.SkyboxRight),
+        "skyboxtop" or "skyboxup" => DynValue.NewString(node.SkyboxTop),
+        "skyboxbottom" or "skyboxdn" => DynValue.NewString(node.SkyboxBottom),
         _ => DynValue.Nil
         };
     }
 
-    private static DynValue GetValueObjectValue(SceneNode node) => node.Type switch
+    private DynValue GetValueObjectValue(SceneNode node) => node.Type switch
     {
         "BoolValue" => DynValue.NewBoolean(node.BooleanValue),
         "IntValue" => DynValue.NewNumber(node.IntegerValue),
         "NumberValue" => DynValue.NewNumber(node.NumberValue),
         "StringValue" => DynValue.NewString(node.StringValueText),
+        "Vector3Value" => VectorValue(node.Vector3Value),
+        "Color3Value" => ColorValue(node.Color3Value),
+        "ObjectValue" => GetObjectValueReference(node.ObjectValueId),
         _ => DynValue.Nil
     };
 
-    private static bool IsValidValueObjectValue(SceneNode node, DynValue value) => node.Type switch
+    private DynValue GetObjectValueReference(string id) =>
+        !string.IsNullOrEmpty(id) && FindNode(id) is { } referenced && instances.TryGetValue(referenced.Id, out var instance)
+            ? DynValue.NewTable(instance) : DynValue.Nil;
+
+    private bool IsValidValueObjectValue(SceneNode node, DynValue value) => node.Type switch
     {
         "BoolValue" => value.Type == DataType.Boolean,
         "IntValue" => value.Type == DataType.Number && double.IsFinite(value.Number)
             && value.Number == Math.Truncate(value.Number) && Math.Abs(value.Number) <= 9007199254740991d,
         "NumberValue" => value.Type == DataType.Number && double.IsFinite(value.Number),
         "StringValue" => value.Type == DataType.String,
+        "Vector3Value" => IsTypedValue(value, "Vector3") && ReadVector(value, [float.NaN, float.NaN, float.NaN]).All(float.IsFinite),
+        "Color3Value" => IsTypedValue(value, "Color3") && new[] { "R", "G", "B" }.All(channel => value.Table.Get(channel).Type == DataType.Number && double.IsFinite(value.Table.Get(channel).Number)),
+        "ObjectValue" => value.Type == DataType.Nil || value.Type == DataType.Table && ReadNodeArgument(value) is { } referenced
+            && instances.TryGetValue(referenced.Id, out var instance) && ReferenceEquals(value.Table, instance),
         _ => false
     };
 
-    private static bool TrySetValueObjectValue(SceneNode node, DynValue value, out bool changed)
+    private bool IsTypedValue(DynValue value, string type) =>
+        value.Type == DataType.Table && runtimeTypeTags.TryGetValue(value.Table, out var tag) && tag.Name == type;
+
+    private bool TrySetValueObjectValue(SceneNode node, DynValue value, out bool changed)
     {
         changed = false;
         switch (node.Type)
@@ -1602,6 +1744,21 @@ public sealed class LuaXRuntime
                 changed = node.StringValueText != value.String;
                 node.StringValueText = value.String;
                 return true;
+            case "Vector3Value" when IsValidValueObjectValue(node, value):
+                var vector = ReadVector(value, node.Vector3Value);
+                changed = !node.Vector3Value.SequenceEqual(vector);
+                node.Vector3Value = vector;
+                return true;
+            case "Color3Value" when IsValidValueObjectValue(node, value):
+                var color = ReadColor(value, node.Color3Value);
+                changed = !string.Equals(node.Color3Value, color, StringComparison.OrdinalIgnoreCase);
+                node.Color3Value = color;
+                return true;
+            case "ObjectValue" when IsValidValueObjectValue(node, value):
+                var referencedId = value.Type == DataType.Nil ? string.Empty : ReadNodeArgument(value)!.Id;
+                changed = node.ObjectValueId != referencedId;
+                node.ObjectValueId = referencedId;
+                return true;
             default:
                 return false;
         }
@@ -1618,7 +1775,7 @@ public sealed class LuaXRuntime
         if (args.Count < 2) return DynValue.Nil;
         var parent = ReadNodeArgument(args[0]);
         if (parent is null && args[0].Type == DataType.String)
-            parent = args[0].String switch { "Gui" => project.Gui, "ReplicatedStorage" => project.ReplicatedStorage, "ServerScriptService" => project.ServerScriptService, "ServerStorage" => project.ServerStorage, _ => project.Workspace };
+            parent = args[0].String switch { "Gui" => project.Gui, "Lighting" => project.Lighting, "ReplicatedStorage" => project.ReplicatedStorage, "ServerScriptService" => project.ServerScriptService, "ServerStorage" => project.ServerStorage, _ => project.Workspace };
         var name = args[1].CastToString();
         if (string.IsNullOrEmpty(name)) return DynValue.Nil;
         var node = (parent?.Children ?? project.Workspace.Children).FirstOrDefault(child => child.Name == name || child.Id == name);
@@ -1756,6 +1913,19 @@ public sealed class LuaXRuntime
         foreach (var node in KnownNodes())
         {
             if (!instances.TryGetValue(node.Id, out var instance)) continue;
+            if (IsBasePart(node) && instance.Get("CFrame") is { Type: DataType.Table } pendingFrame
+                && (!cframeSnapshots.TryGetValue(node.Id, out var snapshot) || !ReferenceEquals(snapshot, pendingFrame.Table))
+                && TryReadCFrame(pendingFrame, out var frame))
+            {
+                var oldPosition = node.Position;
+                var oldRotation = node.Rotation;
+                ApplyCFrame(node, frame);
+                if (!oldPosition.SequenceEqual(node.Position)) MarkChanged(node, "Position");
+                if (!oldRotation.SequenceEqual(node.Rotation)) MarkChanged(node, "Rotation");
+                instance.Set("Position", VectorValue(node.Position));
+                instance.Set("Rotation", VectorValue(node.Rotation));
+                WriteCFrame(node, instance);
+            }
             if (SceneNodeTypes.IsValueObject(node))
             {
                 if (TrySetValueObjectValue(node, instance.Get("Value"), out var valueChanged) && valueChanged)
@@ -1784,6 +1954,7 @@ public sealed class LuaXRuntime
                 var rotation = ReadVector(instance.Get("Rotation"), node.Rotation);
                 if (!node.Rotation.SequenceEqual(rotation)) { node.Rotation = rotation; MarkChanged(node, "Rotation"); }
             }
+            if (IsBasePart(node)) WriteCFrame(node, instance);
             if (instance.Get("Size").Type == DataType.Table)
             {
                 if (IsGuiObject(node) && TryReadUDim2(instance.Get("Size"), out var sizeScale, out var sizeOffset))
@@ -1841,6 +2012,14 @@ public sealed class LuaXRuntime
                 }
             }
             if (instance.Get("Brightness").Type == DataType.Number && double.IsFinite(instance.Get("Brightness").Number)) Assign(node, "Brightness", node.Brightness, (float)Math.Clamp(instance.Get("Brightness").Number, 0, 8), value => node.Brightness = value);
+            if (node.Type == "Lighting")
+            {
+                Assign(node, "Ambient", node.Ambient, ReadColor(instance.Get("Ambient"), node.Ambient), value => node.Ambient = value);
+                if (instance.Get("ClockTime").Type == DataType.Number && double.IsFinite(instance.Get("ClockTime").Number))
+                    Assign(node, "ClockTime", node.ClockTime, (float)Math.Clamp(instance.Get("ClockTime").Number, 0, 24), value => node.ClockTime = value);
+                if (instance.Get("GlobalShadows").Type == DataType.Boolean)
+                    Assign(node, "GlobalShadows", project.Settings.Shadows, instance.Get("GlobalShadows").Boolean, value => project.Settings.Shadows = value);
+            }
             if (instance.Get("Range").Type == DataType.Number && double.IsFinite(instance.Get("Range").Number)) Assign(node, "Range", node.Range, (float)Math.Clamp(instance.Get("Range").Number, 1, 1000), value => node.Range = value);
             if (instance.Get("Angle").Type == DataType.Number && double.IsFinite(instance.Get("Angle").Number)) Assign(node, "Angle", node.Angle, (float)Math.Clamp(instance.Get("Angle").Number, 1, 175), value => node.Angle = value);
             if (node.Type == "ProximityPrompt")
@@ -1950,9 +2129,9 @@ public sealed class LuaXRuntime
                 instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
                 instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
             }
-            if (node.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") && instance.Get("Name").CastToString() is { } name)
+            if (node.Type is not ("Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") && instance.Get("Name").CastToString() is { } name)
                 Assign(node, "Name", node.Name, name, value => SetNodeName(node, value));
-            else if (node.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui")
+            else if (node.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui")
                 instance.Set("Name", DynValue.NewString(node.Name));
             if (instance.Get("Archivable").Type == DataType.Boolean)
                 Assign(node, "Archivable", node.Archivable, instance.Get("Archivable").Boolean, value => node.Archivable = value);
@@ -1965,6 +2144,15 @@ public sealed class LuaXRuntime
                 if (instance.Get("SkyboxRight").CastToString() is { } skyboxRight) Assign(node, "SkyboxRight", node.SkyboxRight, skyboxRight, value => node.SkyboxRight = value);
                 if (instance.Get("SkyboxTop").CastToString() is { } skyboxTop) Assign(node, "SkyboxTop", node.SkyboxTop, skyboxTop, value => node.SkyboxTop = value);
                 if (instance.Get("SkyboxBottom").CastToString() is { } skyboxBottom) Assign(node, "SkyboxBottom", node.SkyboxBottom, skyboxBottom, value => node.SkyboxBottom = value);
+            }
+            if (node.Type == "Sky")
+            {
+                if (instance.Get("SkyboxFt").CastToString() is { } skyboxFt) Assign(node, "SkyboxFt", node.SkyboxFront, skyboxFt, value => node.SkyboxFront = value);
+                if (instance.Get("SkyboxBk").CastToString() is { } skyboxBk) Assign(node, "SkyboxBk", node.SkyboxBack, skyboxBk, value => node.SkyboxBack = value);
+                if (instance.Get("SkyboxLf").CastToString() is { } skyboxLf) Assign(node, "SkyboxLf", node.SkyboxLeft, skyboxLf, value => node.SkyboxLeft = value);
+                if (instance.Get("SkyboxRt").CastToString() is { } skyboxRt) Assign(node, "SkyboxRt", node.SkyboxRight, skyboxRt, value => node.SkyboxRight = value);
+                if (instance.Get("SkyboxUp").CastToString() is { } skyboxUp) Assign(node, "SkyboxUp", node.SkyboxTop, skyboxUp, value => node.SkyboxTop = value);
+                if (instance.Get("SkyboxDn").CastToString() is { } skyboxDn) Assign(node, "SkyboxDn", node.SkyboxBottom, skyboxDn, value => node.SkyboxBottom = value);
             }
             var parentValue = instance.Get("Parent");
             if (ReadNodeArgument(parentValue) is { } newParent && FindParentNode(node)?.Id != newParent.Id)
@@ -2009,6 +2197,92 @@ public sealed class LuaXRuntime
     {
         for (var axis = 0; axis < 3; axis++) if (Math.Abs(first.Position[axis] - second.Position[axis]) > (Math.Abs(first.Size[axis]) + Math.Abs(second.Size[axis])) * .5f) return false;
         return true;
+    }
+
+    private static Vector3 ToVector3(float[] values) => new(values[0], values[1], values[2]);
+    private static float[] ToArray(Vector3 value) => [value.X, value.Y, value.Z];
+    private static Quaternion QuaternionFromRadians(float x, float y, float z) => Quaternion.Normalize(
+        Quaternion.CreateFromAxisAngle(Vector3.UnitX, x) * Quaternion.CreateFromAxisAngle(Vector3.UnitY, y) * Quaternion.CreateFromAxisAngle(Vector3.UnitZ, z));
+    private static Quaternion QuaternionFromDegrees(float[] degrees) => QuaternionFromRadians(
+        degrees[0] * MathF.PI / 180, degrees[1] * MathF.PI / 180, degrees[2] * MathF.PI / 180);
+
+    private bool TryReadCFrame(DynValue value, out CFrameData frame)
+    {
+        if (value.Type == DataType.Table && cframeData.TryGetValue(value.Table, out var found))
+        {
+            frame = found;
+            return true;
+        }
+        frame = new CFrameData(Vector3.Zero, Quaternion.Identity);
+        return false;
+    }
+
+    private DynValue CFrameValue(Vector3 position, Quaternion rotation, bool includeRotation = true)
+    {
+        var frame = new Table(script);
+        rotation = Quaternion.Normalize(rotation);
+        cframeData.Add(frame, new CFrameData(position, rotation));
+        runtimeTypeTags.Add(frame, new LuaXTypeTag("CFrame"));
+        frame.Set("X", DynValue.NewNumber(position.X));
+        frame.Set("Y", DynValue.NewNumber(position.Y));
+        frame.Set("Z", DynValue.NewNumber(position.Z));
+        frame.Set("Position", VectorValue(ToArray(position)));
+        if (includeRotation) frame.Set("Rotation", CFrameValue(Vector3.Zero, rotation, false));
+        frame.Set("RightVector", VectorValue(ToArray(Vector3.Transform(Vector3.UnitX, rotation))));
+        frame.Set("UpVector", VectorValue(ToArray(Vector3.Transform(Vector3.UnitY, rotation))));
+        frame.Set("LookVector", VectorValue(ToArray(Vector3.Transform(-Vector3.UnitZ, rotation))));
+        frame.Set("Inverse", DynValue.NewCallback((_, _) =>
+        {
+            var inverse = Quaternion.Inverse(rotation);
+            return CFrameValue(Vector3.Transform(-position, inverse), inverse);
+        }));
+        frame.Set("ToWorldSpace", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(frame, args);
+            if (args.Count <= index || !TryReadCFrame(args[index], out var other)) return DynValue.Nil;
+            return CFrameValue(position + Vector3.Transform(other.Position, rotation), Quaternion.Normalize(rotation * other.Rotation));
+        }));
+        frame.Set("ToObjectSpace", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(frame, args);
+            if (args.Count <= index || !TryReadCFrame(args[index], out var other)) return DynValue.Nil;
+            var inverse = Quaternion.Inverse(rotation);
+            return CFrameValue(Vector3.Transform(other.Position - position, inverse), Quaternion.Normalize(inverse * other.Rotation));
+        }));
+        frame.Set("PointToWorldSpace", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(frame, args);
+            return args.Count > index && IsTypedValue(args[index], "Vector3")
+                ? VectorValue(ToArray(position + Vector3.Transform(ToVector3(ReadVector(args[index], [0, 0, 0])), rotation))) : DynValue.Nil;
+        }));
+        frame.Set("PointToObjectSpace", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(frame, args);
+            return args.Count > index && IsTypedValue(args[index], "Vector3")
+                ? VectorValue(ToArray(Vector3.Transform(ToVector3(ReadVector(args[index], [0, 0, 0])) - position, Quaternion.Inverse(rotation)))) : DynValue.Nil;
+        }));
+        frame.MetaTable = cframeMetatable;
+        frame.ReadOnly = true;
+        return DynValue.NewTable(frame);
+    }
+
+    private void WriteCFrame(SceneNode node, Table instance)
+    {
+        var value = CFrameValue(ToVector3(node.Position), QuaternionFromDegrees(node.Rotation));
+        instance.Set("CFrame", value);
+        cframeSnapshots[node.Id] = value.Table;
+    }
+
+    private static void ApplyCFrame(SceneNode node, CFrameData frame)
+    {
+        node.Position = ToArray(frame.Position);
+        var right = Vector3.Transform(Vector3.UnitX, frame.Rotation);
+        var up = Vector3.Transform(Vector3.UnitY, frame.Rotation);
+        var back = Vector3.Transform(Vector3.UnitZ, frame.Rotation);
+        var y = MathF.Asin(Math.Clamp(back.X, -1, 1));
+        var x = MathF.Atan2(-back.Y, back.Z);
+        var z = MathF.Atan2(-up.X, right.X);
+        node.Rotation = [x * 180 / MathF.PI, y * 180 / MathF.PI, z * 180 / MathF.PI];
     }
 
     private DynValue VectorValue(float[] values)
@@ -2145,7 +2419,7 @@ public sealed class LuaXRuntime
         while (parent is not null)
         {
             if (parent.Id == project.Gui.Id || parent.Type == "ScreenGui") return true;
-            if (parent.Id == project.Workspace.Id || parent.Id == project.ReplicatedStorage.Id || parent.Id == project.ServerScriptService.Id || parent.Id == project.ServerStorage.Id || parent.Type == "Model" || SceneNodeTypes.IsBasePart(parent)) return false;
+            if (parent.Id == project.Workspace.Id || parent.Id == project.Lighting.Id || parent.Id == project.ReplicatedStorage.Id || parent.Id == project.ServerScriptService.Id || parent.Id == project.ServerStorage.Id || parent.Type == "Model" || SceneNodeTypes.IsBasePart(parent)) return false;
             parent = FindParentNode(parent);
         }
         return true;

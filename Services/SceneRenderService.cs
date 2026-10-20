@@ -14,6 +14,8 @@ public sealed class SceneRenderService
     private readonly Viewport3DX viewport;
     private readonly bool showAttachmentGizmos;
     private readonly DefaultEffectsManager effectsManager = new();
+    private readonly AmbientLight3D ambientLight = new() { Color = Colors.Gray };
+    private readonly DirectionalLight3D sunLight = new() { Color = Colors.White, Direction = new Vector3D(-.5, -1, -.7) };
     private readonly Dictionary<string, MeshGeometryModel3D> visuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MeshGeometryModel3D> highlightFills = new(StringComparer.Ordinal);
     private readonly Dictionary<string, OutLineMeshGeometryModel3D> beamVisuals = new(StringComparer.Ordinal);
@@ -39,8 +41,8 @@ public sealed class SceneRenderService
         this.showAttachmentGizmos = showAttachmentGizmos;
         viewport.EffectsManager = effectsManager;
         viewport.Camera = new HelixToolkit.Wpf.SharpDX.PerspectiveCamera { Position = new Point3D(0, 0, 0), LookDirection = new Vector3D(0, 0, -1), UpDirection = new Vector3D(0, 1, 0), FieldOfView = cameraNode.FieldOfView };
-        viewport.Items.Add(new AmbientLight3D { Color = Colors.Gray });
-        viewport.Items.Add(new DirectionalLight3D { Color = Colors.White, Direction = new Vector3D(-.5, -1, -.7) });
+        viewport.Items.Add(ambientLight);
+        viewport.Items.Add(sunLight);
         viewport.IsShadowMappingEnabled = true;
         viewport.Items.Add(new ShadowMap3D { Resolution = new System.Windows.Size(2048, 2048), AutoCoverCompleteScene = true, IsSceneDynamic = true });
         UpdateCamera();
@@ -95,6 +97,7 @@ public sealed class SceneRenderService
         beamVisuals.Clear();
         beamStates.Clear();
         viewport.IsShadowMappingEnabled = project.Settings.Shadows;
+        RefreshLighting(project.Lighting);
         foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type is not ("Decal" or "Texture" or "Attachment") || FindPartParent(project, node) is not null)))
         {
             var model = CreateVisual(node, project);
@@ -111,6 +114,11 @@ public sealed class SceneRenderService
 
     public void UpdateNode(SceneNode node, GameProject project)
     {
+        if (node.Type is "Lighting" or "Sky")
+        {
+            Refresh(project);
+            return;
+        }
         if (node.Type == "Model")
         {
             if (hasBeamNodes) RefreshBeams(project);
@@ -611,18 +619,21 @@ public sealed class SceneRenderService
     {
         foreach (var visual in skyboxVisuals) viewport.Items.Remove(visual.Model);
         skyboxVisuals.Clear();
+        var sky = project.Lighting.Children.FirstOrDefault(node => node.Type == "Sky");
         foreach (var face in SkyboxFaces)
         {
-            var relativePath = face.Property switch
+            static string FacePath(SceneNode node, string property) => property switch
             {
-                "SkyboxFront" => workspace.SkyboxFront,
-                "SkyboxBack" => workspace.SkyboxBack,
-                "SkyboxLeft" => workspace.SkyboxLeft,
-                "SkyboxRight" => workspace.SkyboxRight,
-                "SkyboxTop" => workspace.SkyboxTop,
-                "SkyboxBottom" => workspace.SkyboxBottom,
+                "SkyboxFront" => node.SkyboxFront,
+                "SkyboxBack" => node.SkyboxBack,
+                "SkyboxLeft" => node.SkyboxLeft,
+                "SkyboxRight" => node.SkyboxRight,
+                "SkyboxTop" => node.SkyboxTop,
+                "SkyboxBottom" => node.SkyboxBottom,
                 _ => string.Empty
             };
+            var relativePath = sky is null ? string.Empty : FacePath(sky, face.Property);
+            if (string.IsNullOrWhiteSpace(relativePath)) relativePath = FacePath(workspace, face.Property);
             if (string.IsNullOrWhiteSpace(relativePath)) continue;
             var path = ResolveTexture(project, relativePath);
             if (!File.Exists(path)) continue;
@@ -646,6 +657,17 @@ public sealed class SceneRenderService
             {
             }
         }
+    }
+
+    private void RefreshLighting(SceneNode lighting)
+    {
+        try { ambientLight.Color = (System.Windows.Media.Color)ColorConverter.ConvertFromString(lighting.Ambient); }
+        catch { ambientLight.Color = Colors.Gray; }
+        var phase = (lighting.ClockTime - 6) * Math.PI / 12;
+        var elevation = Math.Sin(phase);
+        sunLight.Direction = new Vector3D(-Math.Cos(phase), -Math.Max(.08, elevation), -.45);
+        var intensity = Math.Clamp(lighting.Brightness, 0, 8) * (elevation > 0 ? 1 : .12);
+        sunLight.Color = System.Windows.Media.Color.FromScRgb(1, (float)intensity, (float)intensity, (float)intensity);
     }
 
     private void UpdateSkybox(Point3D cameraPosition)

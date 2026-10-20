@@ -144,12 +144,13 @@ public partial class MainWindow : Window
         if (selected is not null) selected = FindSceneNode(selected.Id);
         UpdateExplorerFilter(project.Workspace, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Players, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.Lighting, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.ReplicatedStorage, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.ServerScriptService, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.ServerStorage, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Gui, ExplorerSearch.Text.Trim());
         isSuppressingExplorerSelection = true;
-        try { ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.Gui }; }
+        try { ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.Lighting, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.Gui }; }
         finally { isSuppressingExplorerSelection = false; }
         ObjectCount.Text = GameProjectStore.Flatten(project).Count.ToString();
         renderer?.Refresh(project);
@@ -165,6 +166,7 @@ public partial class MainWindow : Window
         if (project is null) return;
         UpdateExplorerFilter(project.Workspace, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Players, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.Lighting, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.ReplicatedStorage, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.ServerScriptService, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.ServerStorage, ExplorerSearch.Text.Trim());
@@ -173,7 +175,7 @@ public partial class MainWindow : Window
         try
         {
             ExplorerTree.ItemsSource = null;
-            ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.Gui };
+            ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.Lighting, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.Gui };
         }
         finally { isSuppressingExplorerSelection = false; }
         if (selected is not null) SelectTreeNode(selected.Id);
@@ -215,8 +217,8 @@ public partial class MainWindow : Window
         var insert = new MenuItem { Header = "Insert Object", IsEnabled = node.Type != "Players" };
         insert.Click += (_, _) => ShowInsertMenu(node, item);
         menu.Items.Add(insert);
-        var canEdit = node.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera");
-        var duplicate = new MenuItem { Header = "Duplicate    Ctrl+D", IsEnabled = canEdit };
+        var canEdit = node.Type is not ("Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera");
+        var duplicate = new MenuItem { Header = "Duplicate    Ctrl+D", IsEnabled = canEdit && node.Type != "Sky" };
         duplicate.Click += (_, _) => DuplicateSelected();
         menu.Items.Add(duplicate);
         if (!IsGuiNode(node))
@@ -231,7 +233,7 @@ public partial class MainWindow : Window
                 menu.Items.Add(ungroup);
             }
         }
-        var rename = new MenuItem { Header = "Rename    F2", IsEnabled = node.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") };
+        var rename = new MenuItem { Header = "Rename    F2", IsEnabled = node.Type is not ("Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") };
         rename.Click += (_, _) => RenameSelected();
         menu.Items.Add(rename);
         menu.Items.Add(new Separator());
@@ -290,7 +292,7 @@ public partial class MainWindow : Window
             && Math.Abs(pointer.Y - explorerDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
         var source = explorerDragSource;
         explorerDragSource = null;
-        if (source.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return;
+        if (source.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return;
         DragDrop.DoDragDrop(ExplorerTree, new DataObject(typeof(SceneNode), source), DragDropEffects.Move);
     }
 
@@ -457,6 +459,7 @@ public partial class MainWindow : Window
             return CanMoveNode(source, project.Workspace);
         }
         if (ReferenceEquals(target, project.Workspace) || target.Id == project.Workspace.Id) return CanMoveNode(source, project.Workspace);
+        if (ReferenceEquals(target, project.Lighting) || target.Id == project.Lighting.Id) return CanMoveNode(source, project.Lighting);
         if (ReferenceEquals(target, project.ReplicatedStorage) || target.Id == project.ReplicatedStorage.Id) return CanMoveNode(source, project.ReplicatedStorage);
         if (ReferenceEquals(target, project.ServerScriptService) || target.Id == project.ServerScriptService.Id) return CanMoveNode(source, project.ServerScriptService);
         if (ReferenceEquals(target, project.ServerStorage) || target.Id == project.ServerStorage.Id) return CanMoveNode(source, project.ServerStorage);
@@ -486,18 +489,39 @@ public partial class MainWindow : Window
         var dataSection = AddPropertySection("Data");
         propertyTarget = dataSection;
         AddLabel($"Class: {selected.Type}", "Class");
-        if (selected.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") AddLabel($"Name: {selected.Name}");
+        if (selected.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") AddLabel($"Name: {selected.Name}");
         else AddTextField("Name", selected.Name);
         if (selected.Type != "Players") AddObjectReferenceField("Parent", selected, FindParentNode(selected));
-        if (selected.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui")) AddCheckField("Archivable", selected.Archivable);
+        if (selected.Type is not ("Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui")) AddCheckField("Archivable", selected.Archivable);
         if (SceneNodeTypes.IsValueObject(selected))
         {
             propertyTarget = AddPropertySection("Value");
             if (selected.Type == "BoolValue") AddCheckField("Value", selected.BooleanValue);
+            else if (selected.Type == "ObjectValue")
+            {
+                AddObjectReferenceField("Value", selected, FindSceneNode(selected.ObjectValueId));
+                var valueNode = selected;
+                var clearValue = new Button { Content = "Clear Value", Margin = new Thickness(3, 3, 3, 1), Padding = new Thickness(5, 2, 5, 2) };
+                clearValue.Click += (_, _) =>
+                {
+                    valueNode.ObjectValueId = string.Empty;
+                    if (propertyPickerTargetId == valueNode.Id && propertyPickerProperty == "Value")
+                    {
+                        propertyPickerTargetId = null;
+                        propertyPickerProperty = null;
+                        SetObjectReferencePickerActive(false);
+                    }
+                    RecordEdit();
+                    RenderProperties();
+                };
+                propertyTarget.Children.Add(clearValue);
+            }
             else AddTextField("Value", selected.Type switch
             {
                 "IntValue" => selected.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 "NumberValue" => selected.NumberValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "Vector3Value" => VectorText(selected.Vector3Value),
+                "Color3Value" => selected.Color3Value,
                 _ => selected.StringValueText
             });
         }
@@ -521,6 +545,25 @@ public partial class MainWindow : Window
             AddTextField("SkyboxRight", selected.SkyboxRight);
             AddTextField("SkyboxTop", selected.SkyboxTop);
             AddTextField("SkyboxBottom", selected.SkyboxBottom);
+            AddLabel("Image paths are relative to the project assets folder.", "Skybox");
+        }
+        if (selected.Type == "Lighting")
+        {
+            propertyTarget = AddPropertySection("Lighting");
+            AddTextField("Ambient", selected.Ambient);
+            AddTextField("Brightness", selected.Brightness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("ClockTime", selected.ClockTime.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("GlobalShadows", project.Settings.Shadows);
+        }
+        if (selected.Type == "Sky")
+        {
+            propertyTarget = AddPropertySection("Skybox");
+            AddTextField("SkyboxFt", selected.SkyboxFront);
+            AddTextField("SkyboxBk", selected.SkyboxBack);
+            AddTextField("SkyboxLf", selected.SkyboxLeft);
+            AddTextField("SkyboxRt", selected.SkyboxRight);
+            AddTextField("SkyboxUp", selected.SkyboxTop);
+            AddTextField("SkyboxDn", selected.SkyboxBottom);
             AddLabel("Image paths are relative to the project assets folder.", "Skybox");
         }
         if (!IsGuiNode(selected) && (SceneNodeTypes.IsBasePart(selected) || selected.Type is "ImageLabel" or "Camera"))
@@ -806,7 +849,7 @@ public partial class MainWindow : Window
             Padding = new Thickness(6, 3, 6, 3),
             MinWidth = 100,
             Tag = property,
-            IsEnabled = !(property == "Parent" && (ReferenceEquals(target, project?.Workspace) || ReferenceEquals(target, project?.ReplicatedStorage) || ReferenceEquals(target, project?.ServerScriptService) || ReferenceEquals(target, project?.ServerStorage) || ReferenceEquals(target, project?.Gui))),
+            IsEnabled = !(property == "Parent" && (ReferenceEquals(target, project?.Workspace) || ReferenceEquals(target, project?.Players) || ReferenceEquals(target, project?.Lighting) || ReferenceEquals(target, project?.ReplicatedStorage) || ReferenceEquals(target, project?.ServerScriptService) || ReferenceEquals(target, project?.ServerStorage) || ReferenceEquals(target, project?.Gui))),
             ToolTip = isPicking ? "Choose an object in Explorer or the viewport. Press Escape to cancel." : value is null ? "Select an object in Explorer or the 3D viewport" : $"{GetObjectPath(value)}\nClick to select another object"
         };
         if (isPicking)
@@ -892,6 +935,31 @@ public partial class MainWindow : Window
         else if (property == "Value" && target.Type == "StringValue")
         {
             target.StringValueText = box.Text;
+            RecordEdit();
+            return;
+        }
+        else if (property == "Value" && target.Type == "Vector3Value")
+        {
+            var vector = ParseVector(text);
+            if (vector is null)
+            {
+                SetStatus("Enter three comma-separated numbers for Value.");
+                box.Text = VectorText(target.Vector3Value);
+                return;
+            }
+            target.Vector3Value = vector;
+            RecordEdit();
+            return;
+        }
+        else if (property == "Value" && target.Type == "Color3Value")
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(text, "^#[0-9A-Fa-f]{6}$"))
+            {
+                SetStatus("Enter a color as #RRGGBB for Value.");
+                box.Text = target.Color3Value;
+                return;
+            }
+            target.Color3Value = text.ToUpperInvariant();
             RecordEdit();
             return;
         }
@@ -984,6 +1052,17 @@ public partial class MainWindow : Window
             else target.JumpPower = Math.Clamp(humanoidValue, 0, 1000);
         }
         else if (property == "Brightness" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var brightness) && float.IsFinite(brightness)) target.Brightness = Math.Clamp(brightness, 0, 8);
+        else if (property == "ClockTime" && target.Type == "Lighting" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var clockTime) && float.IsFinite(clockTime)) target.ClockTime = Math.Clamp(clockTime, 0, 24);
+        else if (property == "Ambient" && target.Type == "Lighting")
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(text, "^#[0-9A-Fa-f]{6}$"))
+            {
+                SetStatus("Enter Ambient as #RRGGBB.");
+                box.Text = target.Ambient;
+                return;
+            }
+            target.Ambient = text.ToUpperInvariant();
+        }
         else if (property == "Range" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var range) && float.IsFinite(range)) target.Range = Math.Clamp(range, 1, 1000);
         else if (property == "Angle" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var angle) && float.IsFinite(angle)) target.Angle = Math.Clamp(angle, 1, 175);
         else if (property == "MaxActivationDistance" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var maxActivationDistance) && float.IsFinite(maxActivationDistance)) target.MaxActivationDistance = Math.Clamp(maxActivationDistance, 1, 100);
@@ -1007,21 +1086,21 @@ public partial class MainWindow : Window
         else if (property == "CornerRadius" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var cornerRadius)) target.CornerRadius = Math.Max(0, cornerRadius);
         else if (property == "StrokeThickness" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var strokeThickness)) target.StrokeThickness = Math.Max(0, strokeThickness);
         else if (property == "TextSize" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var textSize)) target.TextSize = Math.Clamp(textSize, 1, 200);
-        else if (property.StartsWith("Skybox", StringComparison.Ordinal) && target.Type == "Workspace")
+        else if (property.StartsWith("Skybox", StringComparison.Ordinal) && target.Type is "Workspace" or "Sky")
         {
             switch (property)
             {
-                case "SkyboxFront": target.SkyboxFront = text; break;
-                case "SkyboxBack": target.SkyboxBack = text; break;
-                case "SkyboxLeft": target.SkyboxLeft = text; break;
-                case "SkyboxRight": target.SkyboxRight = text; break;
-                case "SkyboxTop": target.SkyboxTop = text; break;
-                case "SkyboxBottom": target.SkyboxBottom = text; break;
+                case "SkyboxFront" or "SkyboxFt": target.SkyboxFront = text; break;
+                case "SkyboxBack" or "SkyboxBk": target.SkyboxBack = text; break;
+                case "SkyboxLeft" or "SkyboxLf": target.SkyboxLeft = text; break;
+                case "SkyboxRight" or "SkyboxRt": target.SkyboxRight = text; break;
+                case "SkyboxTop" or "SkyboxUp": target.SkyboxTop = text; break;
+                case "SkyboxBottom" or "SkyboxDn": target.SkyboxBottom = text; break;
                 default: return;
             }
             renderer?.Refresh(project);
         }
-        else if (property == "Name" && target.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") && !string.IsNullOrWhiteSpace(text))
+        else if (property == "Name" && target.Type is not ("Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") && !string.IsNullOrWhiteSpace(text))
         {
             target.Name = text;
             if (target.Type == "Script")
@@ -1060,6 +1139,7 @@ public partial class MainWindow : Window
             "FillTransparency" => node.FillTransparency,
             "OutlineTransparency" => node.OutlineTransparency,
             "Gravity" => node.Gravity,
+            "ClockTime" => node.ClockTime,
             "Health" => node.Health,
             "MaxHealth" => node.MaxHealth,
             "WalkSpeed" => node.WalkSpeed,
@@ -1094,6 +1174,7 @@ public partial class MainWindow : Window
         if (property == "Looped") target.Looped = box.IsChecked == true;
         if (property == "Playing") target.Playing = box.IsChecked == true;
         if (property == "AutoManageCharacter" && target.Type == "Workspace") target.AutoManageCharacter = box.IsChecked == true;
+        if (property == "GlobalShadows" && target.Type == "Lighting") project.Settings.Shadows = box.IsChecked == true;
         if (property == "Archivable") target.Archivable = box.IsChecked == true;
         if (property == "Value" && target.Type == "BoolValue") target.BooleanValue = box.IsChecked == true;
         if (IsGuiNode(target)) RefreshGuiPreview();
@@ -1204,6 +1285,13 @@ public partial class MainWindow : Window
             renderer?.UpdateNode(target, project);
             RecordEdit();
         }
+        else if (property == "Value" && target.Type == "ObjectValue")
+        {
+            propertyPickerTargetId = null;
+            propertyPickerProperty = null;
+            target.ObjectValueId = value.Id;
+            RecordEdit();
+        }
         propertyPickerTargetId = null;
         propertyPickerProperty = null;
         SetObjectReferencePickerActive(false);
@@ -1232,6 +1320,7 @@ public partial class MainWindow : Window
         if (project is null) return null;
         if (project.Workspace.Id == id) return project.Workspace;
         if (project.Players.Id == id) return project.Players;
+        if (project.Lighting.Id == id) return project.Lighting;
         if (project.ReplicatedStorage.Id == id) return project.ReplicatedStorage;
         if (project.ServerScriptService.Id == id) return project.ServerScriptService;
         if (project.ServerStorage.Id == id) return project.ServerStorage;
@@ -1241,8 +1330,8 @@ public partial class MainWindow : Window
 
     private SceneNode? FindParentNode(SceneNode target)
     {
-        if (project is null || ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.Gui)) return null;
-        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.Gui, target);
+        if (project is null || ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.Lighting) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.Gui)) return null;
+        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.Lighting, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.Gui, target);
     }
 
     private static SceneNode? FindParentNode(SceneNode parent, SceneNode target)
@@ -1351,7 +1440,8 @@ public partial class MainWindow : Window
                 ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") }
                 : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIListLayout", "UIListLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
             : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
-        choices = choices.Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
+        choices = choices.Concat(new (string Type, string Name)[] { ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky") })
+            .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
         var search = new TextBox { Width = 190, Margin = new Thickness(5), Padding = new Thickness(5, 3, 5, 3), ToolTip = "Search objects" };
         var searchItem = new MenuItem { Header = search, StaysOpenOnClick = true, Padding = new Thickness(0) };
@@ -1594,13 +1684,13 @@ public partial class MainWindow : Window
         var useAsset = new MenuItem { Header = "Use on selected object" };
         useAsset.Click += (_, _) => ApplyAssetToSelectedObject(asset);
         menu.Items.Add(useAsset);
-        if (selected is { Type: "Workspace" } workspace && IsImageAssetType(asset.Type))
+        if (selected is { Type: "Workspace" or "Sky" } skyTarget && IsImageAssetType(asset.Type))
         {
-            var skyboxFaces = new MenuItem { Header = "Set Workspace skybox face" };
+            var skyboxFaces = new MenuItem { Header = $"Set {skyTarget.Type} skybox face" };
             foreach (var face in new[] { (Name: "Front", Property: "SkyboxFront"), (Name: "Back", Property: "SkyboxBack"), (Name: "Left", Property: "SkyboxLeft"), (Name: "Right", Property: "SkyboxRight"), (Name: "Top", Property: "SkyboxTop"), (Name: "Bottom", Property: "SkyboxBottom") })
             {
                 var faceItem = new MenuItem { Header = face.Name };
-                faceItem.Click += (_, _) => ApplyAssetToSkyboxFace(asset, workspace.Id, face.Property);
+                faceItem.Click += (_, _) => ApplyAssetToSkyboxFace(asset, skyTarget.Id, face.Property);
                 skyboxFaces.Items.Add(faceItem);
             }
             menu.Items.Add(skyboxFaces);
@@ -1669,9 +1759,9 @@ public partial class MainWindow : Window
         SetStatus($"Applied {asset.Name} to {selected.Name}");
     }
 
-    private void ApplyAssetToSkyboxFace(ProjectAsset asset, string workspaceId, string property)
+    private void ApplyAssetToSkyboxFace(ProjectAsset asset, string targetId, string property)
     {
-        if (project is null || FindSceneNode(workspaceId) is not { Type: "Workspace" } workspace || !IsImageAssetType(asset.Type)) return;
+        if (project is null || FindSceneNode(targetId) is not { Type: "Workspace" or "Sky" } skyTarget || !IsImageAssetType(asset.Type)) return;
         var relativePath = asset.RelativePath.Replace('\\', '/').TrimStart('/');
         var assetsRoot = Path.GetFullPath(Path.Combine(project.ProjectPath, "assets"));
         var assetPath = Path.GetFullPath(Path.Combine(project.ProjectPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
@@ -1683,18 +1773,18 @@ public partial class MainWindow : Window
         var imagePath = relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) ? relativePath[7..] : relativePath;
         switch (property)
         {
-            case "SkyboxFront": workspace.SkyboxFront = imagePath; break;
-            case "SkyboxBack": workspace.SkyboxBack = imagePath; break;
-            case "SkyboxLeft": workspace.SkyboxLeft = imagePath; break;
-            case "SkyboxRight": workspace.SkyboxRight = imagePath; break;
-            case "SkyboxTop": workspace.SkyboxTop = imagePath; break;
-            case "SkyboxBottom": workspace.SkyboxBottom = imagePath; break;
+            case "SkyboxFront": skyTarget.SkyboxFront = imagePath; break;
+            case "SkyboxBack": skyTarget.SkyboxBack = imagePath; break;
+            case "SkyboxLeft": skyTarget.SkyboxLeft = imagePath; break;
+            case "SkyboxRight": skyTarget.SkyboxRight = imagePath; break;
+            case "SkyboxTop": skyTarget.SkyboxTop = imagePath; break;
+            case "SkyboxBottom": skyTarget.SkyboxBottom = imagePath; break;
             default: return;
         }
         renderer?.Refresh(project);
         RenderProperties();
         RecordEdit();
-        SetStatus($"Applied {asset.Name} to the Workspace skybox {property[6..].ToLowerInvariant()} face");
+        SetStatus($"Applied {asset.Name} to the {skyTarget.Type} skybox {property[6..].ToLowerInvariant()} face");
     }
 
     private void CopyAssetText(string value)
@@ -2069,7 +2159,7 @@ public partial class MainWindow : Window
             var imageAssetContext = Regex.IsMatch(source, @"\b(?:Texture|Skybox(?:Front|Back|Left|Right|Top|Bottom))\s*=\s*(?:GetAssetPath\s*\(\s*)?(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase);
             return GetLuaXAssetPathCompletions(imageAssetContext);
         }
-        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "ReplicatedStorage", "Gui"];
+        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Gui"];
         if (Regex.IsMatch(source, @"\bInstance\.new\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXCreatableClassNameCompletions;
         if (Regex.IsMatch(source, @"\b(?:Mode|CameraMode)\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject"];
         if (Regex.IsMatch(source, @"\bLayoutDirection\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Vertical", "Horizontal"];
@@ -2412,7 +2502,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Camera", "Workspace", "Players", "Player", "ReplicatedStorage", "DataModel", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -2455,7 +2545,7 @@ public partial class MainWindow : Window
 
     private string[] GetLuaXMembers(string receiver, TextEditor editor)
     {
-        if (receiver == "game") return ["GetService", "Gui", "Players", "ReplicatedStorage", "Workspace"];
+        if (receiver == "game") return ["GetService", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Workspace"];
         if (receiver == "Instance") return ["new"];
         if (receiver == "Enum") return ["CameraMode", "LayoutDirection"];
         if (receiver == "Enum.CameraMode") return ["Custom", "Subject"];
@@ -2505,6 +2595,8 @@ public partial class MainWindow : Window
         if (node.Type == "Attachment") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
         if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
+        if (node.Type == "Lighting") members.AddRange(["Ambient", "Brightness", "ClockTime", "GlobalShadows"]);
+        if (node.Type == "Sky") members.AddRange(["SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn"]);
         if (node.Type == "Players") members.Add("LocalPlayer");
         if (node.Type == "Player") members.Add("Character");
         if (node.Type is "GuiBase2d" or "GuiObject" or "ScreenGui" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Visible", "Position", "Size"]);
@@ -2790,8 +2882,8 @@ public partial class MainWindow : Window
         expression = StripExpressionParentheses(expression.Trim());
         var node = ResolveLuaXNode(expression);
         if (node is not null) return node;
-        var serviceMatch = Regex.Match(expression, @"^game:GetService\s*\(\s*[""'](?<service>Workspace|Players|ReplicatedStorage|Gui)[""']\s*\)$");
-        if (serviceMatch.Success) return serviceMatch.Groups["service"].Value switch { "Workspace" => project?.Workspace, "Players" => project?.Players, "ReplicatedStorage" => project?.ReplicatedStorage, _ => project?.Gui };
+        var serviceMatch = Regex.Match(expression, @"^game:GetService\s*\(\s*[""'](?<service>Workspace|Players|Lighting|ReplicatedStorage|ServerScriptService|ServerStorage|Gui)[""']\s*\)$");
+        if (serviceMatch.Success) return serviceMatch.Groups["service"].Value switch { "Workspace" => project?.Workspace, "Players" => project?.Players, "Lighting" => project?.Lighting, "ReplicatedStorage" => project?.ReplicatedStorage, "ServerScriptService" => project?.ServerScriptService, "ServerStorage" => project?.ServerStorage, _ => project?.Gui };
         var childMatch = Regex.Match(expression, @"^(?<parent>.+):(?<method>WaitForChild|waitforchild|FindFirstChild)\s*\(\s*[""'](?<name>[^""']+)[""']\s*(?:,\s*(?<recursive>true|false)\s*)?\)$", RegexOptions.IgnoreCase);
         if (childMatch.Success)
         {
@@ -2839,13 +2931,16 @@ public partial class MainWindow : Window
         var index = 1;
         if (segments[0] == "workspace") node = project.Workspace;
         else if (segments[0] == "Players") node = project.Players;
+        else if (segments[0] == "Lighting") node = project.Lighting;
         else if (segments[0] == "ReplicatedStorage") node = project.ReplicatedStorage;
+        else if (segments[0] == "ServerScriptService") node = project.ServerScriptService;
+        else if (segments[0] == "ServerStorage") node = project.ServerStorage;
         else if (segments[0] == "Gui") node = project.Gui;
         else if (segments[0] == "script") node = selectedScript is null ? null : FindSceneNode(selectedScript.Id);
         else if (segments[0] == "game")
         {
             if (segments.Length == 1) return null;
-            node = segments[1] switch { "Workspace" => project.Workspace, "Players" => project.Players, "ReplicatedStorage" => project.ReplicatedStorage, "Gui" => project.Gui, _ => null };
+            node = segments[1] switch { "Workspace" => project.Workspace, "Players" => project.Players, "Lighting" => project.Lighting, "ReplicatedStorage" => project.ReplicatedStorage, "ServerScriptService" => project.ServerScriptService, "ServerStorage" => project.ServerStorage, "Gui" => project.Gui, _ => null };
             index = 2;
         }
         else
@@ -2862,18 +2957,18 @@ public partial class MainWindow : Window
     [
         "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
         "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs", "pcall", "print", "warn", "rawequal", "rawget", "rawlen", "rawset", "select", "setmetatable", "tonumber", "tostring", "type", "typeof", "unpack", "xpcall",
-        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "ReplicatedStorage", "Instance", "Enum", "Vector3", "Color3", "UDim", "UDim2",
+        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Instance", "Enum", "Vector3", "Color3", "UDim", "UDim2",
         "SetProperty", "GetProperty", "WaitForChild", "GetAssetPath", "ConnectTouched"
     ];
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Archivable", "Value", "Changed", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"
+        "Name", "Parent", "Archivable", "Value", "Changed", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Ambient", "ClockTime", "GlobalShadows", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"
     ];
 
     private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Attachment", "Beam", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "ReplicatedStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Folder", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -2937,9 +3032,9 @@ public partial class MainWindow : Window
                 <Keywords color="Builtin">
                   <Word>assert</Word><Word>collectgarbage</Word><Word>error</Word><Word>getmetatable</Word><Word>ipairs</Word><Word>next</Word><Word>pairs</Word><Word>pcall</Word><Word>print</Word><Word>warn</Word><Word>rawequal</Word><Word>rawget</Word><Word>rawlen</Word><Word>rawset</Word><Word>select</Word><Word>setmetatable</Word><Word>tonumber</Word><Word>tostring</Word><Word>type</Word><Word>unpack</Word><Word>xpcall</Word>
                   <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word><Word>task</Word><Word>wait</Word>
-                  <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>ReplicatedStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>Color3</Word><Word>GetService</Word>
+                  <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>Lighting</Word><Word>ReplicatedStorage</Word><Word>ServerScriptService</Word><Word>ServerStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>Color3</Word><Word>GetService</Word>
                 </Keywords>
-                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Script</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
+                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
                 <Rule color="LuauKeyword">(?m)^\s*(?:export\s+)?type\b</Rule>
                 <Rule color="Method">(?&lt;=[:.])[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
                 <Rule color="FunctionName">(?&lt;=function\s+)[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*</Rule>
@@ -3253,7 +3348,7 @@ public partial class MainWindow : Window
     {
         if (project is null) return;
         project.Settings.Shadows = !project.Settings.Shadows;
-        renderer?.Refresh(project); SetStatus($"Shadows {(project.Settings.Shadows ? "enabled" : "disabled")}"); RecordEdit();
+        renderer?.Refresh(project); RenderProperties(); SetStatus($"Shadows {(project.Settings.Shadows ? "enabled" : "disabled")}"); RecordEdit();
     }
 
     private void ViewportOptions_Click(object sender, RoutedEventArgs e)
@@ -3549,9 +3644,10 @@ public partial class MainWindow : Window
 
     private void DeleteSelected()
     {
-        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
+        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
         if (!StudioDialog.Confirm(this, "Delete object", $"Delete {selected.Name}?")) return;
         var removedNodes = GameProjectStore.RemoveNodeAndGetSubtree(project.Workspace.Children, selected.Id)
+            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.Lighting.Children, selected.Id))
             .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.ReplicatedStorage.Children, selected.Id))
             .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.ServerScriptService.Children, selected.Id))
             .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.ServerStorage.Children, selected.Id))
@@ -3569,6 +3665,8 @@ public partial class MainWindow : Window
             if (removedIds.Contains(beam.Attachment0)) beam.Attachment0 = string.Empty;
             if (removedIds.Contains(beam.Attachment1)) beam.Attachment1 = string.Empty;
         }
+        foreach (var objectValue in GameProjectStore.Flatten(project).Where(node => node.Type == "ObjectValue" && removedIds.Contains(node.ObjectValueId)))
+            objectValue.ObjectValueId = string.Empty;
         if (selectedScript is not null && removedIds.Contains(selectedScript.Id)) CommitScriptEditor();
         project.Scripts.RemoveAll(script => removedIds.Contains(script.Id));
         var scriptDocuments = DockManager.Layout.Descendents().OfType<LayoutDocument>()
@@ -3591,7 +3689,7 @@ public partial class MainWindow : Window
     private void UngroupSelected_Click(object sender, RoutedEventArgs e) => UngroupSelected();
 
     private bool CanGroupSelected() => project is not null && selected is not null
-        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "WeldConstraint" or "Humanoid")
+        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "WeldConstraint" or "Humanoid")
         && !SceneNodeTypes.IsLight(selected)
         && FindParentNode(selected) is not null;
 
@@ -3628,6 +3726,8 @@ public partial class MainWindow : Window
         var children = model.Children.ToArray();
         model.Children.Clear();
         parent.Children.InsertRange(index, children);
+        foreach (var objectValue in GameProjectStore.Flatten(project).Where(node => node.Type == "ObjectValue" && node.ObjectValueId == model.Id))
+            objectValue.ObjectValueId = string.Empty;
         selected = children.FirstOrDefault() ?? parent;
         RecordEdit();
         RefreshEditor();
@@ -3636,7 +3736,7 @@ public partial class MainWindow : Window
 
     private void RenameSelected()
     {
-        if (selected is null || selected.Type is "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
+        if (selected is null || selected.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
         var name = StudioDialog.Prompt(this, "Rename object", "Name", selected.Name, "Rename");
         if (string.IsNullOrWhiteSpace(name)) return;
         var id = selected.Id;
@@ -3646,7 +3746,7 @@ public partial class MainWindow : Window
 
     private void DuplicateSelected()
     {
-        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
+        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui") return;
         var parent = FindParentNode(selected);
         if (parent is null) return;
         var original = selected;
@@ -3749,7 +3849,8 @@ public partial class MainWindow : Window
         var parts = value.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (parts.Length != 3) return null;
         var result = new float[3];
-        for (var index = 0; index < 3; index++) if (!float.TryParse(parts[index], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[index])) return null;
+        for (var index = 0; index < 3; index++)
+            if (!float.TryParse(parts[index], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[index]) || !float.IsFinite(result[index])) return null;
         return result;
     }
     private static float[]? ParseGuiUDim2(string value)
@@ -3767,7 +3868,7 @@ public partial class MainWindow : Window
             if (!float.TryParse(parts[index], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[index])) return null;
         return result;
     }
-    private static string VectorText(float[] value) => string.Join(", ", value.Select(number => number.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
+    private static string VectorText(float[] value) => string.Join(", ", value.Select(number => number.ToString("G9", System.Globalization.CultureInfo.InvariantCulture)));
     private static string GuiUDim2Text(float[] offset, float[] scale) => string.Join(", ", new[] { scale[0], offset[0], scale[1], offset[1] }.Select(number => number.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
     private void SetStatus(string message) => Dispatcher.Invoke(() => StatusText.Text = message);
     private void ShowError(Exception exception) => StudioDialog.Show(this, "Buller Studio", exception.Message, StudioDialogKind.Error);
@@ -3807,7 +3908,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["string.format"] = "format(format: string, ...: any): string — Formats values into a string.",
         ["table.insert"] = "insert(list: table, value: any): () — Appends a value to a list.",
         ["coroutine.yield"] = "yield(...: any): (...any) — Suspends the current Lua X script until the runtime resumes it.",
-        ["GetService"] = "GetService(name: string): Instance? — Returns Workspace, Players, ReplicatedStorage, or Gui.",
+        ["GetService"] = "GetService(name: string): Instance? — Returns Workspace, Players, Lighting, ReplicatedStorage, ServerScriptService, ServerStorage, or Gui.",
         ["Instance.new"] = "Instance.new(className: string, parent: Instance?): Instance? — Creates a supported object during play.",
         ["task.wait"] = "task.wait(duration: number?): number — Resumes on a later play update after at least this many seconds.",
         ["task.spawn"] = "task.spawn(callback: function, ...: any): coroutine — Starts a function immediately in a separate task.",
@@ -3836,6 +3937,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["ClassName"] = "string — The object's class name.",
         ["Id"] = "string — Stable project identifier for this object.",
         ["Children"] = "{Instance} — The object's direct children, available by index, name, or ID.",
+        ["Value"] = "any — Stored value of a ValueBase object. ObjectValue holds an Instance or nil.",
         ["Position"] = "Vector3 for 3D objects; UDim2 for GUI objects.",
         ["Rotation"] = "Vector3 — Rotation in degrees; GUI objects use the Z component.",
         ["Size"] = "Vector3 for 3D objects; UDim2 for GUI objects.",
@@ -3855,6 +3957,15 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Part0"] = "BasePart? — First endpoint of a WeldConstraint.",
         ["Part1"] = "BasePart? — Second endpoint of a WeldConstraint.",
         ["FieldOfView"] = "number — Camera field of view in degrees.",
+        ["Ambient"] = "Color3 — Ambient lighting color for the scene.",
+        ["ClockTime"] = "number — Lighting time of day in hours, from 0 to 24.",
+        ["GlobalShadows"] = "boolean — Whether the scene renders global shadows.",
+        ["SkyboxFt"] = "string — Project-relative image path for the Sky front face.",
+        ["SkyboxBk"] = "string — Project-relative image path for the Sky back face.",
+        ["SkyboxLf"] = "string — Project-relative image path for the Sky left face.",
+        ["SkyboxRt"] = "string — Project-relative image path for the Sky right face.",
+        ["SkyboxUp"] = "string — Project-relative image path for the Sky top face.",
+        ["SkyboxDn"] = "string — Project-relative image path for the Sky bottom face.",
         ["SkyboxFront"] = "string — Project-relative image path for the Workspace skybox front face.",
         ["SkyboxBack"] = "string — Project-relative image path for the Workspace skybox back face.",
         ["SkyboxLeft"] = "string — Project-relative image path for the Workspace skybox left face.",
