@@ -18,6 +18,9 @@ public sealed class SceneRenderService
     private readonly DirectionalLight3D sunLight = new() { Color = Colors.White, Direction = new Vector3D(-.5, -1, -.7) };
     private readonly Dictionary<string, MeshGeometryModel3D> visuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MeshGeometryModel3D> highlightFills = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MeshGeometryModel3D> forceFieldVisuals = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (MeshGeometryModel3D Outer, MeshGeometryModel3D? Inner)> particleEffectVisuals = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, float> particleEffectTimes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, OutLineMeshGeometryModel3D> beamVisuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, BeamState> beamStates = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SceneNode> highlightSources = new(StringComparer.Ordinal);
@@ -31,6 +34,8 @@ public sealed class SceneRenderService
     private float orbitPitch = -24;
     private float orbitDistance = 12;
     private bool hasBeamNodes;
+    private bool hasVisibleForceFields;
+    private bool hasParticleEffects;
 
     private sealed record BeamState(Point3D Start, Point3D End, float Width0, float Width1, string Color, float Transparency);
 
@@ -79,6 +84,7 @@ public sealed class SceneRenderService
 
     public void Refresh(GameProject project)
     {
+        if (!ReferenceEquals(activeProject, project)) particleEffectTimes.Clear();
         activeProject = project;
         var currentCamera = project.Workspace.Children.First(node => node.Type == "Camera");
         if (!ReferenceEquals(cameraNode, currentCamera))
@@ -89,8 +95,16 @@ public sealed class SceneRenderService
         }
         foreach (var visual in visuals.Values) viewport.Items.Remove(visual);
         foreach (var fill in highlightFills.Values) viewport.Items.Remove(fill);
+        foreach (var shield in forceFieldVisuals.Values) viewport.Items.Remove(shield);
+        foreach (var (outer, inner) in particleEffectVisuals.Values)
+        {
+            viewport.Items.Remove(outer);
+            if (inner is not null) viewport.Items.Remove(inner);
+        }
         visuals.Clear();
         highlightFills.Clear();
+        forceFieldVisuals.Clear();
+        particleEffectVisuals.Clear();
         highlightSources.Clear();
         renderedAssetSources.Clear();
         foreach (var beam in beamVisuals.Values) viewport.Items.Remove(beam);
@@ -107,6 +121,8 @@ public sealed class SceneRenderService
         RefreshObjectLights(project);
         RefreshBeams(project);
         RefreshHighlights(project);
+        RefreshForceFields(project);
+        RefreshParticleEffects(project);
         RefreshSkybox(project.Workspace, project);
         UpdateCamera(project);
         SetSelection(selectedId);
@@ -122,6 +138,8 @@ public sealed class SceneRenderService
         if (node.Type == "Model")
         {
             if (hasBeamNodes) RefreshBeams(project);
+            if (hasVisibleForceFields) RefreshForceFields(project);
+            if (hasParticleEffects) RefreshParticleEffects(project);
             if (showAttachmentGizmos)
                 foreach (var attachment in GameProjectStore.Flatten(node.Children).Where(child => child.Type == "Attachment"))
                     UpdateAttachmentVisual(attachment, project);
@@ -130,6 +148,7 @@ public sealed class SceneRenderService
         {
             if (showAttachmentGizmos) UpdateAttachmentVisual(node, project);
             RefreshBeams(project);
+            if (hasParticleEffects) RefreshParticleEffects(project);
             SetSelection(selectedId);
             return;
         }
@@ -144,6 +163,28 @@ public sealed class SceneRenderService
         {
             RefreshHighlights(project);
             SetSelection(selectedId);
+            return;
+        }
+        if (node.Type == "ForceField")
+        {
+            RefreshForceFields(project);
+            return;
+        }
+        if (SceneNodeTypes.IsParticleEffect(node))
+        {
+            RefreshParticleEffects(project);
+            return;
+        }
+        if (node.Type == "Explosion")
+        {
+            if (visuals.Remove(node.Id, out var oldExplosion)) viewport.Items.Remove(oldExplosion);
+            if (GameProjectStore.Flatten(project.Workspace.Children).Any(item => item.Id == node.Id))
+            {
+                var explosionVisual = CreateVisual(node, project);
+                visuals[node.Id] = explosionVisual;
+                viewport.Items.Add(explosionVisual);
+                SetSelection(selectedId);
+            }
             return;
         }
         if (node.Type is "Decal" or "Texture" && FindPartParent(project, node) is null) return;
@@ -175,6 +216,8 @@ public sealed class SceneRenderService
         if (SceneNodeTypes.IsBasePart(node))
         {
             if (hasBeamNodes) RefreshBeams(project);
+            if (hasVisibleForceFields) RefreshForceFields(project);
+            if (hasParticleEffects) RefreshParticleEffects(project);
             if (showAttachmentGizmos)
                 foreach (var attachment in node.Children.Where(child => child.Type == "Attachment"))
                     UpdateAttachmentVisual(attachment, project);
@@ -273,6 +316,7 @@ public sealed class SceneRenderService
         }
         else if (node.Type is "Decal" or "Texture") AddDecalFace(builder, node.Face);
         else if (node.Type == "Attachment") builder.AddSphere(Vector3.Zero, .09, 12, 8);
+        else if (node.Type == "Explosion") builder.AddSphere(Vector3.Zero, node.ExplosionAge < 0 ? Math.Max(.1f, node.BlastRadius) : 2 + node.ExplosionAge * 6, 24, 16);
         else if (node.Type == "MeshPart" && !string.IsNullOrWhiteSpace(node.Asset) && File.Exists(ResolveAsset(project, node.Asset)))
         {
             try { builder = ReadObj(ResolveAsset(project, node.Asset)); }
@@ -289,7 +333,7 @@ public sealed class SceneRenderService
         var decalParent = node.Type is "Decal" or "Texture" ? FindPartParent(project, node) : null;
         var geometry = builder.ToMeshGeometry3D();
         if (node.Type == "Texture" && decalParent is not null) ApplyTextureTiling(geometry, node, decalParent);
-        var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = node.Type == "Attachment" ? AttachmentTransformFor(node, project) : decalParent is null ? TransformFor(node) : TransformFor(decalParent), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
+        var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = node.Type == "Attachment" ? AttachmentTransformFor(node, project) : node.Type == "Explosion" ? new TranslateTransform3D(node.Position[0], node.Position[1], node.Position[2]) : decalParent is null ? TransformFor(node) : TransformFor(decalParent), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment" or "Explosion") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture" or "Explosion"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel" or "Explosion") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
         if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type is "Decal" or "Texture" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture)) LoadImageAsset(visual, ResolveTexture(project, node.Texture), node);
@@ -314,7 +358,7 @@ public sealed class SceneRenderService
 
     private static float EffectiveTransparency(SceneNode node) => Math.Clamp(Math.Max(node.Transparency, node.Material == "Glass" ? .55f : 0), 0, 1);
 
-    private bool IsRenderable(SceneNode node) => SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Decal" or "Texture" || showAttachmentGizmos && node.Type == "Attachment";
+    private bool IsRenderable(SceneNode node) => SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Decal" or "Texture" or "Explosion" || showAttachmentGizmos && node.Type == "Attachment";
 
     private void UpdateAttachmentVisual(SceneNode attachment, GameProject project)
     {
@@ -393,6 +437,134 @@ public sealed class SceneRenderService
 
     private static SceneNode? FindPartParent(GameProject project, SceneNode child) =>
         GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(parent => SceneNodeTypes.IsBasePart(parent) && parent.Children.Contains(child));
+
+    public void UpdateParticleEffects(float elapsedSeconds)
+    {
+        if (activeProject is null || !hasParticleEffects) return;
+        var advanced = false;
+        foreach (var effect in GameProjectStore.Flatten(activeProject.Workspace.Children).Where(SceneNodeTypes.IsParticleEffect))
+            if (effect.Enabled && effect.TimeScale > 0)
+            {
+                particleEffectTimes[effect.Id] = particleEffectTimes.GetValueOrDefault(effect.Id) + Math.Clamp(elapsedSeconds, 0, .25f) * effect.TimeScale;
+                advanced = true;
+            }
+        if (advanced) RefreshParticleEffects(activeProject);
+    }
+
+    private void RefreshParticleEffects(GameProject project)
+    {
+        var workspaceNodes = GameProjectStore.Flatten(project.Workspace.Children);
+        var parts = workspaceNodes.Where(SceneNodeTypes.IsBasePart).ToArray();
+        var effects = workspaceNodes.Where(SceneNodeTypes.IsParticleEffect).ToArray();
+        hasParticleEffects = effects.Length > 0;
+        var activeIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var effect in effects.Where(item => item.Enabled && (item.Type != "Smoke" || item.Opacity > 0)))
+        {
+            var part = parts.FirstOrDefault(item => item.Children.Contains(effect));
+            SceneNode? attachment = null;
+            if (part is null)
+                foreach (var candidate in parts)
+                {
+                    attachment = candidate.Children.FirstOrDefault(child => child.Type == "Attachment" && child.Children.Contains(effect));
+                    if (attachment is null) continue;
+                    part = candidate;
+                    break;
+                }
+            if (part is null) continue;
+            activeIds.Add(effect.Id);
+            var transform = ParticleEffectTransform(part, attachment);
+            var phase = particleEffectTimes.GetValueOrDefault(effect.Id);
+            if (!particleEffectVisuals.TryGetValue(effect.Id, out var visual))
+            {
+                var outer = new MeshGeometryModel3D { IsThrowingShadow = false, IsHitTestVisible = false, IsTransparent = true };
+                MeshGeometryModel3D? inner = effect.Type == "Fire"
+                    ? new MeshGeometryModel3D { IsThrowingShadow = false, IsHitTestVisible = false, IsTransparent = true }
+                    : null;
+                visual = (outer, inner);
+                particleEffectVisuals[effect.Id] = visual;
+                viewport.Items.Add(outer);
+                if (inner is not null) viewport.Items.Add(inner);
+            }
+            visual.Outer.Geometry = BuildParticleEffectGeometry(effect, phase, false, attachment is null ? part.Size : [1, 1, 1]);
+            visual.Outer.Material = ParticleEffectMaterial(effect.Color, effect.Type == "Fire" ? .52f : effect.Type == "Sparkles" ? .9f : effect.Opacity * .38f, effect.Type is "Fire" or "Sparkles");
+            visual.Outer.Transform = transform;
+            if (visual.Inner is not null)
+            {
+                visual.Inner.Geometry = BuildParticleEffectGeometry(effect, phase, true, part.Size);
+                visual.Inner.Material = ParticleEffectMaterial(effect.SecondaryColor, .72f, true);
+                visual.Inner.Transform = transform;
+            }
+        }
+        foreach (var id in particleEffectVisuals.Keys.Where(id => !activeIds.Contains(id)).ToArray())
+        {
+            var visual = particleEffectVisuals[id];
+            viewport.Items.Remove(visual.Outer);
+            if (visual.Inner is not null) viewport.Items.Remove(visual.Inner);
+            particleEffectVisuals.Remove(id);
+        }
+        var workspaceIds = effects.Select(effect => effect.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var id in particleEffectTimes.Keys.Where(id => !workspaceIds.Contains(id)).ToArray()) particleEffectTimes.Remove(id);
+    }
+
+    private static Transform3D ParticleEffectTransform(SceneNode part, SceneNode? attachment)
+    {
+        if (attachment is null) return TransformFor(part, false);
+        var transform = new Transform3DGroup();
+        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 0, 1), attachment.Rotation[2])));
+        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(1, 0, 0), attachment.Rotation[0])));
+        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), attachment.Rotation[1])));
+        transform.Children.Add(new TranslateTransform3D(attachment.Position[0], attachment.Position[1], attachment.Position[2]));
+        transform.Children.Add(TransformFor(part, false));
+        return transform;
+    }
+
+    private static HelixToolkit.SharpDX.Core.MeshGeometry3D BuildParticleEffectGeometry(SceneNode effect, float time, bool inner, float[] parentSize)
+    {
+        var builder = new MeshBuilder();
+        if (effect.Type == "Sparkles")
+        {
+            for (var index = 0; index < 20; index++)
+            {
+                var age = (time * .7f + (float)index / 20) % 1;
+                var twinkle = .25f + .75f * MathF.Abs(MathF.Sin(age * MathF.PI));
+                var x = MathF.Sin(index * 12.9898f) * parentSize[0] * .48f;
+                var y = MathF.Sin(index * 78.233f) * parentSize[1] * .48f + age * .25f;
+                var z = MathF.Sin(index * 43.758f) * parentSize[2] * .48f;
+                builder.AddSphere(new Vector3(x, y, z), .025f + .08f * twinkle, 8, 6);
+            }
+            return builder.ToMeshGeometry3D();
+        }
+        var count = effect.Type == "Fire" ? inner ? 7 : 10 : 8;
+        var size = effect.EffectSize;
+        var rise = effect.Type == "Fire" ? effect.Heat : effect.RiseVelocity;
+        for (var index = 0; index < count; index++)
+        {
+            var age = (time * (effect.Type == "Fire" ? 1.3f : .55f) + (float)index / count) % 1;
+            var angle = index * 2.39996f + time * .35f;
+            var spread = size * (inner ? .07f : effect.Type == "Fire" ? .16f : .3f) * (effect.Type == "Fire" ? 1 - age * .55f : 1 + age * .5f);
+            var height = MathF.Sign(rise) * age * MathF.Min(MathF.Abs(rise) * .22f + size * .3f, size * 2.5f);
+            var radius = size * (effect.Type == "Fire" ? inner ? .095f : .15f : .14f + age * .09f);
+            radius *= effect.Type == "Fire" ? 1 - age * .55f : 1;
+            builder.AddSphere(new Vector3(MathF.Cos(angle) * spread, height, MathF.Sin(angle) * spread), Math.Max(.02f, radius), 8, 6);
+        }
+        return builder.ToMeshGeometry3D();
+    }
+
+    private static PhongMaterial ParticleEffectMaterial(string color, float opacity, bool emissive)
+    {
+        System.Windows.Media.Color parsed;
+        try { parsed = (System.Windows.Media.Color)ColorConverter.ConvertFromString(color); }
+        catch { parsed = Colors.White; }
+        var red = parsed.R / 255f;
+        var green = parsed.G / 255f;
+        var blue = parsed.B / 255f;
+        return new PhongMaterial
+        {
+            DiffuseColor = new Color4(red, green, blue, Math.Clamp(opacity, 0, 1)),
+            EmissiveColor = emissive ? new Color4(red * .45f, green * .45f, blue * .45f, 1) : new Color4(0, 0, 0, 1),
+            SpecularColor = new Color4(0, 0, 0, 1)
+        };
+    }
 
     private static void ApplyTextureTiling(HelixToolkit.SharpDX.Core.MeshGeometry3D geometry, SceneNode texture, SceneNode parent)
     {
@@ -599,6 +771,49 @@ public sealed class SceneRenderService
         Visit(project.Workspace, null);
     }
 
+    private void RefreshForceFields(GameProject project)
+    {
+        foreach (var shield in forceFieldVisuals.Values) viewport.Items.Remove(shield);
+        forceFieldVisuals.Clear();
+        hasVisibleForceFields = false;
+
+        void Visit(SceneNode parent)
+        {
+            foreach (var forceField in parent.Children.Where(child => child.Type == "ForceField" && child.Visible))
+            {
+                var protectedParts = parent.Type == "Model"
+                    ? GameProjectStore.Flatten(parent.Children).Where(SceneNodeTypes.IsBasePart).ToArray()
+                    : SceneNodeTypes.IsBasePart(parent) ? [parent] : [];
+                if (protectedParts.Length == 0) continue;
+                var center = parent.Type == "Model" ? SceneModelService.GetPivot(parent) : parent.Position;
+                var centerVector = new Vector3(center[0], center[1], center[2]);
+                var radius = protectedParts.Max(part => Vector3.Distance(centerVector, new Vector3(part.Position[0], part.Position[1], part.Position[2]))
+                    + .5f * new Vector3(part.Size[0], part.Size[1], part.Size[2]).Length()) + .35f;
+                var builder = new MeshBuilder();
+                builder.AddSphere(Vector3.Zero, radius, 24, 16);
+                var shield = new MeshGeometryModel3D
+                {
+                    Geometry = builder.ToMeshGeometry3D(),
+                    Material = new PhongMaterial
+                    {
+                        DiffuseColor = new Color4(.28f, .62f, 1f, .16f),
+                        EmissiveColor = new Color4(.04f, .12f, .24f, 1),
+                        SpecularColor = new Color4(.8f, .9f, 1f, 1)
+                    },
+                    Transform = new TranslateTransform3D(center[0], center[1], center[2]),
+                    IsTransparent = true,
+                    IsHitTestVisible = false,
+                    IsThrowingShadow = false
+                };
+                forceFieldVisuals[forceField.Id] = shield;
+                viewport.Items.Add(shield);
+                hasVisibleForceFields = true;
+            }
+            foreach (var child in parent.Children.Where(child => child.Type != "ForceField")) Visit(child);
+        }
+        Visit(project.Workspace);
+    }
+
     private static System.Windows.Media.Color ParseHighlightColor(string value, float transparency, System.Windows.Media.Color fallback)
     {
         System.Windows.Media.Color color;
@@ -695,6 +910,16 @@ public sealed class SceneRenderService
 
     private static PhongMaterial MakeMaterial(SceneNode node)
     {
+        if (node.Type == "Explosion")
+        {
+            var opacity = node.ExplosionAge < 0 ? .12f : Math.Clamp((.5f - node.ExplosionAge) * 1.5f, 0, .75f);
+            return new PhongMaterial
+            {
+                DiffuseColor = new Color4(1, .55f, .12f, opacity),
+                EmissiveColor = new Color4(.45f, .16f, .02f, 1),
+                SpecularColor = new Color4(1, .85f, .55f, 1)
+            };
+        }
         System.Windows.Media.Color parsed;
         try
         {

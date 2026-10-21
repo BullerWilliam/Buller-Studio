@@ -432,8 +432,8 @@ if (Math.Abs(falling.Position[1] - 1) > .001f || falling.Velocity[1] != 0 || !fl
 var weldProject = new GameProject();
 weldProject.Workspace.Gravity = 0;
 var weldAnchor = new SceneNode { Type = "Part", Name = "WeldAnchor", Anchored = true, CanCollide = false, Position = [0, 0, 0] };
-var weldChild = new SceneNode { Type = "Part", Name = "WeldChild", CanCollide = false, Position = [2, 0, 0] };
-var weldGrandchild = new SceneNode { Type = "Part", Name = "WeldGrandchild", CanCollide = false, Position = [2, 1, 2], Rotation = [0, 30, 0] };
+var weldChild = new SceneNode { Type = "Part", Name = "WeldChild", Anchored = false, CanCollide = false, Position = [2, 0, 0] };
+var weldGrandchild = new SceneNode { Type = "Part", Name = "WeldGrandchild", Anchored = false, CanCollide = false, Position = [2, 1, 2], Rotation = [0, 30, 0] };
 weldProject.Workspace.Children.Add(weldAnchor);
 weldProject.Workspace.Children.Add(weldChild);
 weldProject.Workspace.Children.Add(weldGrandchild);
@@ -455,6 +455,25 @@ weldPhysics.Step(.02f);
 if (Math.Abs(weldChild.Position[0] - 3) > .001f || Math.Abs(weldChild.Position[2] + 2) > .001f
     || Math.Abs(weldChild.Rotation[1] - 90) > .001f)
     throw new Exception($"An anchored weld did not restore an edited child transform: ({string.Join(',', weldChild.Position)}) ({string.Join(',', weldChild.Rotation)}).");
+weldAnchor.Rotation = [90, 90, 0];
+weldPhysics.Step(.02f);
+if (Math.Abs(weldGrandchild.Position[0] - 4) > .001f || Math.Abs(weldGrandchild.Position[1] + 2) > .001f
+    || Math.Abs(weldGrandchild.Position[2] + 2) > .001f || Math.Abs(weldChild.Rotation[0] - 90) > .001f)
+    throw new Exception("Welded parts did not follow a pitch rotation.");
+var looseWeldProject = new GameProject();
+looseWeldProject.Workspace.Gravity = 0;
+var looseFirst = new SceneNode { Type = "Part", Anchored = false, CanCollide = false, Position = [0, 0, 0] };
+var looseSecond = new SceneNode { Type = "Part", Anchored = false, CanCollide = false, Position = [2, 0, 0] };
+looseWeldProject.Workspace.Children.Add(looseFirst);
+looseWeldProject.Workspace.Children.Add(looseSecond);
+looseWeldProject.Workspace.Children.Add(new SceneNode { Type = "WeldConstraint", Part0 = looseFirst.Id, Part1 = looseSecond.Id });
+var looseWeldPhysics = new PhysicsSimulationService(looseWeldProject, _ => { });
+looseWeldPhysics.Step(.02f);
+looseSecond.Rotation = [0, 90, 0];
+looseWeldPhysics.Step(.02f);
+if (Math.Abs(looseFirst.Position[0] - 2) > .001f || Math.Abs(looseFirst.Position[2] - 2) > .001f
+    || Math.Abs(looseFirst.Rotation[1] - 90) > .001f)
+    throw new Exception("A free weld assembly did not rotate around the edited member.");
 
 var seatProject = new GameProject();
 var rotatedSeat = new SceneNode
@@ -838,5 +857,312 @@ var restoredRayProject = JsonSerializer.Deserialize<GameProject>(rayJson, GamePr
 GameProjectStore.EnsureProject(restoredRayProject);
 if (restoredRayProject.Workspace.Children.Single(node => node.Name == "RayGroup").Children.Single().CanQuery)
     throw new Exception("CanQuery did not persist.");
+
+var modelProject = new GameProject();
+var spinModel = new SceneNode { Type = "Model", Name = "SpinModel" };
+var spinA = new SceneNode { Type = "Part", Name = "SpinA", Position = [1, 0, 0] };
+var spinB = new SceneNode { Type = "Part", Name = "SpinB", Position = [3, 0, 0] };
+spinModel.Children.Add(spinA);
+spinModel.Children.Add(spinB);
+modelProject.Workspace.Children.Add(spinModel);
+if (Math.Abs(SceneModelService.GetPivot(spinModel)[0] - 2) > .001f
+    || !SceneModelService.RotateTo(spinModel, [0, 90, 0])
+    || Math.Abs(spinA.Position[0] - 2) > .001f || Math.Abs(spinA.Position[2] - 1) > .001f
+    || Math.Abs(spinB.Position[2] + 1) > .001f || !spinModel.HasModelPivot)
+    throw new Exception("Model rotation did not rotate parts around their shared pivot.");
+SceneModelService.RotateTo(spinModel, [0, 180, 0]);
+SceneModelService.MoveTo(spinModel, [5, 0, 0]);
+if (Math.Abs(SceneModelService.GetPivot(spinModel)[0] - 5) > .001f
+    || Math.Abs(spinA.Position[0] - 6) > .001f || Math.Abs(spinB.Position[0] - 4) > .001f)
+    throw new Exception("Repeated Model transforms changed its pivot or child layout.");
+var modelJson = JsonSerializer.Serialize(modelProject, GameProjectStore.JsonOptions);
+var restoredModelProject = JsonSerializer.Deserialize<GameProject>(modelJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("Model transform project did not deserialize.");
+GameProjectStore.EnsureProject(restoredModelProject);
+var restoredSpinModel = restoredModelProject.Workspace.Children.Single(node => node.Name == "SpinModel");
+if (Math.Abs(SceneModelService.GetPivot(restoredSpinModel)[0] - 5) > .001f || !restoredSpinModel.HasModelPivot)
+    throw new Exception("The Model pivot did not persist.");
+var modelOutput = new List<string>();
+var modelRuntime = new LuaXRuntime(restoredModelProject, output: modelOutput.Add);
+var modelScript = new GameScript
+{
+    Source = "local m = workspace.SpinModel; m.Position = Vector3.new(8, 0, 0); m.Rotation = Vector3.new(0, 90, 0); print('model-direct')"
+};
+restoredModelProject.Scripts.Add(modelScript);
+modelRuntime.Run(modelScript.Id);
+var luaSpinA = restoredSpinModel.Children.Single(node => node.Name == "SpinA");
+var luaSpinB = restoredSpinModel.Children.Single(node => node.Name == "SpinB");
+if (!modelOutput.Contains("model-direct") || Math.Abs(SceneModelService.GetPivot(restoredSpinModel)[0] - 8) > .001f
+    || Math.Abs(luaSpinA.Position[0] - 8) > .001f || Math.Abs(luaSpinA.Position[2] - 1) > .001f
+    || Math.Abs(luaSpinB.Position[2] + 1) > .001f)
+    throw new Exception("Direct Lua X Model transforms did not update children: " + string.Join(" | ", modelOutput));
+var modelSetterScript = new GameScript
+{
+    Source = "local m = workspace.SpinModel; m:SetProperty('Rotation', Vector3.new(0, 180, 0)); m:SetProperty('Position', Vector3.new(10, 0, 0)); print('model-setter', m.SpinA.Position.X, m.SpinB.Position.X)"
+};
+restoredModelProject.Scripts.Add(modelSetterScript);
+modelRuntime.Run(modelSetterScript.Id);
+if (!modelOutput.Any(line => line.Contains("model-setter\t11\t9", StringComparison.Ordinal))
+    || Math.Abs(luaSpinA.Position[0] - 11) > .001f || Math.Abs(luaSpinB.Position[0] - 9) > .001f)
+    throw new Exception("SetProperty Model transforms did not update children immediately: " + string.Join(" | ", modelOutput));
+var modelMixedScript = new GameScript
+{
+    Source = "local m = workspace.SpinModel; m.Position = Vector3.new(12, 0, 0); m.SpinA.Position = Vector3.new(20, 0, 0); print('model-mixed')"
+};
+restoredModelProject.Scripts.Add(modelMixedScript);
+modelRuntime.Run(modelMixedScript.Id);
+if (!modelOutput.Contains("model-mixed") || Math.Abs(SceneModelService.GetPivot(restoredSpinModel)[0] - 12) > .001f
+    || Math.Abs(luaSpinA.Position[0] - 20) > .001f || Math.Abs(luaSpinB.Position[0] - 11) > .001f)
+    throw new Exception("A child write was lost when its Model moved in the same script: " + string.Join(" | ", modelOutput));
+
+var forceProject = new GameProject();
+var guardedModel = new SceneNode { Type = "Model", Name = "Guarded" };
+var guardedRoot = new SceneNode { Type = "Part", Name = "HumanoidRootPart" };
+var guardedHumanoid = new SceneNode { Type = "Humanoid", Name = "Humanoid" };
+var forceField = new SceneNode { Type = "ForceField", Name = "ForceField" };
+forceProject.Workspace.Children.Add(guardedModel);
+if (!GameProjectStore.CanParentNode(forceProject, forceField, guardedModel)
+    || GameProjectStore.CanParentNode(forceProject, forceField, forceProject.Workspace))
+    throw new Exception("ForceField insertion hierarchy is incorrect.");
+guardedModel.Children.Add(guardedRoot);
+guardedModel.Children.Add(guardedHumanoid);
+guardedModel.Children.Add(forceField);
+var forceOutput = new List<string>();
+var forceRuntime = new LuaXRuntime(forceProject, output: forceOutput.Add);
+var forceScript = new GameScript
+{
+    Source = """
+        local model = workspace.Guarded
+        local humanoid = model.Humanoid
+        humanoid:TakeDamage(25)
+        assert(humanoid.Health == 100)
+        model.ForceField.Visible = false
+        humanoid:TakeDamage(25)
+        assert(humanoid.Health == 100)
+        humanoid.Health = 70
+        humanoid:TakeDamage(10)
+        assert(humanoid.Health == 70)
+        model.ForceField:Destroy()
+        humanoid:TakeDamage(20)
+        assert(humanoid.Health == 50)
+        humanoid:TakeDamage(-10)
+        assert(humanoid.Health == 60)
+        local rootShield = Instance.new('ForceField', model.HumanoidRootPart)
+        assert(rootShield and rootShield:IsA('ForceField'))
+        humanoid:TakeDamage(10)
+        assert(humanoid.Health == 60)
+        rootShield:Destroy()
+        local outer = Instance.new('Model', workspace)
+        model:SetProperty('Parent', outer)
+        local ancestorShield = Instance.new('ForceField', outer)
+        humanoid:TakeDamage(10)
+        assert(humanoid.Health == 60)
+        ancestorShield:Destroy()
+        model:SetProperty('Parent', workspace)
+        outer:Destroy()
+        print('forcefield-ok')
+        """
+};
+forceProject.Scripts.Add(forceScript);
+forceRuntime.Run(forceScript.Id);
+if (!forceOutput.Contains("forcefield-ok") || guardedHumanoid.Health != 60)
+    throw new Exception("ForceField protection or Humanoid.TakeDamage failed: " + string.Join(" | ", forceOutput));
+var persistedForceField = new SceneNode { Type = "ForceField", Visible = false };
+guardedModel.Children.Add(persistedForceField);
+var forceJson = JsonSerializer.Serialize(forceProject, GameProjectStore.JsonOptions);
+var restoredForceProject = JsonSerializer.Deserialize<GameProject>(forceJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("ForceField project did not deserialize.");
+GameProjectStore.EnsureProject(restoredForceProject);
+if (restoredForceProject.Workspace.Children.Single(node => node.Name == "Guarded").Children.Single(node => node.Type == "ForceField").Visible)
+    throw new Exception("ForceField.Visible did not persist.");
+
+var explosionProject = new GameProject();
+explosionProject.Workspace.Gravity = 0;
+var blastTarget = new SceneNode { Type = "Part", Name = "BlastTarget", Anchored = false, CanCollide = false, Position = [4, 0, 0] };
+var blastMate = new SceneNode { Type = "Part", Name = "BlastMate", Anchored = false, CanCollide = false, Position = [5, 0, 0] };
+var distantPart = new SceneNode { Type = "Part", Name = "DistantPart", Anchored = false, Position = [30, 0, 0] };
+var blastWeld = new SceneNode { Type = "WeldConstraint", Part0 = blastTarget.Id, Part1 = blastMate.Id };
+explosionProject.Workspace.Children.Add(blastTarget);
+explosionProject.Workspace.Children.Add(blastMate);
+explosionProject.Workspace.Children.Add(distantPart);
+explosionProject.Workspace.Children.Add(blastWeld);
+var unguarded = new SceneNode { Type = "Model", Name = "Unguarded" };
+var unguardedHumanoid = new SceneNode { Type = "Humanoid", Name = "Humanoid" };
+unguarded.Children.Add(new SceneNode { Type = "Part", Name = "Body", Position = [1, 0, 0] });
+unguarded.Children.Add(unguardedHumanoid);
+explosionProject.Workspace.Children.Add(unguarded);
+var blastGuarded = new SceneNode { Type = "Model", Name = "BlastGuarded" };
+var blastGuardedHumanoid = new SceneNode { Type = "Humanoid", Name = "Humanoid" };
+blastGuarded.Children.Add(new SceneNode { Type = "Part", Name = "Body", Position = [-1, 0, 0] });
+blastGuarded.Children.Add(blastGuardedHumanoid);
+blastGuarded.Children.Add(new SceneNode { Type = "ForceField" });
+explosionProject.Workspace.Children.Add(blastGuarded);
+var explosionOutput = new List<string>();
+var explosionRuntime = new LuaXRuntime(explosionProject, output: explosionOutput.Add);
+var explosionScript = new GameScript
+{
+    Source = """
+        local blast = Instance.new('Explosion')
+        blast.Position = Vector3.new(0, 0, 0)
+        blast.BlastRadius = 8
+        blast.BlastPressure = 500000
+        blast.DestroyJointRadiusPercent = 1
+        blast.Hit:Connect(function(part, distance)
+            print('explosion-hit', part.Name, distance >= 0)
+        end)
+        blast.Parent = workspace
+        print('explosion-created')
+        """
+};
+explosionProject.Scripts.Add(explosionScript);
+explosionRuntime.Run(explosionScript.Id);
+explosionRuntime.UpdateTouched(.02f);
+if (!explosionOutput.Contains("explosion-created")
+    || !explosionOutput.Any(line => line.Contains("explosion-hit\tBlastTarget\ttrue", StringComparison.Ordinal))
+    || explosionOutput.Any(line => line.Contains("explosion-hit\tDistantPart", StringComparison.Ordinal))
+    || blastTarget.Velocity[0] <= 0 || distantPart.Velocity.Any(value => value != 0)
+    || blastWeld.Enabled || unguardedHumanoid.Health != 0 || blastGuardedHumanoid.Health != 100)
+    throw new Exception("Explosion radius, pressure, hit signal, weld damage, or ForceField protection failed: " + string.Join(" | ", explosionOutput));
+var hitCount = explosionOutput.Count(line => line.StartsWith("explosion-hit", StringComparison.Ordinal));
+explosionRuntime.UpdateTouched(.02f);
+if (explosionOutput.Count(line => line.StartsWith("explosion-hit", StringComparison.Ordinal)) != hitCount)
+    throw new Exception("Explosion detonated more than once.");
+var harmlessScript = new GameScript
+{
+    Source = """
+        local blast = Instance.new('Explosion')
+        blast.Position = Vector3.new(30, 0, 0)
+        blast.BlastRadius = 4
+        blast.BlastPressure = 0
+        blast.DestroyJointRadiusPercent = 0
+        blast.Hit:Connect(function(part) print('harmless-hit', part.Name) end)
+        blast.Parent = workspace
+        """
+};
+explosionProject.Scripts.Add(harmlessScript);
+explosionRuntime.Run(harmlessScript.Id);
+explosionRuntime.UpdateTouched(.02f);
+if (!explosionOutput.Any(line => line.Contains("harmless-hit\tDistantPart", StringComparison.Ordinal))
+    || distantPart.Velocity.Any(value => value != 0))
+    throw new Exception("Zero-pressure Explosion failed to emit Hit without applying force: " + string.Join(" | ", explosionOutput));
+var placedExplosionProject = new GameProject();
+placedExplosionProject.Workspace.Gravity = 0;
+var placedBlastTarget = new SceneNode { Type = "Part", Anchored = false, CanCollide = false, Position = [2, 0, 0] };
+var placedExplosion = new SceneNode { Type = "Explosion", BlastRadius = 4, BlastPressure = 500000, DestroyJointRadiusPercent = 0 };
+placedExplosionProject.Workspace.Children.Add(placedBlastTarget);
+placedExplosionProject.Workspace.Children.Add(placedExplosion);
+var placedExplosionRuntime = new LuaXRuntime(placedExplosionProject);
+placedExplosionRuntime.RunAll();
+if (placedBlastTarget.Velocity[0] <= 0 || !placedExplosionRuntime.HasPendingScripts)
+    throw new Exception("An Explosion placed in the editor did not detonate at play startup.");
+placedExplosionRuntime.UpdateTouched(.25f);
+placedExplosionRuntime.UpdateTouched(.25f);
+if (placedExplosionRuntime.HasPendingScripts || GameProjectStore.Flatten(placedExplosionProject.Workspace.Children).Any(node => node.Id == placedExplosion.Id))
+    throw new Exception("A play-mode Explosion did not expire after its visual pulse.");
+var savedExplosion = new SceneNode { Type = "Explosion", BlastRadius = 6, BlastPressure = 1234, DestroyJointRadiusPercent = .25f, Visible = false };
+if (!GameProjectStore.CanParentNode(explosionProject, savedExplosion, explosionProject.Workspace))
+    throw new Exception("Explosion cannot be inserted under Workspace.");
+explosionProject.Workspace.Children.Add(savedExplosion);
+var explosionJson = JsonSerializer.Serialize(explosionProject, GameProjectStore.JsonOptions);
+var restoredExplosionProject = JsonSerializer.Deserialize<GameProject>(explosionJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("Explosion project did not deserialize.");
+GameProjectStore.EnsureProject(restoredExplosionProject);
+var restoredExplosion = restoredExplosionProject.Workspace.Children.Single(node => node.Id == savedExplosion.Id);
+if (restoredExplosion.BlastRadius != 6 || restoredExplosion.BlastPressure != 1234
+    || Math.Abs(restoredExplosion.DestroyJointRadiusPercent - .25f) > .001f || restoredExplosion.Visible)
+    throw new Exception("Explosion properties did not persist.");
+
+var debrisProject = new GameProject();
+var debrisScriptNode = new SceneNode { Type = "Script", Name = "DebrisTest" };
+debrisProject.ServerScriptService.Children.Add(debrisScriptNode);
+debrisProject.Scripts.Add(new GameScript
+{
+    Id = debrisScriptNode.Id,
+    Name = debrisScriptNode.Name,
+    Source = """
+        local debris = game:GetService('Debris')
+        print('debris-service', debris == game.Debris, typeof(debris), debris.ClassName)
+        local part = Instance.new('Part', workspace)
+        part.Name = 'TemporaryPart'
+        debris:AddItem(part, 0.2)
+        local immediate = Instance.new('Part', workspace)
+        immediate.Name = 'ImmediatePart'
+        debris:AddItem(immediate, 0)
+        print('debris-immediate', workspace:FindFirstChild('ImmediatePart') == nil)
+        script.Enabled = false
+        """
+});
+var debrisOutput = new List<string>();
+var debrisRuntime = new LuaXRuntime(debrisProject, output: debrisOutput.Add);
+debrisRuntime.RunAll();
+if (!debrisOutput.Contains("debris-service\ttrue\tDebris\tDebris")
+    || !debrisOutput.Contains("debris-immediate\ttrue")
+    || !debrisRuntime.HasPendingScripts
+    || !GameProjectStore.Flatten(debrisProject.Workspace.Children).Any(node => node.Name == "TemporaryPart"))
+    throw new Exception("Debris service lookup or scheduling failed: " + string.Join(" | ", debrisOutput));
+debrisRuntime.Update(.1f);
+if (!GameProjectStore.Flatten(debrisProject.Workspace.Children).Any(node => node.Name == "TemporaryPart"))
+    throw new Exception("Debris destroyed an item before its lifetime elapsed.");
+debrisRuntime.Update(.1f);
+if (debrisRuntime.HasPendingScripts || GameProjectStore.Flatten(debrisProject.Workspace.Children).Any(node => node.Name == "TemporaryPart"))
+    throw new Exception("Debris did not destroy its item after the scheduling script stopped.");
+
+var effectProject = new GameProject();
+var effectPart = new SceneNode { Type = "Part", Name = "EffectPart" };
+var effectAttachment = new SceneNode { Type = "Attachment", Name = "EffectAttachment" };
+effectProject.Workspace.Children.Add(effectPart);
+effectPart.Children.Add(effectAttachment);
+if (!GameProjectStore.CanParentNode(effectProject, new SceneNode { Type = "Fire" }, effectPart)
+    || !GameProjectStore.CanParentNode(effectProject, new SceneNode { Type = "Smoke" }, effectAttachment)
+    || !GameProjectStore.CanParentNode(effectProject, new SceneNode { Type = "Sparkles" }, effectPart)
+    || GameProjectStore.CanParentNode(effectProject, new SceneNode { Type = "Fire" }, effectProject.Workspace))
+    throw new Exception("Fire, Smoke, or Sparkles parent rules failed.");
+var effectOutput = new List<string>();
+var effectRuntime = new LuaXRuntime(effectProject, output: effectOutput.Add);
+var effectScript = new GameScript
+{
+    Source = """
+        local part = workspace.EffectPart
+        local fire = Instance.new('Fire', part)
+        fire.Size = 100
+        fire.Heat = -12
+        fire.TimeScale = 0.5
+        fire.Color = Color3.fromRGB(255, 80, 0)
+        fire.SecondaryColor = Color3.fromRGB(255, 255, 100)
+        local smoke = Instance.new('Smoke', part.EffectAttachment)
+        smoke.Size = 0.01
+        smoke.Opacity = 0.7
+        smoke.RiseVelocity = -4
+        smoke.Enabled = false
+        local sparkles = Instance.new('Sparkles', part)
+        sparkles.SparkleColor = Color3.fromRGB(12, 34, 56)
+        sparkles.TimeScale = 0.25
+        print('effects-created', fire:IsA('Fire'), smoke:IsA('Smoke'), typeof(fire.Size), typeof(smoke.Size))
+        """
+};
+effectProject.Scripts.Add(effectScript);
+effectRuntime.Run(effectScript.Id);
+var fireEffect = effectPart.Children.Single(node => node.Type == "Fire");
+var smokeEffect = effectAttachment.Children.Single(node => node.Type == "Smoke");
+var sparklesEffect = effectPart.Children.Single(node => node.Type == "Sparkles");
+if (!effectOutput.Contains("effects-created\ttrue\ttrue\tnumber\tnumber")
+    || fireEffect.EffectSize != 30 || fireEffect.Heat != -12 || fireEffect.TimeScale != .5f
+    || fireEffect.Color != "#FF5000" || fireEffect.SecondaryColor != "#FFFF64"
+    || smokeEffect.EffectSize != .1f || smokeEffect.Opacity != .7f || smokeEffect.RiseVelocity != -4 || smokeEffect.Enabled
+    || sparklesEffect.Color != "#0C2238" || sparklesEffect.TimeScale != .25f)
+    throw new Exception("Fire, Smoke, or Sparkles Lua X properties failed: " + string.Join(" | ", effectOutput));
+var sparkleAliasScript = new GameScript { Source = "workspace.EffectPart.Sparkles.Color = Color3.fromRGB(22, 33, 44)" };
+effectProject.Scripts.Add(sparkleAliasScript);
+effectRuntime.Run(sparkleAliasScript.Id);
+if (sparklesEffect.Color != "#16212C") throw new Exception("Sparkles Color alias did not update SparkleColor.");
+var effectJson = JsonSerializer.Serialize(effectProject, GameProjectStore.JsonOptions);
+var restoredEffectProject = JsonSerializer.Deserialize<GameProject>(effectJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("Fire and Smoke project did not deserialize.");
+GameProjectStore.EnsureProject(restoredEffectProject);
+var restoredEffectPart = restoredEffectProject.Workspace.Children.Single(node => node.Id == effectPart.Id);
+if (restoredEffectPart.Children.Single(node => node.Type == "Fire").EffectSize != 30
+    || restoredEffectPart.Children.Single(node => node.Type == "Attachment").Children.Single(node => node.Type == "Smoke").RiseVelocity != -4
+    || restoredEffectPart.Children.Single(node => node.Type == "Sparkles").Color != "#16212C")
+    throw new Exception("Fire, Smoke, or Sparkles did not persist.");
 
 Console.WriteLine("Object and runtime smoke passed.");

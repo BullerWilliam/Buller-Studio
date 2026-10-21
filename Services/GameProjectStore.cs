@@ -317,6 +317,15 @@ public static class GameProjectStore
             node.OutlineTransparency = float.IsFinite(node.OutlineTransparency) ? Math.Clamp(node.OutlineTransparency, 0, 1) : 0;
             node.Brightness = float.IsFinite(node.Brightness) ? Math.Clamp(node.Brightness, 0, 8) : 1;
             node.Range = float.IsFinite(node.Range) ? Math.Clamp(node.Range, 1, 1000) : 16;
+            node.SecondaryColor ??= "#FFE69A";
+            node.EffectSize = float.IsFinite(node.EffectSize) ? Math.Clamp(node.EffectSize, node.Type == "Fire" ? 2 : .1f, node.Type == "Fire" ? 30 : 100) : node.Type == "Fire" ? 5 : 1;
+            node.Heat = float.IsFinite(node.Heat) ? Math.Clamp(node.Heat, -25, 25) : 9;
+            node.RiseVelocity = float.IsFinite(node.RiseVelocity) ? Math.Clamp(node.RiseVelocity, -25, 25) : 1;
+            node.Opacity = float.IsFinite(node.Opacity) ? Math.Clamp(node.Opacity, 0, 1) : .5f;
+            node.TimeScale = float.IsFinite(node.TimeScale) ? Math.Clamp(node.TimeScale, 0, 1) : 1;
+            node.BlastRadius = float.IsFinite(node.BlastRadius) ? Math.Clamp(node.BlastRadius, 0, 100) : 10;
+            node.BlastPressure = float.IsFinite(node.BlastPressure) ? Math.Clamp(node.BlastPressure, 0, 1000000) : 500000;
+            node.DestroyJointRadiusPercent = float.IsFinite(node.DestroyJointRadiusPercent) ? Math.Clamp(node.DestroyJointRadiusPercent, 0, 1) : 1;
             node.Angle = float.IsFinite(node.Angle) ? Math.Clamp(node.Angle, 1, 175) : 45;
             node.ActionText ??= "Interact";
             node.ObjectText ??= string.Empty;
@@ -583,12 +592,18 @@ public static class GameProjectStore
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
         if (node.Type is "Decal" or "Texture")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
+        if (SceneNodeTypes.IsParticleEffect(node))
+            return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Attachment") && node.Children.Count == 0;
         if (node.Type is "ProximityPrompt" or "ClickDetector")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type == "Sound")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
         if (node.Type == "Highlight")
             return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Model") && node.Children.Count == 0;
+        if (node.Type == "ForceField")
+            return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Model") && node.Children.Count == 0;
+        if (node.Type == "Explosion")
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
         if (node.Type == "WeldConstraint")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
         if (SceneNodeTypes.IsLight(node))

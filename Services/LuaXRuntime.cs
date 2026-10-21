@@ -21,12 +21,16 @@ public sealed class LuaXRuntime
     private readonly Dictionary<string, List<ScriptCallback>> promptTriggeredCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> clickDetectorCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> humanoidDiedCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<ScriptCallback>> explosionHitCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> valueChangedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<BindableConnection>> bindableEventCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ScriptCallback> bindableFunctionCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<Coroutine, Stack<BindableInvocationScope>> bindableInvocationScopes = new();
     private readonly Dictionary<string, bool> humanoidWasAlive = new(StringComparer.Ordinal);
     private readonly HashSet<string> activeContacts = new(StringComparer.Ordinal);
+    private readonly HashSet<string> detonatedExplosions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, float> activeExplosions = new(StringComparer.Ordinal);
+    private readonly List<DebrisItem> debrisItems = [];
     private readonly List<ScriptExecution> activeScripts = [];
     private readonly List<ScheduledTask> scheduledTasks = [];
     private readonly Queue<string> pendingScriptStarts = new();
@@ -56,6 +60,11 @@ public sealed class LuaXRuntime
         }
     }
     private sealed record ScriptExecution(GameScript GameScript, Coroutine Coroutine, bool ReportFinished, string? CallbackName = null);
+    private sealed class DebrisItem(SceneNode node, float remaining)
+    {
+        public SceneNode Node { get; } = node;
+        public float Remaining { get; set; } = remaining;
+    }
     private sealed class ScheduledTask(GameScript owner, DynValue handle, DynValue[] arguments, float remaining, bool deferred)
     {
         public GameScript Owner { get; } = owner;
@@ -68,7 +77,7 @@ public sealed class LuaXRuntime
     {
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue",
-        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam",
         "Sky", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"
     };
@@ -82,7 +91,7 @@ public sealed class LuaXRuntime
     }
 
     public IReadOnlyCollection<SceneNode> Parts => GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
-    public bool HasPendingScripts => activeScripts.Count > 0 || pendingScriptStarts.Count > 0 || scheduledTasks.Count > 0;
+    public bool HasPendingScripts => activeScripts.Count > 0 || pendingScriptStarts.Count > 0 || scheduledTasks.Count > 0 || activeExplosions.Count > 0 || debrisItems.Count > 0;
 
     public void RunAll()
     {
@@ -90,6 +99,10 @@ public sealed class LuaXRuntime
             foreach (var connection in callbacks) connection.Disconnect();
         bindableEventCallbacks.Clear();
         bindableFunctionCallbacks.Clear();
+        explosionHitCallbacks.Clear();
+        detonatedExplosions.Clear();
+        activeExplosions.Clear();
+        debrisItems.Clear();
         bindableInvocationScopes.Clear();
         activeScripts.Clear();
         scheduledTasks.Clear();
@@ -105,6 +118,7 @@ public sealed class LuaXRuntime
         }
         StartQueuedScripts();
         ResumePendingScripts(.05f);
+        SynchronizeInstances();
     }
 
     public void Run(string scriptId)
@@ -122,6 +136,8 @@ public sealed class LuaXRuntime
         ResumePendingScripts(elapsed);
         RunDelayedTasks(elapsed);
         StartQueuedScripts();
+        AdvanceExplosions(elapsed);
+        AdvanceDebris(elapsed);
     }
 
     private SceneNode? FindScriptNode(string id) =>
@@ -239,6 +255,8 @@ public sealed class LuaXRuntime
         ResumePendingScripts(elapsed);
         RunDelayedTasks(elapsed);
         SynchronizeInstances();
+        AdvanceExplosions(elapsed);
+        AdvanceDebris(elapsed);
         StartQueuedScripts();
         var nodes = Parts.Where(node => node.CanTouch).ToDictionary(node => node.Id, StringComparer.Ordinal);
         var touchingNow = new HashSet<string>(StringComparer.Ordinal);
@@ -315,6 +333,11 @@ public sealed class LuaXRuntime
         var serverScriptService = instances[project.ServerScriptService.Id];
         var serverStorage = instances[project.ServerStorage.Id];
         var gui = instances[project.Gui.Id];
+        var debris = new Table(script);
+        runtimeTypeTags.Add(debris, new LuaXTypeTag("Debris"));
+        debris.Set("Name", DynValue.NewString("Debris"));
+        debris.Set("ClassName", DynValue.NewString("Debris"));
+        debris.Set("AddItem", DynValue.NewCallback((_, args) => AddDebrisItem(debris, args)));
         game.Set("Workspace", DynValue.NewTable(workspace));
         game.Set("Players", DynValue.NewTable(players));
         game.Set("Lighting", DynValue.NewTable(lighting));
@@ -322,6 +345,7 @@ public sealed class LuaXRuntime
         game.Set("ServerScriptService", DynValue.NewTable(serverScriptService));
         game.Set("ServerStorage", DynValue.NewTable(serverStorage));
         game.Set("Gui", DynValue.NewTable(gui));
+        game.Set("Debris", DynValue.NewTable(debris));
         game.Set("GetService", DynValue.NewCallback((_, args) =>
         {
             var serviceName = args.Count > 1 ? args[1].CastToString() : args.Count == 1 ? args[0].CastToString() : null;
@@ -334,6 +358,7 @@ public sealed class LuaXRuntime
                 "ServerScriptService" => DynValue.NewTable(serverScriptService),
                 "ServerStorage" => DynValue.NewTable(serverStorage),
                 "Gui" => DynValue.NewTable(gui),
+                "Debris" => DynValue.NewTable(debris),
                 _ => DynValue.Nil
             };
         }));
@@ -783,10 +808,12 @@ public sealed class LuaXRuntime
         instance.Set("Archivable", DynValue.NewBoolean(node.Archivable));
         instance.Set("Id", DynValue.NewString(node.Id));
         instance.Set("ClassName", DynValue.NewString(node.Type));
-        instance.Set("Position", IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Position));
+        instance.Set("Position", IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Type == "Model" ? SceneModelService.GetPivot(node) : node.Position));
         instance.Set("Rotation", VectorValue(node.Rotation));
-        instance.Set("Size", IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size));
+        instance.Set("Size", node.Type == "Sparkles" ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size));
         instance.Set("Color", ColorValue(node.Color));
+        instance.Set("SparkleColor", ColorValue(node.Color));
+        instance.Set("SecondaryColor", ColorValue(node.SecondaryColor));
         instance.Set("FillColor", ColorValue(node.FillColor));
         instance.Set("OutlineColor", ColorValue(node.OutlineColor));
         instance.Set("StartColor", ColorValue(node.StartColor));
@@ -813,6 +840,13 @@ public sealed class LuaXRuntime
         instance.Set("Enabled", DynValue.NewBoolean(node.Enabled));
         instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
         instance.Set("Range", DynValue.NewNumber(node.Range));
+        instance.Set("Heat", DynValue.NewNumber(node.Heat));
+        instance.Set("RiseVelocity", DynValue.NewNumber(node.RiseVelocity));
+        instance.Set("Opacity", DynValue.NewNumber(node.Opacity));
+        instance.Set("TimeScale", DynValue.NewNumber(node.TimeScale));
+        instance.Set("BlastRadius", DynValue.NewNumber(node.BlastRadius));
+        instance.Set("BlastPressure", DynValue.NewNumber(node.BlastPressure));
+        instance.Set("DestroyJointRadiusPercent", DynValue.NewNumber(node.DestroyJointRadiusPercent));
         instance.Set("Angle", DynValue.NewNumber(node.Angle));
         instance.Set("ActionText", DynValue.NewString(node.ActionText));
         instance.Set("ObjectText", DynValue.NewString(node.ObjectText));
@@ -940,6 +974,7 @@ public sealed class LuaXRuntime
         }
         if (node.Type == "Humanoid")
         {
+            instance.Set("TakeDamage", DynValue.NewCallback((_, args) => TakeHumanoidDamage(node, args)));
             var died = new Table(script);
             died.Set("Connect", DynValue.NewCallback((_, args) =>
             {
@@ -950,6 +985,20 @@ public sealed class LuaXRuntime
                 return DynValue.Nil;
             }));
             instance.Set("Died", DynValue.NewTable(died));
+        }
+        if (node.Type == "Explosion")
+        {
+            var hit = new Table(script);
+            runtimeTypeTags.Add(hit, new LuaXTypeTag("RBXScriptSignal"));
+            hit.Set("Connect", DynValue.NewCallback((_, args) =>
+            {
+                var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, hit) ? 1 : 0;
+                if (currentGameScript is null || args.Count <= index || args[index].Type != DataType.Function) return DynValue.Nil;
+                if (!explosionHitCallbacks.TryGetValue(node.Id, out var callbacks)) explosionHitCallbacks[node.Id] = callbacks = [];
+                callbacks.Add(new ScriptCallback(currentGameScript, args[index], "Hit"));
+                return DynValue.Nil;
+            }));
+            instance.Set("Hit", DynValue.NewTable(hit));
         }
         var touched = new Table(script);
         touched.Set("Connect", DynValue.NewCallback((_, args) => RegisterTouch(node.Id, args[1])));
@@ -1144,6 +1193,114 @@ public sealed class LuaXRuntime
         }
     }
 
+    private DynValue TakeHumanoidDamage(SceneNode humanoid, CallbackArguments args)
+    {
+        var index = GetInstanceMethodArgumentIndex(humanoid, args);
+        if (args.Count <= index || args[index].Type != DataType.Number || !double.IsFinite(args[index].Number)) return DynValue.Nil;
+        SynchronizeInstances();
+        if (HasProtectingForceField(humanoid)) return DynValue.Nil;
+        var nextHealth = Math.Clamp((double)humanoid.Health - args[index].Number, 0, humanoid.MaxHealth);
+        SetPropertyValue(humanoid, "Health", DynValue.NewNumber(nextHealth));
+        UpdateHumanoidDeaths();
+        return DynValue.Nil;
+    }
+
+    private bool HasProtectingForceField(SceneNode humanoid)
+    {
+        var parent = FindParentNode(humanoid);
+        if (parent is null) return false;
+        var rootPart = parent.Children.FirstOrDefault(child => child.Name == "HumanoidRootPart" && SceneNodeTypes.IsBasePart(child));
+        if (rootPart?.Children.Any(child => child.Type == "ForceField") == true) return true;
+        for (var ancestor = parent; ancestor is not null && !ReferenceEquals(ancestor, project.Workspace); ancestor = FindParentNode(ancestor))
+            if (ancestor.Children.Any(child => child.Type == "ForceField")) return true;
+        return false;
+    }
+
+    private void ProcessExplosions()
+    {
+        foreach (var explosion in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "Explosion").ToArray())
+        {
+            if (!detonatedExplosions.Add(explosion.Id)) continue;
+            explosion.ExplosionAge = 0;
+            activeExplosions[explosion.Id] = 0;
+            propertyChanged?.Invoke(explosion, "ExplosionAge", DynValue.NewNumber(0));
+            var center = new Vector3(explosion.Position[0], explosion.Position[1], explosion.Position[2]);
+            var hitParts = new List<(SceneNode Part, float Distance, float EdgeDistance)>();
+            foreach (var part in Parts)
+            {
+                var position = new Vector3(part.Position[0], part.Position[1], part.Position[2]);
+                var distance = Vector3.Distance(center, position);
+                var halfDiagonal = new Vector3(part.Size[0], part.Size[1], part.Size[2]).Length() * .5f;
+                var edgeDistance = Math.Max(0, distance - halfDiagonal);
+                if (edgeDistance > explosion.BlastRadius) continue;
+                hitParts.Add((part, distance, edgeDistance));
+                if (explosionHitCallbacks.TryGetValue(explosion.Id, out var callbacks) && instances.TryGetValue(part.Id, out var partInstance))
+                    foreach (var callback in callbacks.ToArray())
+                        scheduledTasks.Add(new ScheduledTask(callback.GameScript, script.CreateCoroutine(callback.Function), [DynValue.NewTable(partInstance), DynValue.NewNumber(distance)], 0, true));
+                if (part.Anchored || explosion.BlastPressure <= 0) continue;
+                var direction = distance > .00001f ? Vector3.Normalize(position - center) : Vector3.UnitY;
+                var strength = Math.Clamp(explosion.BlastPressure / 500000f * 60 * (1 - edgeDistance / Math.Max(explosion.BlastRadius, .001f)), 0, 120);
+                part.Velocity = [part.Velocity[0] + direction.X * strength, part.Velocity[1] + direction.Y * strength, part.Velocity[2] + direction.Z * strength];
+                if (instances.TryGetValue(part.Id, out var partTable))
+                {
+                    partTable.Set("Velocity", VectorValue(part.Velocity));
+                    partTable.Set("AssemblyLinearVelocity", VectorValue(part.Velocity));
+                }
+                propertyChanged?.Invoke(part, "Velocity", VectorValue(part.Velocity));
+            }
+            var jointRadius = explosion.BlastRadius * explosion.DestroyJointRadiusPercent;
+            if (jointRadius <= 0) continue;
+            var breakableParts = hitParts.Where(hit => hit.EdgeDistance <= jointRadius).Select(hit => hit.Part.Id).ToHashSet(StringComparer.Ordinal);
+            foreach (var weld in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "WeldConstraint" && node.Enabled))
+            {
+                if (!breakableParts.Contains(weld.Part0) && !breakableParts.Contains(weld.Part1)) continue;
+                var first = FindNode(weld.Part0);
+                var second = FindNode(weld.Part1);
+                if (first is not null && second is not null && IsPartForceFieldProtected(first) && IsPartForceFieldProtected(second)) continue;
+                weld.Enabled = false;
+                if (instances.TryGetValue(weld.Id, out var weldInstance)) weldInstance.Set("Enabled", DynValue.NewBoolean(false));
+                propertyChanged?.Invoke(weld, "Enabled", DynValue.NewBoolean(false));
+            }
+            foreach (var humanoid in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "Humanoid" && node.Health > 0))
+            {
+                var model = FindParentNode(humanoid);
+                if (model is not { Type: "Model" } || HasProtectingForceField(humanoid)) continue;
+                var modelPartIds = GameProjectStore.Flatten(model.Children).Where(SceneNodeTypes.IsBasePart).Select(part => part.Id).ToHashSet(StringComparer.Ordinal);
+                if (!hitParts.Any(hit => hit.EdgeDistance <= jointRadius && modelPartIds.Contains(hit.Part.Id))) continue;
+                humanoid.Health = 0;
+                if (instances.TryGetValue(humanoid.Id, out var humanoidInstance)) humanoidInstance.Set("Health", DynValue.NewNumber(0));
+                propertyChanged?.Invoke(humanoid, "Health", DynValue.NewNumber(0));
+            }
+            UpdateHumanoidDeaths();
+        }
+    }
+
+    private bool IsPartForceFieldProtected(SceneNode part)
+    {
+        if (part.Children.Any(child => child.Type == "ForceField")) return true;
+        for (var ancestor = FindParentNode(part); ancestor is not null && !ReferenceEquals(ancestor, project.Workspace); ancestor = FindParentNode(ancestor))
+            if (ancestor.Children.Any(child => child.Type == "ForceField")) return true;
+        return false;
+    }
+
+    private void AdvanceExplosions(float elapsedSeconds)
+    {
+        foreach (var (id, age) in activeExplosions.ToArray())
+        {
+            if (FindNode(id) is not { Type: "Explosion" } explosion) { activeExplosions.Remove(id); continue; }
+            var nextAge = age + elapsedSeconds;
+            if (nextAge >= .5f)
+            {
+                activeExplosions.Remove(id);
+                DestroyInstance(explosion);
+                continue;
+            }
+            explosion.ExplosionAge = nextAge;
+            activeExplosions[id] = nextAge;
+            propertyChanged?.Invoke(explosion, "ExplosionAge", DynValue.NewNumber(nextAge));
+        }
+    }
+
     public void UpdateGuiTextInput(string nodeId, string value)
     {
         var node = FindNode(nodeId);
@@ -1257,6 +1414,9 @@ public sealed class LuaXRuntime
         if (SceneNodeTypes.IsBasePart(node)) node.Position = [0, 1, 0];
         if (className == "SpawnLocation") { node.Size = [6, 1, 6]; node.Position = [0, .5f, 0]; node.Color = "#72BF9D"; node.Material = "Metal"; }
         if (className == "Seat") { node.Size = [2, 1, 2]; node.Position = [0, .5f, 0]; node.Color = "#596B89"; node.Material = "Metal"; }
+        if (className == "Fire") { node.Color = "#FF6A00"; node.EffectSize = 5; }
+        if (className == "Smoke") node.Color = "#B0B0B0";
+        if (className == "Sparkles") node.Color = "#FFFFFF";
         createdNodes[node.Id] = node;
         var instance = CreateInstance(node);
         instances[node.Id] = instance;
@@ -1311,6 +1471,38 @@ public sealed class LuaXRuntime
         return DynValue.NewTable(instances[clone.Id]);
     }
 
+    private DynValue AddDebrisItem(Table debris, CallbackArguments args)
+    {
+        var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, debris) ? 1 : 0;
+        if (args.Count <= index || ReadNodeArgument(args[index]) is not { } node || !instances.ContainsKey(node.Id)
+            || node.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return DynValue.Nil;
+        var lifetime = args.Count > index + 1 && args[index + 1].Type == DataType.Number ? args[index + 1].Number : 10;
+        if (!double.IsFinite(lifetime)) return DynValue.Nil;
+        if (lifetime <= 0)
+        {
+            DestroyInstance(node);
+            return DynValue.Nil;
+        }
+        if (debrisItems.Count >= 1000)
+        {
+            var oldest = debrisItems[0];
+            debrisItems.RemoveAt(0);
+            DestroyInstance(oldest.Node);
+        }
+        if (instances.ContainsKey(node.Id)) debrisItems.Add(new DebrisItem(node, (float)Math.Min(lifetime, float.MaxValue)));
+        return DynValue.Nil;
+    }
+
+    private void AdvanceDebris(float elapsed)
+    {
+        if (debrisItems.Count == 0) return;
+        foreach (var item in debrisItems) item.Remaining -= elapsed;
+        var expired = debrisItems.Where(item => item.Remaining <= 0).Select(item => item.Node).ToArray();
+        debrisItems.RemoveAll(item => item.Remaining <= 0);
+        foreach (var node in expired)
+            if (instances.ContainsKey(node.Id)) DestroyInstance(node);
+    }
+
     private DynValue DestroyInstance(SceneNode node)
     {
         if (node.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" || !instances.ContainsKey(node.Id)) return DynValue.Nil;
@@ -1333,6 +1525,8 @@ public sealed class LuaXRuntime
             promptTriggeredCallbacks.Remove(removed.Id);
             clickDetectorCallbacks.Remove(removed.Id);
             humanoidDiedCallbacks.Remove(removed.Id);
+            explosionHitCallbacks.Remove(removed.Id);
+            activeExplosions.Remove(removed.Id);
             valueChangedCallbacks.Remove(removed.Id);
             if (bindableEventCallbacks.Remove(removed.Id, out var bindableConnections))
                 foreach (var connection in bindableConnections) connection.Disconnect();
@@ -1342,6 +1536,7 @@ public sealed class LuaXRuntime
             project.Scripts.RemoveAll(script => script.Id == removed.Id);
         }
         var removedIds = removedNodes.Select(removed => removed.Id).ToHashSet(StringComparer.Ordinal);
+        debrisItems.RemoveAll(item => removedIds.Contains(item.Node.Id));
         foreach (var objectValue in KnownNodes().Where(item => item.Type == "ObjectValue" && removedIds.Contains(item.ObjectValueId)))
         {
             objectValue.ObjectValueId = string.Empty;
@@ -1557,6 +1752,12 @@ public sealed class LuaXRuntime
 
     private void WriteInstanceProperty(SceneNode node, Table instance, string normalizedProperty)
     {
+        if (node.Type == "Sparkles" && normalizedProperty is "color" or "sparklecolor")
+        {
+            instance.Set("Color", ColorValue(node.Color));
+            instance.Set("SparkleColor", ColorValue(node.Color));
+            return;
+        }
         if (normalizedProperty is "velocity" or "assemblylinearvelocity")
         {
             instance.Set("Velocity", VectorValue(node.Velocity));
@@ -1578,6 +1779,8 @@ public sealed class LuaXRuntime
             "rotation" => "Rotation",
             "size" => "Size",
             "color" => "Color",
+            "sparklecolor" => "SparkleColor",
+            "secondarycolor" => "SecondaryColor",
             "fillcolor" => "FillColor",
             "outlinecolor" => "OutlineColor",
             "startcolor" => "StartColor",
@@ -1604,6 +1807,13 @@ public sealed class LuaXRuntime
             "enabled" => "Enabled",
             "brightness" => "Brightness",
             "range" => "Range",
+            "heat" => "Heat",
+            "risevelocity" => "RiseVelocity",
+            "opacity" => "Opacity",
+            "timescale" => "TimeScale",
+            "blastradius" => "BlastRadius",
+            "blastpressure" => "BlastPressure",
+            "destroyjointradiuspercent" => "DestroyJointRadiusPercent",
             "angle" => "Angle",
             "actiontext" => "ActionText",
             "objecttext" => "ObjectText",
@@ -1713,9 +1923,18 @@ public sealed class LuaXRuntime
             switch (normalized)
             {
                 case "position": SetPositionProperty(node, value); break;
-                case "rotation": node.Rotation = ReadVector(value, node.Rotation); break;
+                case "rotation":
+                    if (node.Type == "Model")
+                    {
+                        var pending = CapturePendingModelDescendantWrites(node);
+                        if (SceneModelService.RotateTo(node, ReadVector(value, node.Rotation))) UpdateModelDescendantInstances(node, true, pending, (child, propertyName) => propertyChanged?.Invoke(child, propertyName, GetPropertyValue(child, propertyName)));
+                    }
+                    else node.Rotation = ReadVector(value, node.Rotation);
+                    break;
                 case "size": SetSizeProperty(node, value); break;
                 case "color": node.Color = ReadColor(value, node.Color); break;
+                case "sparklecolor": if (node.Type != "Sparkles" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.Color = ReadColor(value, node.Color); break;
+                case "secondarycolor": if (node.Type != "Fire" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.SecondaryColor = ReadColor(value, node.SecondaryColor); break;
                 case "fillcolor": if (node.Type != "Highlight") return DynValue.Nil; node.FillColor = ReadColor(value, node.FillColor); break;
                 case "outlinecolor": if (node.Type != "Highlight") return DynValue.Nil; node.OutlineColor = ReadColor(value, node.OutlineColor); break;
                 case "startcolor": if (node.Type != "UIGradient" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.StartColor = ReadColor(value, node.StartColor); break;
@@ -1800,6 +2019,13 @@ public sealed class LuaXRuntime
                     break;
                 case "brightness": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Brightness = (float)Math.Clamp(value.Number, 0, 8); break;
                 case "range": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Range = (float)Math.Clamp(value.Number, 1, 1000); break;
+                case "heat": if (node.Type != "Fire" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Heat = (float)Math.Clamp(value.Number, -25, 25); break;
+                case "risevelocity": if (node.Type != "Smoke" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.RiseVelocity = (float)Math.Clamp(value.Number, -25, 25); break;
+                case "opacity": if (node.Type != "Smoke" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Opacity = (float)Math.Clamp(value.Number, 0, 1); break;
+                case "timescale": if (!SceneNodeTypes.IsParticleEffect(node) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.TimeScale = (float)Math.Clamp(value.Number, 0, 1); break;
+                case "blastradius": if (node.Type != "Explosion" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.BlastRadius = (float)Math.Clamp(value.Number, 0, 100); break;
+                case "blastpressure": if (node.Type != "Explosion" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.BlastPressure = (float)Math.Clamp(value.Number, 0, 1000000); break;
+                case "destroyjointradiuspercent": if (node.Type != "Explosion" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.DestroyJointRadiusPercent = (float)Math.Clamp(value.Number, 0, 1); break;
                 case "angle": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Angle = (float)Math.Clamp(value.Number, 1, 175); break;
                 case "actiontext": if (node.Type != "ProximityPrompt") return DynValue.Nil; node.ActionText = value.CastToString() ?? node.ActionText; break;
                 case "objecttext": if (node.Type != "ProximityPrompt") return DynValue.Nil; node.ObjectText = value.CastToString() ?? node.ObjectText; break;
@@ -1978,6 +2204,13 @@ public sealed class LuaXRuntime
 
     private void SetPositionProperty(SceneNode node, DynValue value)
     {
+        if (node.Type == "Model")
+        {
+            var pending = CapturePendingModelDescendantWrites(node);
+            if (SceneModelService.MoveTo(node, ReadVector(value, SceneModelService.GetPivot(node))))
+                UpdateModelDescendantInstances(node, false, pending, (child, propertyName) => propertyChanged?.Invoke(child, propertyName, GetPropertyValue(child, propertyName)));
+            return;
+        }
         if (IsGuiObject(node) && TryReadUDim2(value, out var scale, out var offset))
         {
             node.PositionScale = scale;
@@ -1988,8 +2221,51 @@ public sealed class LuaXRuntime
         if (IsGuiObject(node)) node.PositionScale = [0, 0];
     }
 
+    private Dictionary<string, (bool Position, bool Rotation)> CapturePendingModelDescendantWrites(SceneNode model)
+    {
+        var pending = new Dictionary<string, (bool Position, bool Rotation)>(StringComparer.Ordinal);
+        foreach (var child in GameProjectStore.Flatten(model.Children))
+        {
+            if (!instances.TryGetValue(child.Id, out var instance)) continue;
+            var positionValue = instance.Get("Position");
+            var positionChanged = IsGuiObject(child)
+                ? TryReadUDim2(positionValue, out var scale, out var offset)
+                    && (!child.PositionScale.SequenceEqual(scale) || !child.Position.Take(2).SequenceEqual(offset))
+                : positionValue.Type == DataType.Table
+                    && !ReadVector(positionValue, child.Type == "Model" ? SceneModelService.GetPivot(child) : child.Position)
+                        .SequenceEqual(child.Type == "Model" ? SceneModelService.GetPivot(child) : child.Position);
+            var rotationValue = instance.Get("Rotation");
+            var rotationChanged = rotationValue.Type == DataType.Table && !ReadVector(rotationValue, child.Rotation).SequenceEqual(child.Rotation);
+            pending[child.Id] = (positionChanged, rotationChanged);
+        }
+        return pending;
+    }
+
+    private void UpdateModelDescendantInstances(SceneNode model, bool rotated, Dictionary<string, (bool Position, bool Rotation)> pending, Action<SceneNode, string> changed)
+    {
+        foreach (var child in GameProjectStore.Flatten(model.Children))
+        {
+            if (child.Type != "Model" && !SceneNodeTypes.IsBasePart(child) && child.Type != "ImageLabel") continue;
+            if (instances.TryGetValue(child.Id, out var childInstance))
+            {
+                pending.TryGetValue(child.Id, out var pendingWrite);
+                if (!pendingWrite.Position) childInstance.Set("Position", IsGuiObject(child) ? CreateUDim2Value(child.PositionScale, child.Position) : VectorValue(child.Type == "Model" ? SceneModelService.GetPivot(child) : child.Position));
+                if (rotated && !pendingWrite.Rotation) childInstance.Set("Rotation", VectorValue(child.Rotation));
+            }
+            changed(child, "Position");
+            if (rotated) changed(child, "Rotation");
+        }
+    }
+
     private void SetSizeProperty(SceneNode node, DynValue value)
     {
+        if (node.Type == "Sparkles") return;
+        if (SceneNodeTypes.IsSizedParticleEffect(node))
+        {
+            if (value.Type == DataType.Number && double.IsFinite(value.Number))
+                node.EffectSize = (float)Math.Clamp(value.Number, node.Type == "Fire" ? 2 : .1f, node.Type == "Fire" ? 30 : 100);
+            return;
+        }
         if (IsGuiObject(node) && TryReadUDim2(value, out var scale, out var offset))
         {
             node.SizeScale = scale;
@@ -2056,10 +2332,12 @@ public sealed class LuaXRuntime
         {
         "id" => DynValue.NewString(node.Id),
         "classname" or "type" => DynValue.NewString(node.Type),
-        "position" => IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Position),
+        "position" => IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Type == "Model" ? SceneModelService.GetPivot(node) : node.Position),
         "rotation" => VectorValue(node.Rotation),
-        "size" => IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
+        "size" => node.Type == "Sparkles" ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
         "color" => ColorValue(node.Color),
+        "sparklecolor" => node.Type == "Sparkles" ? ColorValue(node.Color) : DynValue.Nil,
+        "secondarycolor" => node.Type == "Fire" ? ColorValue(node.SecondaryColor) : DynValue.Nil,
         "fillcolor" => ColorValue(node.FillColor),
         "outlinecolor" => ColorValue(node.OutlineColor),
         "startcolor" => node.Type == "UIGradient" ? ColorValue(node.StartColor) : DynValue.Nil,
@@ -2086,6 +2364,13 @@ public sealed class LuaXRuntime
         "enabled" => DynValue.NewBoolean(node.Enabled),
         "brightness" => DynValue.NewNumber(node.Brightness),
         "range" => DynValue.NewNumber(node.Range),
+        "heat" => node.Type == "Fire" ? DynValue.NewNumber(node.Heat) : DynValue.Nil,
+        "risevelocity" => node.Type == "Smoke" ? DynValue.NewNumber(node.RiseVelocity) : DynValue.Nil,
+        "opacity" => node.Type == "Smoke" ? DynValue.NewNumber(node.Opacity) : DynValue.Nil,
+        "timescale" => SceneNodeTypes.IsParticleEffect(node) ? DynValue.NewNumber(node.TimeScale) : DynValue.Nil,
+        "blastradius" => node.Type == "Explosion" ? DynValue.NewNumber(node.BlastRadius) : DynValue.Nil,
+        "blastpressure" => node.Type == "Explosion" ? DynValue.NewNumber(node.BlastPressure) : DynValue.Nil,
+        "destroyjointradiuspercent" => node.Type == "Explosion" ? DynValue.NewNumber(node.DestroyJointRadiusPercent) : DynValue.Nil,
         "angle" => DynValue.NewNumber(node.Angle),
         "actiontext" => DynValue.NewString(node.ActionText),
         "objecttext" => DynValue.NewString(node.ObjectText),
@@ -2387,7 +2672,17 @@ public sealed class LuaXRuntime
             }
             if (instance.Get("Position").Type == DataType.Table)
             {
-                if (IsGuiObject(node) && TryReadUDim2(instance.Get("Position"), out var positionScale, out var positionOffset))
+                if (node.Type == "Model")
+                {
+                    var position = ReadVector(instance.Get("Position"), SceneModelService.GetPivot(node));
+                    var pending = CapturePendingModelDescendantWrites(node);
+                    if (SceneModelService.MoveTo(node, position))
+                    {
+                        MarkChanged(node, "Position");
+                        UpdateModelDescendantInstances(node, false, pending, MarkChanged);
+                    }
+                }
+                else if (IsGuiObject(node) && TryReadUDim2(instance.Get("Position"), out var positionScale, out var positionOffset))
                 {
                     if (!node.PositionScale.SequenceEqual(positionScale) || !node.Position.Take(2).SequenceEqual(positionOffset))
                     {
@@ -2405,9 +2700,20 @@ public sealed class LuaXRuntime
             if (instance.Get("Rotation").Type == DataType.Table)
             {
                 var rotation = ReadVector(instance.Get("Rotation"), node.Rotation);
-                if (!node.Rotation.SequenceEqual(rotation)) { node.Rotation = rotation; MarkChanged(node, "Rotation"); }
+                if (node.Type == "Model")
+                {
+                    var pending = CapturePendingModelDescendantWrites(node);
+                    if (SceneModelService.RotateTo(node, rotation))
+                    {
+                        MarkChanged(node, "Rotation");
+                        UpdateModelDescendantInstances(node, true, pending, MarkChanged);
+                    }
+                }
+                else if (!node.Rotation.SequenceEqual(rotation)) { node.Rotation = rotation; MarkChanged(node, "Rotation"); }
             }
-            if (instance.Get("Size").Type == DataType.Table)
+            if (SceneNodeTypes.IsSizedParticleEffect(node) && instance.Get("Size").Type == DataType.Number && double.IsFinite(instance.Get("Size").Number))
+                Assign(node, "Size", node.EffectSize, (float)Math.Clamp(instance.Get("Size").Number, node.Type == "Fire" ? 2 : .1f, node.Type == "Fire" ? 30 : 100), value => node.EffectSize = value);
+            else if (instance.Get("Size").Type == DataType.Table && !SceneNodeTypes.IsSizedParticleEffect(node))
             {
                 if (IsGuiObject(node) && TryReadUDim2(instance.Get("Size"), out var sizeScale, out var sizeOffset))
                 {
@@ -2424,7 +2730,16 @@ public sealed class LuaXRuntime
                     if (!node.Size.SequenceEqual(size)) { node.Size = size; MarkChanged(node, "Size"); }
                 }
             }
-            Assign(node, "Color", node.Color, ReadColor(instance.Get("Color"), node.Color), value => node.Color = value);
+            if (node.Type == "Sparkles")
+            {
+                var sparkleColor = ReadColor(instance.Get("SparkleColor"), node.Color);
+                var colorAlias = ReadColor(instance.Get("Color"), node.Color);
+                Assign(node, "SparkleColor", node.Color, sparkleColor != node.Color ? sparkleColor : colorAlias, value => node.Color = value);
+                instance.Set("Color", ColorValue(node.Color));
+                instance.Set("SparkleColor", ColorValue(node.Color));
+            }
+            else Assign(node, "Color", node.Color, ReadColor(instance.Get("Color"), node.Color), value => node.Color = value);
+            if (node.Type == "Fire") Assign(node, "SecondaryColor", node.SecondaryColor, ReadColor(instance.Get("SecondaryColor"), node.SecondaryColor), value => node.SecondaryColor = value);
             if (node.Type == "UIGradient")
             {
                 Assign(node, "StartColor", node.StartColor, ReadColor(instance.Get("StartColor"), node.StartColor), value => node.StartColor = value);
@@ -2487,6 +2802,26 @@ public sealed class LuaXRuntime
                     Assign(node, "GlobalShadows", project.Settings.Shadows, instance.Get("GlobalShadows").Boolean, value => project.Settings.Shadows = value);
             }
             if (instance.Get("Range").Type == DataType.Number && double.IsFinite(instance.Get("Range").Number)) Assign(node, "Range", node.Range, (float)Math.Clamp(instance.Get("Range").Number, 1, 1000), value => node.Range = value);
+            if (SceneNodeTypes.IsParticleEffect(node))
+            {
+                if (instance.Get("TimeScale").Type == DataType.Number && double.IsFinite(instance.Get("TimeScale").Number))
+                    Assign(node, "TimeScale", node.TimeScale, (float)Math.Clamp(instance.Get("TimeScale").Number, 0, 1), value => node.TimeScale = value);
+                if (node.Type == "Fire" && instance.Get("Heat").Type == DataType.Number && double.IsFinite(instance.Get("Heat").Number))
+                    Assign(node, "Heat", node.Heat, (float)Math.Clamp(instance.Get("Heat").Number, -25, 25), value => node.Heat = value);
+                if (node.Type == "Smoke")
+                {
+                    if (instance.Get("RiseVelocity").Type == DataType.Number && double.IsFinite(instance.Get("RiseVelocity").Number))
+                        Assign(node, "RiseVelocity", node.RiseVelocity, (float)Math.Clamp(instance.Get("RiseVelocity").Number, -25, 25), value => node.RiseVelocity = value);
+                    if (instance.Get("Opacity").Type == DataType.Number && double.IsFinite(instance.Get("Opacity").Number))
+                        Assign(node, "Opacity", node.Opacity, (float)Math.Clamp(instance.Get("Opacity").Number, 0, 1), value => node.Opacity = value);
+                }
+            }
+            if (node.Type == "Explosion")
+            {
+                if (instance.Get("BlastRadius").Type == DataType.Number && double.IsFinite(instance.Get("BlastRadius").Number)) Assign(node, "BlastRadius", node.BlastRadius, (float)Math.Clamp(instance.Get("BlastRadius").Number, 0, 100), value => node.BlastRadius = value);
+                if (instance.Get("BlastPressure").Type == DataType.Number && double.IsFinite(instance.Get("BlastPressure").Number)) Assign(node, "BlastPressure", node.BlastPressure, (float)Math.Clamp(instance.Get("BlastPressure").Number, 0, 1000000), value => node.BlastPressure = value);
+                if (instance.Get("DestroyJointRadiusPercent").Type == DataType.Number && double.IsFinite(instance.Get("DestroyJointRadiusPercent").Number)) Assign(node, "DestroyJointRadiusPercent", node.DestroyJointRadiusPercent, (float)Math.Clamp(instance.Get("DestroyJointRadiusPercent").Number, 0, 1), value => node.DestroyJointRadiusPercent = value);
+            }
             if (instance.Get("Angle").Type == DataType.Number && double.IsFinite(instance.Get("Angle").Number)) Assign(node, "Angle", node.Angle, (float)Math.Clamp(instance.Get("Angle").Number, 1, 175), value => node.Angle = value);
             if (node.Type == "ProximityPrompt")
             {
@@ -2693,6 +3028,7 @@ public sealed class LuaXRuntime
             if (key.Property == "Value") FireValueChanged(node, currentValue);
         }
         UpdateHumanoidDeaths();
+        ProcessExplosions();
     }
 
     private DynValue CreateLookAtRotation(CallbackArguments args)

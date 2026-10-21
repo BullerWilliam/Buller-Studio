@@ -33,6 +33,7 @@ public sealed class SceneNode
     public string Name { get; set; } = "Folder";
     public bool Archivable { get; set; } = true;
     public float[] Position { get; set; } = [0, 0, 0];
+    public bool HasModelPivot { get; set; }
     public float[] PositionScale { get; set; } = [0, 0];
     public float[] PaddingLeft { get; set; } = [0, 0];
     public float[] PaddingTop { get; set; } = [0, 0];
@@ -64,6 +65,16 @@ public sealed class SceneNode
     public string Ambient { get; set; } = "#808080";
     public float ClockTime { get; set; } = 14;
     public float Range { get; set; } = 16;
+    public string SecondaryColor { get; set; } = "#FFE69A";
+    public float EffectSize { get; set; } = 1;
+    public float Heat { get; set; } = 9;
+    public float RiseVelocity { get; set; } = 1;
+    public float Opacity { get; set; } = .5f;
+    public float TimeScale { get; set; } = 1;
+    public float BlastRadius { get; set; } = 10;
+    public float BlastPressure { get; set; } = 500000;
+    public float DestroyJointRadiusPercent { get; set; } = 1;
+    [JsonIgnore] public float ExplosionAge { get; set; } = -1;
     public float Angle { get; set; } = 45;
     public string ActionText { get; set; } = "Interact";
     public string ObjectText { get; set; } = string.Empty;

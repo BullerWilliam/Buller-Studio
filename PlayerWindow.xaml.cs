@@ -27,7 +27,7 @@ public partial class PlayerWindow : Window
     private bool jumpRequested;
     private bool promptRequested;
 
-    public PlayerWindow(GameProject project)
+    public PlayerWindow(GameProject project, string? startupScriptId = null, Action<string>? scriptOutput = null)
     {
         InitializeComponent();
         GameGuiCanvas.SizeChanged += (_, _) => RefreshGameGui();
@@ -62,9 +62,14 @@ public partial class PlayerWindow : Window
                 if (node.Type == "TextBox" && property == "Text") UpdateGameTextBox(node);
                 else RefreshGameGui();
             }),
-            message => Dispatcher.Invoke(() => Title = $"{project.Name} — {message}"));
+            message => Dispatcher.Invoke(() =>
+            {
+                Title = $"{project.Name} — {message}";
+                scriptOutput?.Invoke(message);
+            }));
         runtime = gameRuntime;
-        gameRuntime.RunAll();
+        if (startupScriptId is null) gameRuntime.RunAll();
+        else gameRuntime.Run(startupScriptId);
         physics = new PhysicsSimulationService(project, node =>
         {
             runtime?.SynchronizeExternalProperty(node, "Position");
@@ -118,6 +123,7 @@ public partial class PlayerWindow : Window
             foreach (var node in character.UpdatePose()) SyncCharacterNode(node);
         }
         runtime?.UpdateTouched(elapsed);
+        renderer.UpdateParticleEffects(elapsed);
         var nearbyPrompt = character is null ? null : ProximityPromptService.FindNearest(project, character.Root);
         PromptBorder.Visibility = nearbyPrompt is null ? Visibility.Collapsed : Visibility.Visible;
         if (nearbyPrompt is not null)

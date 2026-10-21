@@ -147,23 +147,21 @@ public sealed class PhysicsSimulationService
 
     private void ReconcileWeldedTransforms(SceneNode[] group, string assemblyKey)
     {
-        if (group.Any(part => part.Name == "WeldChild")) Console.WriteLine($"DEBUG weld start {weldedTransforms.ContainsKey(assemblyKey)} {group[1].Position[0]} {group[1].Rotation[1]}");
         if (!weldedTransforms.TryGetValue(assemblyKey, out var previous) || group.Any(part => !previous.ContainsKey(part.Id))) return;
         static bool HasChanged(float[] current, float[] before) =>
             Enumerable.Range(0, 3).Any(axis => Math.Abs(current[axis] - before[axis]) > .000001f);
         bool WasEdited(SceneNode part) => HasChanged(part.Position, previous[part.Id].Position) || HasChanged(part.Rotation, previous[part.Id].Rotation);
         var changed = group.FirstOrDefault(WasEdited);
-        if (group.Any(part => part.Name == "WeldChild")) Console.WriteLine($"DEBUG weld changed {changed?.Name} old {previous[group[1].Id].Position[0]} {previous[group[1].Id].Rotation[1]}");
         if (changed is null) return;
         var anchored = group.FirstOrDefault(part => part.Anchored);
         var source = anchored is null
             ? changed
             : group.FirstOrDefault(part => part.Anchored && WasEdited(part)) ?? anchored;
-        if (group.Any(part => part.Name == "WeldChild")) Console.WriteLine($"DEBUG source {source.Name} anchor {anchored?.Name}");
         var sourceBefore = previous[source.Id];
-        var previousRotation = RotationMatrix(sourceBefore.Rotation);
-        var currentRotation = RotationMatrix(source.Rotation);
+        var previousRotation = RotationMath.FromDegrees(sourceBefore.Rotation);
+        var currentRotation = RotationMath.FromDegrees(source.Rotation);
         var deltaRotation = Matrix4x4.Transpose(previousRotation) * currentRotation;
+        var rotationChanged = HasChanged(source.Rotation, sourceBefore.Rotation);
         var oldPivot = new Vector3(sourceBefore.Position[0], sourceBefore.Position[1], sourceBefore.Position[2]);
         var newPivot = new Vector3(source.Position[0], source.Position[1], source.Position[2]);
         foreach (var part in group)
@@ -172,9 +170,8 @@ public sealed class PhysicsSimulationService
             var before = previous[part.Id];
             var oldPosition = new Vector3(before.Position[0], before.Position[1], before.Position[2]);
             var expectedPosition = newPivot + Vector3.TransformNormal(oldPosition - oldPivot, deltaRotation);
-            var expectedRotation = RotationVector(RotationMatrix(before.Rotation) * deltaRotation);
+            var expectedRotation = rotationChanged ? RotationMath.ToDegrees(RotationMath.FromDegrees(before.Rotation) * deltaRotation) : before.Rotation;
             var position = new[] { expectedPosition.X, expectedPosition.Y, expectedPosition.Z };
-            if (group.Any(part => part.Name == "WeldChild")) Console.WriteLine($"DEBUG target {part.Name} expected {position[0]} {position[2]} {expectedRotation[1]} current {part.Position[0]} {part.Rotation[1]}");
             if (!HasChanged(part.Position, position) && !HasChanged(part.Rotation, expectedRotation)) continue;
             part.Position = position;
             part.Rotation = expectedRotation;
@@ -184,26 +181,6 @@ public sealed class PhysicsSimulationService
 
     private void RememberWeldedTransforms(SceneNode[] group, string assemblyKey) =>
         weldedTransforms[assemblyKey] = group.ToDictionary(part => part.Id, part => new WeldedTransform((float[])part.Position.Clone(), (float[])part.Rotation.Clone()), StringComparer.Ordinal);
-
-    private static Matrix4x4 RotationMatrix(float[] degrees)
-    {
-        var factor = MathF.PI / 180;
-        return Matrix4x4.CreateRotationZ(degrees[2] * factor)
-            * Matrix4x4.CreateRotationX(degrees[0] * factor)
-            * Matrix4x4.CreateRotationY(degrees[1] * factor);
-    }
-
-    private static float[] RotationVector(Matrix4x4 matrix)
-    {
-        var pitch = MathF.Asin(Math.Clamp(-matrix.M32, -1, 1));
-        var yaw = MathF.Abs(MathF.Cos(pitch)) > .00001f
-            ? MathF.Atan2(matrix.M31, matrix.M33)
-            : MathF.Atan2(-matrix.M13, matrix.M11);
-        var roll = MathF.Abs(MathF.Cos(pitch)) > .00001f
-            ? MathF.Atan2(matrix.M12, matrix.M22) : 0;
-        var factor = 180 / MathF.PI;
-        return [pitch * factor, yaw * factor, roll * factor];
-    }
 
     private static string AssemblyKey(SceneNode[] group) =>
         string.Join("|", group.Select(part => part.Id).OrderBy(id => id, StringComparer.Ordinal));
