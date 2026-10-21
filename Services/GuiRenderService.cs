@@ -9,7 +9,7 @@ namespace BullerStudio.Services;
 
 public static class GuiRenderService
 {
-    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
 
     public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null)
     {
@@ -32,41 +32,58 @@ public static class GuiRenderService
 
     private static void AddChildren(Canvas canvas, SceneNode parent, GameProject project, double availableWidth, double availableHeight, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged)
     {
-        var children = GetRenderableChildren(parent).ToArray();
+        var padding = GetPadding(parent, availableWidth, availableHeight);
+        var innerWidth = Math.Max(0, availableWidth - padding.Left - padding.Right);
+        var innerHeight = Math.Max(0, availableHeight - padding.Top - padding.Bottom);
         var listLayout = parent.Children.FirstOrDefault(node => node.Type == "UIListLayout");
+        var gridLayout = parent.Children.FirstOrDefault(node => node.Type == "UIGridLayout");
         var tableLayout = parent.Children.FirstOrDefault(node => node.Type == "UITableLayout");
-        var cursorX = 0d;
-        var cursorY = 0d;
+        var children = GetRenderableChildren(parent).ToArray();
+        if (listLayout is not null || gridLayout is not null || tableLayout is not null)
+            children = children.OrderBy(node => node.LayoutOrder).ToArray();
+        var grid = gridLayout is null ? default : GetGridMetrics(gridLayout, innerWidth, innerHeight, children.Length);
+        var cursorX = padding.Left;
+        var cursorY = padding.Top;
         var tableColumns = tableLayout is null ? 1 : Math.Clamp(tableLayout.TableColumns, 1, 24);
-        var cellWidth = children.Length == 0 ? 0 : Math.Max(1, availableWidth / tableColumns);
-        var rowHeight = children.Length == 0 ? 0 : children.Max(node => GetElementSize(node, availableWidth, availableHeight, tableLayout is null ? null : cellWidth).Height);
+        var cellWidth = children.Length == 0 ? 0 : Math.Max(1, innerWidth / tableColumns);
+        var rowHeight = children.Length == 0 ? 0 : children.Max(node => GetElementSize(node, innerWidth, innerHeight, tableLayout is null ? null : cellWidth).Height * GetScale(node));
         for (var index = 0; index < children.Length; index++)
         {
             var node = children[index];
-            var elementSize = GetElementSize(node, availableWidth, availableHeight);
+            var elementSize = GetElementSize(node, innerWidth, innerHeight);
             double width = elementSize.Width;
             double height = elementSize.Height;
-            double left = node.PositionScale[0] * availableWidth + node.Position[0];
-            double top = node.PositionScale[1] * availableHeight + node.Position[1];
-            if (listLayout is not null)
+            var visualScale = GetScale(node);
+            double left = padding.Left + node.PositionScale[0] * innerWidth + node.Position[0];
+            double top = padding.Top + node.PositionScale[1] * innerHeight + node.Position[1];
+            if (gridLayout is not null)
+            {
+                var column = gridLayout.FillDirection == "Vertical" ? index / grid.Capacity : index % grid.Capacity;
+                var row = gridLayout.FillDirection == "Vertical" ? index % grid.Capacity : index / grid.Capacity;
+                left = padding.Left + column * (grid.CellWidth + grid.GapX);
+                top = padding.Top + row * (grid.CellHeight + grid.GapY);
+                width = grid.CellWidth;
+                height = grid.CellHeight;
+            }
+            else if (listLayout is not null)
             {
                 if (listLayout.LayoutDirection == "Horizontal")
                 {
                     left = cursorX;
-                    top = 0;
-                    cursorX += width + listLayout.LayoutSpacing;
+                    top = padding.Top;
+                    cursorX += width * visualScale + listLayout.LayoutSpacing;
                 }
                 else
                 {
-                    left = 0;
+                    left = padding.Left;
                     top = cursorY;
-                    cursorY += height + listLayout.LayoutSpacing;
+                    cursorY += height * visualScale + listLayout.LayoutSpacing;
                 }
             }
             else if (tableLayout is not null)
             {
-                left = index % tableColumns * cellWidth;
-                top = index / tableColumns * (rowHeight + tableLayout.LayoutSpacing);
+                left = padding.Left + index % tableColumns * cellWidth;
+                top = padding.Top + index / tableColumns * (rowHeight + tableLayout.LayoutSpacing);
                 width = cellWidth;
                 var aspect = node.Children.FirstOrDefault(child => child.Type == "UIAspectRatio");
                 height = aspect is not null && aspect.AspectRatio > 0 ? width / aspect.AspectRatio : rowHeight;
@@ -75,6 +92,7 @@ public static class GuiRenderService
             if (visual is null) continue;
             Canvas.SetLeft(visual, left);
             Canvas.SetTop(visual, top);
+            Panel.SetZIndex(visual, node.ZIndex);
             canvas.Children.Add(visual);
         }
     }
@@ -83,6 +101,10 @@ public static class GuiRenderService
     {
         var rounded = node.Children.FirstOrDefault(child => child.Type == "UICorner");
         var outline = node.Children.FirstOrDefault(child => child.Type is "UIOutline" or "UIStroke");
+        var visualScale = GetScale(node);
+        var transform = new TransformGroup();
+        transform.Children.Add(new ScaleTransform(visualScale, visualScale));
+        transform.Children.Add(new RotateTransform(node.Rotation[2], width * visualScale * .5, height * visualScale * .5));
         var root = new Border
         {
             Tag = node,
@@ -93,8 +115,7 @@ public static class GuiRenderService
             BorderThickness = outline is null ? new Thickness(0) : new Thickness(Math.Max(0, outline.StrokeThickness)),
             CornerRadius = rounded is null ? new CornerRadius(0) : new CornerRadius(Math.Max(0, rounded.CornerRadius)),
             ClipToBounds = rounded is not null,
-            RenderTransformOrigin = new System.Windows.Point(.5, .5),
-            RenderTransform = new RotateTransform(node.Rotation[2])
+            RenderTransform = transform
         };
         var content = new Grid();
         root.Child = content;
@@ -159,33 +180,98 @@ public static class GuiRenderService
 
     private static Size GetChildrenExtent(SceneNode parent, double availableWidth, double availableHeight)
     {
+        var padding = GetPadding(parent, availableWidth, availableHeight);
+        var innerWidth = Math.Max(0, availableWidth - padding.Left - padding.Right);
+        var innerHeight = Math.Max(0, availableHeight - padding.Top - padding.Bottom);
         var children = GetRenderableChildren(parent).ToArray();
         if (children.Length == 0) return new Size(0, 0);
-        var elementSizes = children.Select(node => GetElementSize(node, availableWidth, availableHeight)).ToArray();
+        var elementSizes = children.Select(node =>
+        {
+            var size = GetElementSize(node, innerWidth, innerHeight);
+            var scale = GetScale(node);
+            return new Size(size.Width * scale, size.Height * scale);
+        }).ToArray();
         var listLayout = parent.Children.FirstOrDefault(node => node.Type == "UIListLayout");
+        var gridLayout = parent.Children.FirstOrDefault(node => node.Type == "UIGridLayout");
         var tableLayout = parent.Children.FirstOrDefault(node => node.Type == "UITableLayout");
+        if (gridLayout is not null)
+        {
+            var grid = GetGridMetrics(gridLayout, innerWidth, innerHeight, children.Length);
+            var columns = gridLayout.FillDirection == "Vertical"
+                ? (int)Math.Ceiling(children.Length / (double)grid.Capacity)
+                : Math.Min(children.Length, grid.Capacity);
+            var rows = gridLayout.FillDirection == "Vertical"
+                ? Math.Min(children.Length, grid.Capacity)
+                : (int)Math.Ceiling(children.Length / (double)grid.Capacity);
+            var contentWidth = columns * grid.CellWidth + Math.Max(0, columns - 1) * grid.GapX;
+            var contentHeight = rows * grid.CellHeight + Math.Max(0, rows - 1) * grid.GapY;
+            return new Size(Math.Max(availableWidth, padding.Left + contentWidth + padding.Right),
+                Math.Max(availableHeight, padding.Top + contentHeight + padding.Bottom));
+        }
         if (listLayout is not null)
         {
             if (listLayout.LayoutDirection == "Horizontal")
             {
                 var contentWidth = elementSizes.Sum(size => size.Width) + listLayout.LayoutSpacing * Math.Max(0, children.Length - 1);
-                return new Size(Math.Max(availableWidth, contentWidth), Math.Max(availableHeight, elementSizes.Max(size => size.Height)));
+                return new Size(Math.Max(availableWidth, padding.Left + contentWidth + padding.Right), Math.Max(availableHeight, padding.Top + elementSizes.Max(size => size.Height) + padding.Bottom));
             }
             var contentHeight = elementSizes.Sum(size => size.Height) + listLayout.LayoutSpacing * Math.Max(0, children.Length - 1);
-            return new Size(Math.Max(availableWidth, elementSizes.Max(size => size.Width)), Math.Max(availableHeight, contentHeight));
+            return new Size(Math.Max(availableWidth, padding.Left + elementSizes.Max(size => size.Width) + padding.Right), Math.Max(availableHeight, padding.Top + contentHeight + padding.Bottom));
         }
         if (tableLayout is not null)
         {
             var columns = Math.Clamp(tableLayout.TableColumns, 1, 24);
             var rows = (int)Math.Ceiling(children.Length / (double)columns);
-            var cellWidth = Math.Max(1, availableWidth / columns);
-            var rowHeight = children.Max(node => GetElementSize(node, availableWidth, availableHeight, cellWidth).Height);
+            var cellWidth = Math.Max(1, innerWidth / columns);
+            var rowHeight = children.Max(node => GetElementSize(node, innerWidth, innerHeight, cellWidth).Height * GetScale(node));
             var contentHeight = rows * rowHeight + Math.Max(0, rows - 1) * tableLayout.LayoutSpacing;
-            return new Size(availableWidth, Math.Max(availableHeight, contentHeight));
+            return new Size(availableWidth, Math.Max(availableHeight, padding.Top + contentHeight + padding.Bottom));
         }
-        var right = children.Select((node, index) => node.PositionScale[0] * availableWidth + node.Position[0] + elementSizes[index].Width).Max();
-        var bottom = children.Select((node, index) => node.PositionScale[1] * availableHeight + node.Position[1] + elementSizes[index].Height).Max();
-        return new Size(Math.Max(availableWidth, right), Math.Max(availableHeight, bottom));
+        var right = children.Select((node, index) => padding.Left + node.PositionScale[0] * innerWidth + node.Position[0] + elementSizes[index].Width).Max();
+        var bottom = children.Select((node, index) => padding.Top + node.PositionScale[1] * innerHeight + node.Position[1] + elementSizes[index].Height).Max();
+        return new Size(Math.Max(availableWidth, right + padding.Right), Math.Max(availableHeight, bottom + padding.Bottom));
+    }
+
+    private static Thickness GetPadding(SceneNode parent, double width, double height)
+    {
+        var node = parent.Children.FirstOrDefault(child => child.Type == "UIPadding");
+        if (node is null) return new Thickness(0);
+        static double Resolve(float[] value, double dimension) =>
+            value.Length >= 2 && float.IsFinite(value[0]) && float.IsFinite(value[1])
+                ? Math.Clamp(value[0] * dimension + value[1], 0, dimension)
+                : 0;
+        return new Thickness(
+            Resolve(node.PaddingLeft, width),
+            Resolve(node.PaddingTop, height),
+            Resolve(node.PaddingRight, width),
+            Resolve(node.PaddingBottom, height));
+    }
+
+    private static double GetScale(SceneNode node)
+    {
+        var component = node.Children.FirstOrDefault(child => child.Type == "UIScale");
+        return component is not null && float.IsFinite(component.Scale)
+            ? Math.Clamp(component.Scale, .01f, 100f)
+            : 1;
+    }
+
+    private readonly record struct GridMetrics(double CellWidth, double CellHeight, double GapX, double GapY, int Capacity);
+
+    private static GridMetrics GetGridMetrics(SceneNode layout, double width, double height, int childCount)
+    {
+        var cellWidth = Math.Max(1, layout.CellSizeScale[0] * width + layout.CellSize[0]);
+        var cellHeight = Math.Max(1, layout.CellSizeScale[1] * height + layout.CellSize[1]);
+        var gapX = Math.Max(0, layout.CellPaddingScale[0] * width + layout.CellPadding[0]);
+        var gapY = Math.Max(0, layout.CellPaddingScale[1] * height + layout.CellPadding[1]);
+        var horizontal = layout.FillDirection != "Vertical";
+        var available = horizontal ? width : height;
+        var cell = horizontal ? cellWidth : cellHeight;
+        var gap = horizontal ? gapX : gapY;
+        var naturalCapacity = (int)Math.Min(1000, Math.Max(1, Math.Floor((available + gap) / (cell + gap))));
+        var capacity = layout.FillDirectionMaxCells > 0
+            ? Math.Min(naturalCapacity, Math.Clamp(layout.FillDirectionMaxCells, 1, 1000))
+            : naturalCapacity;
+        return new GridMetrics(cellWidth, cellHeight, gapX, gapY, Math.Max(1, Math.Min(capacity, Math.Max(1, childCount))));
     }
 
     private static Size GetElementSize(SceneNode node, double availableWidth, double availableHeight, double? widthOverride = null)

@@ -50,6 +50,10 @@
         <DataTrigger Binding="{Binding Type}" Value="Color3Value"><Setter TargetName="NodeIcon" Property="Text" Value="◈"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E2BE86"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="ObjectValue"><Setter TargetName="NodeIcon" Property="Text" Value="↗"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E2BE86"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="ImageLabel"><Setter TargetName="NodeIcon" Property="Text" Value="▧"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D9B67A"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="UIGradient"><Setter TargetName="NodeIcon" Property="Text" Value="◩"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D9B67A"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="UIPadding"><Setter TargetName="NodeIcon" Property="Text" Value="▣"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D9B67A"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="UIScale"><Setter TargetName="NodeIcon" Property="Text" Value="↗"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D9B67A"/></DataTrigger>
+        <DataTrigger Binding="{Binding Type}" Value="UIGridLayout"><Setter TargetName="NodeIcon" Property="Text" Value="▦"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D9B67A"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Folder"><Setter TargetName="NodeIcon" Property="Text" Value="▱"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D4BD75"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="Configuration"><Setter TargetName="NodeIcon" Property="Text" Value="⚙"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#D4BD75"/></DataTrigger>
         <DataTrigger Binding="{Binding Type}" Value="BindableEvent"><Setter TargetName="NodeIcon" Property="Text" Value="⚡"/><Setter TargetName="NodeIcon" Property="Foreground" Value="#E7CA86"/></DataTrigger>

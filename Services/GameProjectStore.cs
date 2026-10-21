@@ -290,6 +290,17 @@ public static class GameProjectStore
             node.Velocity = EnsureVector(node.Velocity, [0, 0, 0]);
             node.PositionScale = EnsurePair(node.PositionScale);
             node.SizeScale = EnsurePair(node.SizeScale);
+            node.PaddingLeft = EnsurePair(node.PaddingLeft);
+            node.PaddingTop = EnsurePair(node.PaddingTop);
+            node.PaddingRight = EnsurePair(node.PaddingRight);
+            node.PaddingBottom = EnsurePair(node.PaddingBottom);
+            node.CellSize = node.CellSize is null ? [100, 100] : EnsurePair(node.CellSize);
+            node.CellSizeScale = EnsurePair(node.CellSizeScale);
+            node.CellPadding = EnsurePair(node.CellPadding);
+            node.CellPaddingScale = EnsurePair(node.CellPaddingScale);
+            if (node.FillDirection is not ("Horizontal" or "Vertical")) node.FillDirection = "Horizontal";
+            node.FillDirectionMaxCells = Math.Clamp(node.FillDirectionMaxCells, 0, 1000);
+            node.Scale = float.IsFinite(node.Scale) ? Math.Clamp(node.Scale, .01f, 100) : 1;
             if (node.Shape is not ("Block" or "Ball" or "Cylinder")) node.Shape = "Block";
             if (!SceneNodeTypes.IsFace(node.Face)) node.Face = "Front";
             node.StudsPerTileU = float.IsFinite(node.StudsPerTileU) ? Math.Clamp(node.StudsPerTileU, .05f, 1000) : 2;
@@ -300,6 +311,8 @@ public static class GameProjectStore
             node.Transparency = float.IsFinite(node.Transparency) ? Math.Clamp(node.Transparency, 0, 1) : 0;
             node.FillColor ??= "#00BFFF";
             node.OutlineColor ??= "#FFFFFF";
+            node.StartColor ??= "#FFFFFF";
+            node.EndColor ??= "#808080";
             node.FillTransparency = float.IsFinite(node.FillTransparency) ? Math.Clamp(node.FillTransparency, 0, 1) : .5f;
             node.OutlineTransparency = float.IsFinite(node.OutlineTransparency) ? Math.Clamp(node.OutlineTransparency, 0, 1) : 0;
             node.Brightness = float.IsFinite(node.Brightness) ? Math.Clamp(node.Brightness, 0, 8) : 1;
@@ -543,7 +556,7 @@ public static class GameProjectStore
 
     private static bool IsGuiObject(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
 
-    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIListLayout" or "UITableLayout" or "UIAspectRatio";
+    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio";
 
     private static bool IsGuiSubtreeCompatible(SceneNode node, bool isGuiServiceChild, string? destinationType = null)
     {

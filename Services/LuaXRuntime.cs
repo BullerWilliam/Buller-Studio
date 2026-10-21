@@ -1,5 +1,6 @@
 using BullerStudio.Models;
 using System.IO;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Windows.Media;
 using WattleScript.Interpreter;
@@ -69,7 +70,7 @@ public sealed class LuaXRuntime
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue",
         "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam",
         "Sky", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
-        "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"
+        "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"
     };
 
     public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null)
@@ -356,7 +357,22 @@ public sealed class LuaXRuntime
         var enumTable = new Table(script);
         enumTable.Set("CameraMode", DynValue.NewTable(cameraModeEnum));
         enumTable.Set("LayoutDirection", DynValue.NewTable(layoutDirectionEnum));
+        enumTable.Set("FillDirection", DynValue.NewTable(layoutDirectionEnum));
+        var raycastFilterEnum = new Table(script);
+        raycastFilterEnum.Set("Exclude", DynValue.NewString("Exclude"));
+        raycastFilterEnum.Set("Include", DynValue.NewString("Include"));
+        enumTable.Set("RaycastFilterType", DynValue.NewTable(raycastFilterEnum));
         script.Globals.Set("Enum", DynValue.NewTable(enumTable));
+        var raycastParams = new Table(script);
+        raycastParams.Set("new", DynValue.NewCallback((_, _) =>
+        {
+            var parameters = new Table(script);
+            runtimeTypeTags.Add(parameters, new LuaXTypeTag("RaycastParams"));
+            parameters.Set("FilterDescendantsInstances", DynValue.NewTable(new Table(script)));
+            parameters.Set("FilterType", DynValue.NewString("Exclude"));
+            return DynValue.NewTable(parameters);
+        }));
+        script.Globals.Set("RaycastParams", DynValue.NewTable(raycastParams));
         var vector3 = new Table(script);
         vector3.Set("new", DynValue.NewCallback((_, args) => VectorValue([NumberArgument(args, 0), NumberArgument(args, 1), NumberArgument(args, 2)])));
         vector3.Set("zero", VectorValue([0, 0, 0]));
@@ -773,6 +789,17 @@ public sealed class LuaXRuntime
         instance.Set("Color", ColorValue(node.Color));
         instance.Set("FillColor", ColorValue(node.FillColor));
         instance.Set("OutlineColor", ColorValue(node.OutlineColor));
+        instance.Set("StartColor", ColorValue(node.StartColor));
+        instance.Set("EndColor", ColorValue(node.EndColor));
+        instance.Set("PaddingLeft", CreateUDim(node.PaddingLeft[0], node.PaddingLeft[1]));
+        instance.Set("PaddingTop", CreateUDim(node.PaddingTop[0], node.PaddingTop[1]));
+        instance.Set("PaddingRight", CreateUDim(node.PaddingRight[0], node.PaddingRight[1]));
+        instance.Set("PaddingBottom", CreateUDim(node.PaddingBottom[0], node.PaddingBottom[1]));
+        instance.Set("Scale", DynValue.NewNumber(node.Scale));
+        instance.Set("CellSize", CreateUDim2Value(node.CellSizeScale, node.CellSize));
+        instance.Set("CellPadding", CreateUDim2Value(node.CellPaddingScale, node.CellPadding));
+        instance.Set("FillDirection", DynValue.NewString(node.FillDirection));
+        instance.Set("FillDirectionMaxCells", DynValue.NewNumber(node.FillDirectionMaxCells));
         instance.Set("FillTransparency", DynValue.NewNumber(node.FillTransparency));
         instance.Set("OutlineTransparency", DynValue.NewNumber(node.OutlineTransparency));
         instance.Set("Shape", DynValue.NewString(node.Shape));
@@ -805,6 +832,8 @@ public sealed class LuaXRuntime
         instance.Set("Text", DynValue.NewString(node.Text));
         instance.Set("TextColor", DynValue.NewString(node.TextColor));
         instance.Set("Visible", DynValue.NewBoolean(node.Visible));
+        instance.Set("ZIndex", DynValue.NewNumber(node.ZIndex));
+        instance.Set("LayoutOrder", DynValue.NewNumber(node.LayoutOrder));
         instance.Set("CornerRadius", DynValue.NewNumber(node.CornerRadius));
         instance.Set("StrokeColor", DynValue.NewString(node.StrokeColor));
         instance.Set("StrokeThickness", DynValue.NewNumber(node.StrokeThickness));
@@ -831,6 +860,7 @@ public sealed class LuaXRuntime
         instance.Set("Anchored", DynValue.NewBoolean(node.Anchored));
         instance.Set("CanCollide", DynValue.NewBoolean(node.CanCollide));
         instance.Set("CanTouch", DynValue.NewBoolean(node.CanTouch));
+        instance.Set("CanQuery", DynValue.NewBoolean(node.CanQuery));
         instance.Set("Velocity", VectorValue(node.Velocity));
         instance.Set("AssemblyLinearVelocity", VectorValue(node.Velocity));
         instance.Set("CastShadow", DynValue.NewBoolean(node.CastShadow));
@@ -881,6 +911,7 @@ public sealed class LuaXRuntime
         }));
         instance.Set("Destroy", DynValue.NewCallback((_, _) => DestroyInstance(node)));
         instance.Set("Clone", DynValue.NewCallback((_, _) => CloneInstance(node)));
+        if (node.Type == "Workspace") instance.Set("Raycast", DynValue.NewCallback((_, args) => Raycast(node, args)));
         if (SceneNodeTypes.IsValueObject(node))
         {
             var changed = new Table(script);
@@ -1159,6 +1190,63 @@ public sealed class LuaXRuntime
     {
         if (value.Type == DataType.Table) return FindNode(value.Table.Get("Id").CastToString() ?? string.Empty);
         return value.Type == DataType.String ? FindNode(value.String) : null;
+    }
+
+    private DynValue Raycast(SceneNode workspace, CallbackArguments args)
+    {
+        var index = GetInstanceMethodArgumentIndex(workspace, args);
+        if (args.Count < index + 2 || !IsTypedValue(args[index], "Vector3") || !IsTypedValue(args[index + 1], "Vector3")) return DynValue.Nil;
+        var originValues = ReadVector(args[index], [float.NaN, float.NaN, float.NaN]);
+        var directionValues = ReadVector(args[index + 1], [float.NaN, float.NaN, float.NaN]);
+        if (!originValues.All(float.IsFinite) || !directionValues.All(float.IsFinite)) return DynValue.Nil;
+        var origin = new Vector3(originValues[0], originValues[1], originValues[2]);
+        var direction = new Vector3(directionValues[0], directionValues[1], directionValues[2]);
+        if (!float.IsFinite(direction.Length()) || direction.LengthSquared() == 0) return DynValue.Nil;
+
+        var filterType = "Exclude";
+        var filterRoots = new List<SceneNode>();
+        if (args.Count > index + 2 && args[index + 2].Type != DataType.Nil)
+        {
+            if (!IsTypedValue(args[index + 2], "RaycastParams")) return DynValue.Nil;
+            var parameters = args[index + 2].Table;
+            var requestedType = parameters.Get("FilterType").CastToString();
+            if (requestedType is not ("Exclude" or "Include")) return DynValue.Nil;
+            filterType = requestedType;
+            var descendants = parameters.Get("FilterDescendantsInstances");
+            if (descendants.Type != DataType.Table) return DynValue.Nil;
+            for (var item = 1; item <= descendants.Table.Length; item++)
+                if (ReadNodeArgument(descendants.Table.Get(item)) is { } root) filterRoots.Add(root);
+        }
+
+        SynchronizeInstances();
+        var filteredIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var root in filterRoots)
+        {
+            filteredIds.Add(root.Id);
+            foreach (var descendant in GameProjectStore.Flatten(root.Children)) filteredIds.Add(descendant.Id);
+        }
+        SceneNode? closestPart = null;
+        CollisionGeometry.RayHit? closestHit = null;
+        foreach (var part in Parts)
+        {
+            if (!part.CanQuery) continue;
+            var matchesFilter = filteredIds.Contains(part.Id);
+            if (filterType == "Include" ? !matchesFilter : matchesFilter) continue;
+            var hit = CollisionGeometry.Raycast(part, origin, direction);
+            if (hit is null || closestHit is not null && hit.Value.Distance >= closestHit.Value.Distance) continue;
+            closestPart = part;
+            closestHit = hit;
+        }
+        if (closestPart is null || closestHit is null || !instances.TryGetValue(closestPart.Id, out var hitInstance)) return DynValue.Nil;
+        var result = new Table(script);
+        runtimeTypeTags.Add(result, new LuaXTypeTag("RaycastResult"));
+        result.Set("Instance", DynValue.NewTable(hitInstance));
+        result.Set("Position", VectorValue([closestHit.Value.Position.X, closestHit.Value.Position.Y, closestHit.Value.Position.Z]));
+        result.Set("Normal", VectorValue([closestHit.Value.Normal.X, closestHit.Value.Normal.Y, closestHit.Value.Normal.Z]));
+        result.Set("Distance", DynValue.NewNumber(closestHit.Value.Distance));
+        result.Set("Material", DynValue.NewString(closestPart.Material));
+        result.ReadOnly = true;
+        return DynValue.NewTable(result);
     }
 
     private DynValue NewInstance(CallbackArguments args)
@@ -1492,6 +1580,17 @@ public sealed class LuaXRuntime
             "color" => "Color",
             "fillcolor" => "FillColor",
             "outlinecolor" => "OutlineColor",
+            "startcolor" => "StartColor",
+            "endcolor" => "EndColor",
+            "paddingleft" => "PaddingLeft",
+            "paddingtop" => "PaddingTop",
+            "paddingright" => "PaddingRight",
+            "paddingbottom" => "PaddingBottom",
+            "scale" => "Scale",
+            "cellsize" => "CellSize",
+            "cellpadding" => "CellPadding",
+            "filldirection" => "FillDirection",
+            "filldirectionmaxcells" => "FillDirectionMaxCells",
             "filltransparency" => "FillTransparency",
             "outlinetransparency" => "OutlineTransparency",
             "shape" => "Shape",
@@ -1518,9 +1617,12 @@ public sealed class LuaXRuntime
             "text" => "Text",
             "textcolor" => "TextColor",
             "visible" => "Visible",
+            "zindex" => "ZIndex",
+            "layoutorder" => "LayoutOrder",
             "anchored" => "Anchored",
             "cancollide" => "CanCollide",
             "cantouch" => "CanTouch",
+            "canquery" => "CanQuery",
             "castshadow" => "CastShadow",
             "gravity" => "Gravity",
             "ambient" => "Ambient",
@@ -1616,6 +1718,36 @@ public sealed class LuaXRuntime
                 case "color": node.Color = ReadColor(value, node.Color); break;
                 case "fillcolor": if (node.Type != "Highlight") return DynValue.Nil; node.FillColor = ReadColor(value, node.FillColor); break;
                 case "outlinecolor": if (node.Type != "Highlight") return DynValue.Nil; node.OutlineColor = ReadColor(value, node.OutlineColor); break;
+                case "startcolor": if (node.Type != "UIGradient" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.StartColor = ReadColor(value, node.StartColor); break;
+                case "endcolor": if (node.Type != "UIGradient" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.EndColor = ReadColor(value, node.EndColor); break;
+                case "paddingleft":
+                case "paddingtop":
+                case "paddingright":
+                case "paddingbottom":
+                    if (node.Type != "UIPadding" || !TryReadUDim(value, out var paddingValue)) return DynValue.Nil;
+                    if (normalized == "paddingleft") node.PaddingLeft = paddingValue;
+                    else if (normalized == "paddingtop") node.PaddingTop = paddingValue;
+                    else if (normalized == "paddingright") node.PaddingRight = paddingValue;
+                    else node.PaddingBottom = paddingValue;
+                    break;
+                case "scale":
+                    if (node.Type != "UIScale" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.Scale = (float)Math.Clamp(value.Number, .01, 100);
+                    break;
+                case "cellsize":
+                case "cellpadding":
+                    if (node.Type != "UIGridLayout" || !TryReadUDim2(value, out var cellScale, out var cellOffset)) return DynValue.Nil;
+                    if (normalized == "cellsize") { node.CellSizeScale = cellScale; node.CellSize = cellOffset; }
+                    else { node.CellPaddingScale = cellScale; node.CellPadding = cellOffset; }
+                    break;
+                case "filldirection":
+                    if (node.Type != "UIGridLayout" || value.CastToString() is not ("Horizontal" or "Vertical")) return DynValue.Nil;
+                    node.FillDirection = value.CastToString()!;
+                    break;
+                case "filldirectionmaxcells":
+                    if (node.Type != "UIGridLayout" || value.Type != DataType.Number || !double.IsFinite(value.Number) || value.Number != Math.Truncate(value.Number)) return DynValue.Nil;
+                    node.FillDirectionMaxCells = (int)Math.Clamp(value.Number, 0, 1000);
+                    break;
                 case "filltransparency":
                     if (node.Type != "Highlight" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.FillTransparency = (float)Math.Clamp(value.Number, 0, 1);
@@ -1694,9 +1826,20 @@ public sealed class LuaXRuntime
                 case "text": node.Text = value.CastToString() ?? node.Text; break;
                 case "textcolor": node.TextColor = value.CastToString() ?? node.TextColor; break;
                 case "visible": node.Visible = value.CastToBool(); break;
+                case "zindex":
+                    if (!IsGuiObject(node) || value.Type != DataType.Number || !double.IsFinite(value.Number)
+                        || value.Number != Math.Truncate(value.Number) || value.Number < int.MinValue || value.Number > int.MaxValue) return DynValue.Nil;
+                    node.ZIndex = (int)value.Number;
+                    break;
+                case "layoutorder":
+                    if (!IsGuiObject(node) || value.Type != DataType.Number || !double.IsFinite(value.Number)
+                        || value.Number != Math.Truncate(value.Number) || value.Number < int.MinValue || value.Number > int.MaxValue) return DynValue.Nil;
+                    node.LayoutOrder = (int)value.Number;
+                    break;
                 case "anchored": node.Anchored = value.CastToBool(); break;
                 case "cancollide": node.CanCollide = value.CastToBool(); break;
                 case "cantouch": node.CanTouch = value.CastToBool(); break;
+                case "canquery": if (!IsBasePart(node) || value.Type != DataType.Boolean) return DynValue.Nil; node.CanQuery = value.Boolean; break;
                 case "velocity":
                 case "assemblylinearvelocity":
                     if (!IsBasePart(node) || value.Type != DataType.Table) return DynValue.Nil;
@@ -1919,6 +2062,17 @@ public sealed class LuaXRuntime
         "color" => ColorValue(node.Color),
         "fillcolor" => ColorValue(node.FillColor),
         "outlinecolor" => ColorValue(node.OutlineColor),
+        "startcolor" => node.Type == "UIGradient" ? ColorValue(node.StartColor) : DynValue.Nil,
+        "endcolor" => node.Type == "UIGradient" ? ColorValue(node.EndColor) : DynValue.Nil,
+        "paddingleft" => node.Type == "UIPadding" ? CreateUDim(node.PaddingLeft[0], node.PaddingLeft[1]) : DynValue.Nil,
+        "paddingtop" => node.Type == "UIPadding" ? CreateUDim(node.PaddingTop[0], node.PaddingTop[1]) : DynValue.Nil,
+        "paddingright" => node.Type == "UIPadding" ? CreateUDim(node.PaddingRight[0], node.PaddingRight[1]) : DynValue.Nil,
+        "paddingbottom" => node.Type == "UIPadding" ? CreateUDim(node.PaddingBottom[0], node.PaddingBottom[1]) : DynValue.Nil,
+        "scale" => node.Type == "UIScale" ? DynValue.NewNumber(node.Scale) : DynValue.Nil,
+        "cellsize" => node.Type == "UIGridLayout" ? CreateUDim2Value(node.CellSizeScale, node.CellSize) : DynValue.Nil,
+        "cellpadding" => node.Type == "UIGridLayout" ? CreateUDim2Value(node.CellPaddingScale, node.CellPadding) : DynValue.Nil,
+        "filldirection" => node.Type == "UIGridLayout" ? DynValue.NewString(node.FillDirection) : DynValue.Nil,
+        "filldirectionmaxcells" => node.Type == "UIGridLayout" ? DynValue.NewNumber(node.FillDirectionMaxCells) : DynValue.Nil,
         "filltransparency" => DynValue.NewNumber(node.FillTransparency),
         "outlinetransparency" => DynValue.NewNumber(node.OutlineTransparency),
         "shape" => DynValue.NewString(node.Shape),
@@ -1945,9 +2099,12 @@ public sealed class LuaXRuntime
         "text" => DynValue.NewString(node.Text),
         "textcolor" => DynValue.NewString(node.TextColor),
         "visible" => DynValue.NewBoolean(node.Visible),
+        "zindex" => IsGuiObject(node) ? DynValue.NewNumber(node.ZIndex) : DynValue.Nil,
+        "layoutorder" => IsGuiObject(node) ? DynValue.NewNumber(node.LayoutOrder) : DynValue.Nil,
         "anchored" => DynValue.NewBoolean(node.Anchored),
         "cancollide" => DynValue.NewBoolean(node.CanCollide),
         "cantouch" => DynValue.NewBoolean(node.CanTouch),
+        "canquery" => IsBasePart(node) ? DynValue.NewBoolean(node.CanQuery) : DynValue.Nil,
         "velocity" or "assemblylinearvelocity" => VectorValue(node.Velocity),
         "castshadow" => DynValue.NewBoolean(node.CastShadow),
         "gravity" => DynValue.NewNumber(node.Gravity),
@@ -2126,6 +2283,7 @@ public sealed class LuaXRuntime
         "BasePart" => IsBasePart(node),
         "Light" => SceneNodeTypes.IsLight(node),
         "ValueBase" => SceneNodeTypes.IsValueObject(node),
+        "UIComponent" => node.Type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio",
         "LuaSourceContainer" => node.Type is "Script" or "ModuleScript",
         "BaseScript" => node.Type == "Script",
         "FaceInstance" or "Decal" => node.Type is "Decal" or "Texture",
@@ -2267,6 +2425,20 @@ public sealed class LuaXRuntime
                 }
             }
             Assign(node, "Color", node.Color, ReadColor(instance.Get("Color"), node.Color), value => node.Color = value);
+            if (node.Type == "UIGradient")
+            {
+                Assign(node, "StartColor", node.StartColor, ReadColor(instance.Get("StartColor"), node.StartColor), value => node.StartColor = value);
+                Assign(node, "EndColor", node.EndColor, ReadColor(instance.Get("EndColor"), node.EndColor), value => node.EndColor = value);
+            }
+            if (node.Type == "UIPadding")
+            {
+                if (TryReadUDim(instance.Get("PaddingLeft"), out var left) && !node.PaddingLeft.SequenceEqual(left)) { node.PaddingLeft = left; MarkChanged(node, "PaddingLeft"); }
+                if (TryReadUDim(instance.Get("PaddingTop"), out var top) && !node.PaddingTop.SequenceEqual(top)) { node.PaddingTop = top; MarkChanged(node, "PaddingTop"); }
+                if (TryReadUDim(instance.Get("PaddingRight"), out var right) && !node.PaddingRight.SequenceEqual(right)) { node.PaddingRight = right; MarkChanged(node, "PaddingRight"); }
+                if (TryReadUDim(instance.Get("PaddingBottom"), out var bottom) && !node.PaddingBottom.SequenceEqual(bottom)) { node.PaddingBottom = bottom; MarkChanged(node, "PaddingBottom"); }
+            }
+            if (node.Type == "UIScale" && instance.Get("Scale").Type == DataType.Number && double.IsFinite(instance.Get("Scale").Number))
+                Assign(node, "Scale", node.Scale, (float)Math.Clamp(instance.Get("Scale").Number, .01, 100), value => node.Scale = value);
             if (node.Type == "Highlight")
             {
                 Assign(node, "FillColor", node.FillColor, ReadColor(instance.Get("FillColor"), node.FillColor), value => node.FillColor = value);
@@ -2371,6 +2543,19 @@ public sealed class LuaXRuntime
             if (instance.Get("Text").CastToString() is { } text) Assign(node, "Text", node.Text, text, value => node.Text = value);
             if (instance.Get("TextColor").CastToString() is { } textColor) Assign(node, "TextColor", node.TextColor, textColor, value => node.TextColor = value);
             if (instance.Get("Visible").Type == DataType.Boolean) Assign(node, "Visible", node.Visible, instance.Get("Visible").Boolean, value => node.Visible = value);
+            if (IsGuiObject(node))
+            {
+                var requestedZIndex = instance.Get("ZIndex");
+                if (requestedZIndex.Type == DataType.Number && double.IsFinite(requestedZIndex.Number)
+                    && requestedZIndex.Number == Math.Truncate(requestedZIndex.Number)
+                    && requestedZIndex.Number >= int.MinValue && requestedZIndex.Number <= int.MaxValue)
+                    Assign(node, "ZIndex", node.ZIndex, (int)requestedZIndex.Number, value => node.ZIndex = value);
+                var requestedLayoutOrder = instance.Get("LayoutOrder");
+                if (requestedLayoutOrder.Type == DataType.Number && double.IsFinite(requestedLayoutOrder.Number)
+                    && requestedLayoutOrder.Number == Math.Truncate(requestedLayoutOrder.Number)
+                    && requestedLayoutOrder.Number >= int.MinValue && requestedLayoutOrder.Number <= int.MaxValue)
+                    Assign(node, "LayoutOrder", node.LayoutOrder, (int)requestedLayoutOrder.Number, value => node.LayoutOrder = value);
+            }
             if (instance.Get("CornerRadius").Type == DataType.Number) Assign(node, "CornerRadius", node.CornerRadius, (float)Math.Max(0, instance.Get("CornerRadius").Number), value => node.CornerRadius = value);
             if (instance.Get("StrokeColor").CastToString() is { } strokeColor) Assign(node, "StrokeColor", node.StrokeColor, strokeColor, value => node.StrokeColor = value);
             if (instance.Get("StrokeThickness").Type == DataType.Number) Assign(node, "StrokeThickness", node.StrokeThickness, (float)Math.Max(0, instance.Get("StrokeThickness").Number), value => node.StrokeThickness = value);
@@ -2379,10 +2564,33 @@ public sealed class LuaXRuntime
             if (instance.Get("TableColumns").Type == DataType.Number) Assign(node, "TableColumns", node.TableColumns, (int)Math.Clamp(instance.Get("TableColumns").Number, 1, 24), value => node.TableColumns = value);
             if (instance.Get("AspectRatio").Type == DataType.Number) Assign(node, "AspectRatio", node.AspectRatio, (float)Math.Max(.001, instance.Get("AspectRatio").Number), value => node.AspectRatio = value);
             if (instance.Get("LayoutDirection").CastToString() is { } layoutDirection) Assign(node, "LayoutDirection", node.LayoutDirection, layoutDirection == "Horizontal" ? "Horizontal" : "Vertical", value => node.LayoutDirection = value);
+            if (node.Type == "UIGridLayout")
+            {
+                if (TryReadUDim2(instance.Get("CellSize"), out var sizeScale, out var sizeOffset)
+                    && (!node.CellSizeScale.SequenceEqual(sizeScale) || !node.CellSize.SequenceEqual(sizeOffset)))
+                {
+                    node.CellSizeScale = sizeScale;
+                    node.CellSize = sizeOffset;
+                    MarkChanged(node, "CellSize");
+                }
+                if (TryReadUDim2(instance.Get("CellPadding"), out var paddingScale, out var paddingOffset)
+                    && (!node.CellPaddingScale.SequenceEqual(paddingScale) || !node.CellPadding.SequenceEqual(paddingOffset)))
+                {
+                    node.CellPaddingScale = paddingScale;
+                    node.CellPadding = paddingOffset;
+                    MarkChanged(node, "CellPadding");
+                }
+                if (instance.Get("FillDirection").CastToString() is { } direction && direction is ("Horizontal" or "Vertical"))
+                    Assign(node, "FillDirection", node.FillDirection, direction, value => node.FillDirection = value);
+                if (instance.Get("FillDirectionMaxCells").Type == DataType.Number && double.IsFinite(instance.Get("FillDirectionMaxCells").Number)
+                    && instance.Get("FillDirectionMaxCells").Number == Math.Truncate(instance.Get("FillDirectionMaxCells").Number))
+                    Assign(node, "FillDirectionMaxCells", node.FillDirectionMaxCells, (int)Math.Clamp(instance.Get("FillDirectionMaxCells").Number, 0, 1000), value => node.FillDirectionMaxCells = value);
+            }
             if (instance.Get("CastShadow").Type == DataType.Boolean) Assign(node, "CastShadow", node.CastShadow, instance.Get("CastShadow").Boolean, value => node.CastShadow = value);
             if (instance.Get("Anchored").Type == DataType.Boolean) Assign(node, "Anchored", node.Anchored, instance.Get("Anchored").Boolean, value => node.Anchored = value);
             if (instance.Get("CanCollide").Type == DataType.Boolean) Assign(node, "CanCollide", node.CanCollide, instance.Get("CanCollide").Boolean, value => node.CanCollide = value);
             if (instance.Get("CanTouch").Type == DataType.Boolean) Assign(node, "CanTouch", node.CanTouch, instance.Get("CanTouch").Boolean, value => node.CanTouch = value);
+            if (IsBasePart(node) && instance.Get("CanQuery").Type == DataType.Boolean) Assign(node, "CanQuery", node.CanQuery, instance.Get("CanQuery").Boolean, value => node.CanQuery = value);
             if (IsBasePart(node))
             {
                 var assemblyVelocity = ReadVector(instance.Get("AssemblyLinearVelocity"), node.Velocity);
@@ -2610,6 +2818,18 @@ public sealed class LuaXRuntime
 
     private DynValue CreateUDim2Value(float[] scale, float[] offset) => CreateUDim2(scale[0], offset[0], scale[1], offset[1]);
 
+    private bool TryReadUDim(DynValue value, out float[] result)
+    {
+        result = [0, 0];
+        if (!IsTypedValue(value, "UDim")) return false;
+        var scale = value.Table.Get("Scale");
+        var offset = value.Table.Get("Offset");
+        if (scale.Type != DataType.Number || offset.Type != DataType.Number
+            || !double.IsFinite(scale.Number) || !double.IsFinite(offset.Number)) return false;
+        result = [(float)scale.Number, (float)offset.Number];
+        return result.All(float.IsFinite);
+    }
+
     private static bool TryReadUDim2(DynValue value, out float[] scale, out float[] offset)
     {
         scale = [0, 0];
@@ -2622,10 +2842,11 @@ public sealed class LuaXRuntime
         var xOffset = x.Table.Get("Offset");
         var yScale = y.Table.Get("Scale");
         var yOffset = y.Table.Get("Offset");
-        if (xScale.Type != DataType.Number || xOffset.Type != DataType.Number || yScale.Type != DataType.Number || yOffset.Type != DataType.Number) return false;
+        if (xScale.Type != DataType.Number || xOffset.Type != DataType.Number || yScale.Type != DataType.Number || yOffset.Type != DataType.Number
+            || !double.IsFinite(xScale.Number) || !double.IsFinite(xOffset.Number) || !double.IsFinite(yScale.Number) || !double.IsFinite(yOffset.Number)) return false;
         scale = [(float)xScale.Number, (float)yScale.Number];
         offset = [(float)xOffset.Number, (float)yOffset.Number];
-        return true;
+        return scale.All(float.IsFinite) && offset.All(float.IsFinite);
     }
 
     private bool IsGuiObject(SceneNode node)

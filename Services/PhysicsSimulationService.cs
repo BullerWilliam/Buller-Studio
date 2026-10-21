@@ -1,4 +1,5 @@
 using BullerStudio.Models;
+using System.Numerics;
 
 namespace BullerStudio.Services;
 
@@ -7,7 +8,8 @@ public sealed class PhysicsSimulationService
     private readonly GameProject project;
     private readonly Action<SceneNode> moved;
     private readonly Dictionary<string, float[]> weldedVelocities = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<string, float[]>> weldedPositions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, WeldedTransform>> weldedTransforms = new(StringComparer.Ordinal);
+    private sealed record WeldedTransform(float[] Position, float[] Rotation);
 
     public PhysicsSimulationService(GameProject project, Action<SceneNode> moved)
     {
@@ -22,7 +24,7 @@ public sealed class PhysicsSimulationService
         var weldedGroups = BuildWeldedGroups(parts);
         var activeAssemblies = weldedGroups.Values.Distinct().Select(AssemblyKey).ToHashSet(StringComparer.Ordinal);
         foreach (var key in weldedVelocities.Keys.Where(key => !activeAssemblies.Contains(key)).ToArray()) weldedVelocities.Remove(key);
-        foreach (var key in weldedPositions.Keys.Where(key => !activeAssemblies.Contains(key)).ToArray()) weldedPositions.Remove(key);
+        foreach (var key in weldedTransforms.Keys.Where(key => !activeAssemblies.Contains(key)).ToArray()) weldedTransforms.Remove(key);
         var remaining = Math.Min(elapsedSeconds, .25f);
         while (remaining > 0)
         {
@@ -91,7 +93,7 @@ public sealed class PhysicsSimulationService
     private void SimulateWeldedGroup(SceneNode[] group, SceneNode[] parts, float deltaTime)
     {
         var assemblyKey = AssemblyKey(group);
-        ReconcileWeldedPositions(group, assemblyKey);
+        ReconcileWeldedTransforms(group, assemblyKey);
         if (group.Any(part => part.Anchored))
         {
             foreach (var part in group)
@@ -101,7 +103,7 @@ public sealed class PhysicsSimulationService
                 moved(part);
             }
             weldedVelocities[assemblyKey] = [0, 0, 0];
-            RememberWeldedPositions(group, assemblyKey);
+            RememberWeldedTransforms(group, assemblyKey);
             return;
         }
         var oldVelocities = group.Select(part => (float[])part.Velocity.Clone()).ToArray();
@@ -140,36 +142,68 @@ public sealed class PhysicsSimulationService
             if (movedPositions[index] || !oldVelocities[index].SequenceEqual(velocity)) moved(part);
         }
         weldedVelocities[assemblyKey] = (float[])velocity.Clone();
-        RememberWeldedPositions(group, assemblyKey);
+        RememberWeldedTransforms(group, assemblyKey);
     }
 
-    private void ReconcileWeldedPositions(SceneNode[] group, string assemblyKey)
+    private void ReconcileWeldedTransforms(SceneNode[] group, string assemblyKey)
     {
-        if (!weldedPositions.TryGetValue(assemblyKey, out var previous) || group.Any(part => !previous.ContainsKey(part.Id))) return;
-        static bool HasMoved(SceneNode part, float[] before) =>
-            Enumerable.Range(0, 3).Any(axis => Math.Abs(part.Position[axis] - before[axis]) > .000001f);
-        var changed = group.FirstOrDefault(part => HasMoved(part, previous[part.Id]));
+        if (group.Any(part => part.Name == "WeldChild")) Console.WriteLine($"DEBUG weld start {weldedTransforms.ContainsKey(assemblyKey)} {group[1].Position[0]} {group[1].Rotation[1]}");
+        if (!weldedTransforms.TryGetValue(assemblyKey, out var previous) || group.Any(part => !previous.ContainsKey(part.Id))) return;
+        static bool HasChanged(float[] current, float[] before) =>
+            Enumerable.Range(0, 3).Any(axis => Math.Abs(current[axis] - before[axis]) > .000001f);
+        bool WasEdited(SceneNode part) => HasChanged(part.Position, previous[part.Id].Position) || HasChanged(part.Rotation, previous[part.Id].Rotation);
+        var changed = group.FirstOrDefault(WasEdited);
+        if (group.Any(part => part.Name == "WeldChild")) Console.WriteLine($"DEBUG weld changed {changed?.Name} old {previous[group[1].Id].Position[0]} {previous[group[1].Id].Rotation[1]}");
         if (changed is null) return;
         var anchored = group.FirstOrDefault(part => part.Anchored);
         var source = anchored is null
             ? changed
-            : group.FirstOrDefault(part => part.Anchored && HasMoved(part, previous[part.Id])) ?? anchored;
-        var displacement = Enumerable.Range(0, 3).Select(axis => source.Position[axis] - previous[source.Id][axis]).ToArray();
+            : group.FirstOrDefault(part => part.Anchored && WasEdited(part)) ?? anchored;
+        if (group.Any(part => part.Name == "WeldChild")) Console.WriteLine($"DEBUG source {source.Name} anchor {anchored?.Name}");
+        var sourceBefore = previous[source.Id];
+        var previousRotation = RotationMatrix(sourceBefore.Rotation);
+        var currentRotation = RotationMatrix(source.Rotation);
+        var deltaRotation = Matrix4x4.Transpose(previousRotation) * currentRotation;
+        var oldPivot = new Vector3(sourceBefore.Position[0], sourceBefore.Position[1], sourceBefore.Position[2]);
+        var newPivot = new Vector3(source.Position[0], source.Position[1], source.Position[2]);
         foreach (var part in group)
         {
-            var expected = Enumerable.Range(0, 3).Select(axis => previous[part.Id][axis] + displacement[axis]).ToArray();
-            if (!HasMoved(part, expected))
-            {
-                if (HasMoved(part, previous[part.Id])) moved(part);
-                continue;
-            }
-            part.Position = expected;
+            if (ReferenceEquals(part, source)) { moved(part); continue; }
+            var before = previous[part.Id];
+            var oldPosition = new Vector3(before.Position[0], before.Position[1], before.Position[2]);
+            var expectedPosition = newPivot + Vector3.TransformNormal(oldPosition - oldPivot, deltaRotation);
+            var expectedRotation = RotationVector(RotationMatrix(before.Rotation) * deltaRotation);
+            var position = new[] { expectedPosition.X, expectedPosition.Y, expectedPosition.Z };
+            if (group.Any(part => part.Name == "WeldChild")) Console.WriteLine($"DEBUG target {part.Name} expected {position[0]} {position[2]} {expectedRotation[1]} current {part.Position[0]} {part.Rotation[1]}");
+            if (!HasChanged(part.Position, position) && !HasChanged(part.Rotation, expectedRotation)) continue;
+            part.Position = position;
+            part.Rotation = expectedRotation;
             moved(part);
         }
     }
 
-    private void RememberWeldedPositions(SceneNode[] group, string assemblyKey) =>
-        weldedPositions[assemblyKey] = group.ToDictionary(part => part.Id, part => (float[])part.Position.Clone(), StringComparer.Ordinal);
+    private void RememberWeldedTransforms(SceneNode[] group, string assemblyKey) =>
+        weldedTransforms[assemblyKey] = group.ToDictionary(part => part.Id, part => new WeldedTransform((float[])part.Position.Clone(), (float[])part.Rotation.Clone()), StringComparer.Ordinal);
+
+    private static Matrix4x4 RotationMatrix(float[] degrees)
+    {
+        var factor = MathF.PI / 180;
+        return Matrix4x4.CreateRotationZ(degrees[2] * factor)
+            * Matrix4x4.CreateRotationX(degrees[0] * factor)
+            * Matrix4x4.CreateRotationY(degrees[1] * factor);
+    }
+
+    private static float[] RotationVector(Matrix4x4 matrix)
+    {
+        var pitch = MathF.Asin(Math.Clamp(-matrix.M32, -1, 1));
+        var yaw = MathF.Abs(MathF.Cos(pitch)) > .00001f
+            ? MathF.Atan2(matrix.M31, matrix.M33)
+            : MathF.Atan2(-matrix.M13, matrix.M11);
+        var roll = MathF.Abs(MathF.Cos(pitch)) > .00001f
+            ? MathF.Atan2(matrix.M12, matrix.M22) : 0;
+        var factor = 180 / MathF.PI;
+        return [pitch * factor, yaw * factor, roll * factor];
+    }
 
     private static string AssemblyKey(SceneNode[] group) =>
         string.Join("|", group.Select(part => part.Id).OrderBy(id => id, StringComparer.Ordinal));

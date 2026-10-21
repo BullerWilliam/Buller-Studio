@@ -34,9 +34,16 @@ public sealed class SceneNode
     public bool Archivable { get; set; } = true;
     public float[] Position { get; set; } = [0, 0, 0];
     public float[] PositionScale { get; set; } = [0, 0];
+    public float[] PaddingLeft { get; set; } = [0, 0];
+    public float[] PaddingTop { get; set; } = [0, 0];
+    public float[] PaddingRight { get; set; } = [0, 0];
+    public float[] PaddingBottom { get; set; } = [0, 0];
+    public float Scale { get; set; } = 1;
     public float[] Rotation { get; set; } = [0, 0, 0];
     public float[] Size { get; set; } = [2, 2, 2];
     public float[] SizeScale { get; set; } = [0, 0];
+    public int ZIndex { get; set; } = 1;
+    public int LayoutOrder { get; set; }
     public string Color { get; set; } = "#4E9DFF";
     public string FillColor { get; set; } = "#00BFFF";
     public string OutlineColor { get; set; } = "#FFFFFF";
@@ -79,6 +86,12 @@ public sealed class SceneNode
     public float CornerRadius { get; set; }
     public float StrokeThickness { get; set; } = 1;
     public float LayoutSpacing { get; set; }
+    public float[] CellSize { get; set; } = [100, 100];
+    public float[] CellSizeScale { get; set; } = [0, 0];
+    public float[] CellPadding { get; set; } = [0, 0];
+    public float[] CellPaddingScale { get; set; } = [0, 0];
+    public string FillDirection { get; set; } = "Horizontal";
+    public int FillDirectionMaxCells { get; set; }
     public int TableColumns { get; set; } = 2;
     public float AspectRatio { get; set; } = 1;
     public string LayoutDirection { get; set; } = "Vertical";
@@ -92,6 +105,7 @@ public sealed class SceneNode
     public bool Anchored { get; set; } = true;
     public bool CanCollide { get; set; } = true;
     public bool CanTouch { get; set; } = true;
+    public bool CanQuery { get; set; } = true;
     public float[] Velocity { get; set; } = [0, 0, 0];
     public bool CastShadow { get; set; } = true;
     public float Gravity { get; set; } = 24;

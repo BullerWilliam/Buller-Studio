@@ -591,6 +591,7 @@ public partial class MainWindow : Window
                 {
                     AddCheckField("CanCollide", selected.CanCollide);
                     AddCheckField("CanTouch", selected.CanTouch);
+                    AddCheckField("CanQuery", selected.CanQuery);
                     if (selected.Type == "SpawnLocation") AddCheckField("Enabled", selected.Enabled);
                     AddTextField("Velocity", VectorText(selected.Velocity));
                 }
@@ -742,6 +743,8 @@ public partial class MainWindow : Window
                 AddTextField("Position", GuiUDim2Text(node.Position, node.PositionScale));
                 AddTextField("Size", GuiUDim2Text(node.Size, node.SizeScale));
                 AddTextField("Rotation", VectorText(node.Rotation));
+                AddTextField("ZIndex", node.ZIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("LayoutOrder", node.LayoutOrder.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
             AddCheckField("Visible", node.Visible);
         }
@@ -781,11 +784,32 @@ public partial class MainWindow : Window
             AddTextField("Rotation", VectorText(node.Rotation));
             AddCheckField("Enabled", node.Enabled);
         }
+        if (node.Type == "UIPadding")
+        {
+            propertyTarget = AddPropertySection("Padding");
+            AddTextField("PaddingLeft", GuiUDimText(node.PaddingLeft));
+            AddTextField("PaddingTop", GuiUDimText(node.PaddingTop));
+            AddTextField("PaddingRight", GuiUDimText(node.PaddingRight));
+            AddTextField("PaddingBottom", GuiUDimText(node.PaddingBottom));
+        }
+        if (node.Type == "UIScale")
+        {
+            propertyTarget = AddPropertySection("Scale");
+            AddTextField("Scale", node.Scale.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         if (node.Type == "UIListLayout")
         {
             propertyTarget = AddPropertySection("Layout");
             AddComboField("LayoutDirection", ["Vertical", "Horizontal"], node.LayoutDirection);
             AddTextField("LayoutSpacing", node.LayoutSpacing.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (node.Type == "UIGridLayout")
+        {
+            propertyTarget = AddPropertySection("Layout");
+            AddTextField("CellSize", GuiUDim2Text(node.CellSize, node.CellSizeScale));
+            AddTextField("CellPadding", GuiUDim2Text(node.CellPadding, node.CellPaddingScale));
+            AddComboField("FillDirection", ["Horizontal", "Vertical"], node.FillDirection);
+            AddTextField("FillDirectionMaxCells", node.FillDirectionMaxCells.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         if (node.Type == "UITableLayout")
         {
@@ -973,7 +997,7 @@ public partial class MainWindow : Window
         }
         if (currentNumber is not null)
         {
-            var valid = property == "TableColumns"
+            var valid = property is "TableColumns" or "FillDirectionMaxCells" or "ZIndex" or "LayoutOrder"
                 ? int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _)
                 : float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var number) && float.IsFinite(number);
             if (!valid)
@@ -999,7 +1023,49 @@ public partial class MainWindow : Window
             RenderProperties();
             return;
         }
-        if ((property is "Position" or "Size") && IsGuiNode(target))
+        if (target.Type == "UIGridLayout" && property is ("CellSize" or "CellPadding"))
+        {
+            var values = ParseGuiUDim2(text);
+            if (values is null)
+            {
+                SetStatus("Enter two pixel offsets or scale, offset pairs for both axes.");
+                box.Text = property == "CellSize"
+                    ? GuiUDim2Text(target.CellSize, target.CellSizeScale)
+                    : GuiUDim2Text(target.CellPadding, target.CellPaddingScale);
+                return;
+            }
+            if (property == "CellSize")
+            {
+                target.CellSizeScale = [values[0], values[2]];
+                target.CellSize = [values[1], values[3]];
+            }
+            else
+            {
+                target.CellPaddingScale = [values[0], values[2]];
+                target.CellPadding = [values[1], values[3]];
+            }
+        }
+        else if (target.Type == "UIPadding" && property is ("PaddingLeft" or "PaddingTop" or "PaddingRight" or "PaddingBottom"))
+        {
+            var value = ParseGuiUDim(text);
+            if (value is null)
+            {
+                SetStatus("Enter a pixel offset or a scale, offset pair.");
+                box.Text = GuiUDimText(property switch
+                {
+                    "PaddingLeft" => target.PaddingLeft,
+                    "PaddingTop" => target.PaddingTop,
+                    "PaddingRight" => target.PaddingRight,
+                    _ => target.PaddingBottom
+                });
+                return;
+            }
+            if (property == "PaddingLeft") target.PaddingLeft = value;
+            else if (property == "PaddingTop") target.PaddingTop = value;
+            else if (property == "PaddingRight") target.PaddingRight = value;
+            else target.PaddingBottom = value;
+        }
+        else if ((property is "Position" or "Size") && IsGuiNode(target))
         {
             var values = ParseGuiUDim2(text);
             if (values is null)
@@ -1030,6 +1096,7 @@ public partial class MainWindow : Window
         }
         else if (property == "FieldOfView" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fov)) target.FieldOfView = Math.Clamp(fov, 10, 120);
         else if (property == "Color") target.Color = text;
+        else if (target.Type == "UIScale" && property == "Scale" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var guiScale) && float.IsFinite(guiScale)) target.Scale = Math.Clamp(guiScale, .01f, 100);
         else if (target.Type == "UIGradient" && property == "StartColor") target.StartColor = text;
         else if (target.Type == "UIGradient" && property == "EndColor") target.EndColor = text;
         else if (property == "FillColor" && target.Type == "Highlight") target.FillColor = text;
@@ -1092,6 +1159,9 @@ public partial class MainWindow : Window
         else if (property == "StrokeColor") target.StrokeColor = text;
         else if (property == "LayoutSpacing" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var spacing)) target.LayoutSpacing = Math.Max(0, spacing);
         else if (property == "TableColumns" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var tableColumns)) target.TableColumns = Math.Clamp(tableColumns, 1, 24);
+        else if (property == "FillDirectionMaxCells" && target.Type == "UIGridLayout" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var maxCells)) target.FillDirectionMaxCells = Math.Clamp(maxCells, 0, 1000);
+        else if (property == "ZIndex" && IsGuiNode(target) && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var zIndex)) target.ZIndex = zIndex;
+        else if (property == "LayoutOrder" && IsGuiNode(target) && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var layoutOrder)) target.LayoutOrder = layoutOrder;
         else if (property == "AspectRatio" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var aspect)) target.AspectRatio = Math.Max(.001f, aspect);
         else if (property == "CornerRadius" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var cornerRadius)) target.CornerRadius = Math.Max(0, cornerRadius);
         else if (property == "StrokeThickness" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var strokeThickness)) target.StrokeThickness = Math.Max(0, strokeThickness);
@@ -1163,7 +1233,11 @@ public partial class MainWindow : Window
             "RollOffMaxDistance" => node.RollOffMaxDistance,
             "LayoutSpacing" => node.LayoutSpacing,
             "TableColumns" => node.TableColumns,
+            "FillDirectionMaxCells" => node.FillDirectionMaxCells,
+            "ZIndex" => node.ZIndex,
+            "LayoutOrder" => node.LayoutOrder,
             "AspectRatio" => node.AspectRatio,
+            "Scale" => node.Type == "UIScale" ? node.Scale : (float?)null,
             "CornerRadius" => node.CornerRadius,
             "StrokeThickness" => node.StrokeThickness,
             "TextSize" => node.TextSize,
@@ -1178,6 +1252,7 @@ public partial class MainWindow : Window
         if (property == "Anchored") target.Anchored = box.IsChecked == true;
         if (property == "CanCollide") target.CanCollide = box.IsChecked == true;
         if (property == "CanTouch") target.CanTouch = box.IsChecked == true;
+        if (property == "CanQuery" && SceneNodeTypes.IsBasePart(target)) target.CanQuery = box.IsChecked == true;
         if (property == "CastShadow") target.CastShadow = box.IsChecked == true;
         if (property == "Visible") target.Visible = box.IsChecked == true;
         if (property == "Enabled") target.Enabled = box.IsChecked == true;
@@ -1206,6 +1281,7 @@ public partial class MainWindow : Window
         if (property == "Material" && SceneNodeTypes.IsBasePart(target)) target.Material = value;
         if (property == "Face" && target.Type is ("Decal" or "Texture" or "SurfaceLight") && SceneNodeTypes.IsFace(value)) target.Face = value;
         if (property == "LayoutDirection") target.LayoutDirection = value;
+        if (property == "FillDirection" && target.Type == "UIGridLayout") target.FillDirection = value;
         if (property == "Mode") renderer?.UpdateCamera(project);
         if (property is "Shape" or "Material" or "Face") renderer?.UpdateNode(target, project);
         if (IsGuiNode(target)) RefreshGuiPreview();
@@ -1448,7 +1524,7 @@ public partial class MainWindow : Window
         var choices = IsGuiNode(parent)
             ? (parent.Type == "Gui"
                 ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") }
-                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIListLayout", "UIListLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
+                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
             : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
         choices = choices.Concat(new (string Type, string Name)[] { ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
@@ -2173,6 +2249,7 @@ public partial class MainWindow : Window
         if (Regex.IsMatch(source, @"\bInstance\.new\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXCreatableClassNameCompletions;
         if (Regex.IsMatch(source, @"\b(?:Mode|CameraMode)\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject"];
         if (Regex.IsMatch(source, @"\bLayoutDirection\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Vertical", "Horizontal"];
+        if (Regex.IsMatch(source, @"\bFillDirection\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Horizontal", "Vertical"];
         if (Regex.IsMatch(source, @"\bIsA\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXClassNameCompletions;
         var propertyMatch = Regex.Match(source, @"(?:SetProperty|GetProperty)\s*\(\s*['""][^'""\r\n]*$", RegexOptions.IgnoreCase);
         if (propertyMatch.Success)
@@ -2512,7 +2589,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -2557,9 +2634,12 @@ public partial class MainWindow : Window
     {
         if (receiver == "game") return ["GetService", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Workspace"];
         if (receiver == "Instance") return ["new"];
-        if (receiver == "Enum") return ["CameraMode", "LayoutDirection"];
+        if (receiver == "Enum") return ["CameraMode", "LayoutDirection", "FillDirection", "RaycastFilterType"];
         if (receiver == "Enum.CameraMode") return ["Custom", "Subject"];
         if (receiver == "Enum.LayoutDirection") return ["Horizontal", "Vertical"];
+        if (receiver == "Enum.FillDirection") return ["Horizontal", "Vertical"];
+        if (receiver == "Enum.RaycastFilterType") return ["Exclude", "Include"];
+        if (receiver == "RaycastParams") return ["new"];
         if (receiver == "Vector3") return ["new", "one", "zero"];
         if (receiver == "Color3") return ["fromHex", "fromHSV", "fromRGB", "new"];
         if (receiver == "UDim") return ["new"];
@@ -2574,6 +2654,8 @@ public partial class MainWindow : Window
             if (inferredType == "Color3") return ["B", "G", "Lerp", "R", "ToHex", "ToHSV"];
             if (inferredType == "UDim") return ["Offset", "Scale"];
             if (inferredType == "UDim2") return ["X", "Y"];
+            if (inferredType == "RaycastParams") return ["FilterDescendantsInstances", "FilterType"];
+            if (inferredType == "RaycastResult") return ["Instance", "Position", "Normal", "Distance", "Material"];
             if (inferredType == "RBXScriptSignal") return ["Connect"];
             if (inferredType is "number" or "string" or "boolean" or "table") return [];
             node = ResolveLuaXReceiverNode(receiver, editor);
@@ -2583,7 +2665,7 @@ public partial class MainWindow : Window
         }
 
         var members = new List<string> { "Name", "Parent", "Archivable", "ClassName", "Id", "Children", "SetProperty", "GetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy" };
-        if (node.Type == "BasePart" || SceneNodeTypes.IsBasePart(node)) members.AddRange(["Position", "Rotation", "Size", "Color", "Material", "Transparency", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Touched", "touched"]);
+        if (node.Type == "BasePart" || SceneNodeTypes.IsBasePart(node)) members.AddRange(["Position", "Rotation", "Size", "Color", "Material", "Transparency", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Touched", "touched"]);
         if (node.Type == "Part") members.AddRange(["Shape", "Texture"]);
         if (node.Type == "SpawnLocation") members.Add("Enabled");
         if (node.Type == "Seat") members.Add("Occupant");
@@ -2606,12 +2688,12 @@ public partial class MainWindow : Window
         if (node.Type == "Beam") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Width0", "Width1", "Color", "Transparency"]);
         if (node.Type == "Attachment") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
-        if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
+        if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "Raycast", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
         if (node.Type == "Lighting") members.AddRange(["Ambient", "Brightness", "ClockTime", "GlobalShadows"]);
         if (node.Type == "Sky") members.AddRange(["SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn"]);
         if (node.Type == "Players") members.Add("LocalPlayer");
         if (node.Type == "Player") members.Add("Character");
-        if (node.Type is "GuiBase2d" or "GuiObject" or "ScreenGui" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Visible", "Position", "Size"]);
+        if (node.Type is "GuiBase2d" or "GuiObject" or "ScreenGui" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Visible", "Position", "Size", "ZIndex", "LayoutOrder"]);
         if (node.Type is "GuiObject" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Color", "Rotation"]);
         if (node.Type is "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Text", "TextColor", "TextSize"]);
         if (node.Type is "TextButton" or "ImageButton") members.AddRange(["Activated", "MouseButton1Click"]);
@@ -2619,7 +2701,11 @@ public partial class MainWindow : Window
         if (node.Type is "ImageLabel" or "ImageButton") members.Add("Asset");
         if (node.Type == "UICorner") members.Add("CornerRadius");
         if (node.Type is "UIOutline" or "UIStroke") members.AddRange(["StrokeColor", "StrokeThickness"]);
+        if (node.Type == "UIGradient") members.AddRange(["Enabled", "StartColor", "EndColor", "Rotation"]);
+        if (node.Type == "UIPadding") members.AddRange(["PaddingLeft", "PaddingTop", "PaddingRight", "PaddingBottom"]);
+        if (node.Type == "UIScale") members.Add("Scale");
         if (node.Type == "UIListLayout") members.AddRange(["LayoutDirection", "LayoutSpacing"]);
+        if (node.Type == "UIGridLayout") members.AddRange(["CellSize", "CellPadding", "FillDirection", "FillDirectionMaxCells"]);
         if (node.Type == "UITableLayout") members.AddRange(["LayoutSpacing", "TableColumns"]);
         if (node.Type == "UIAspectRatio") members.Add("AspectRatio");
         return members.Concat(node.Children.Select(child => child.Name)).Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -2628,15 +2714,17 @@ public partial class MainWindow : Window
     private string[] GetLuaXMethods(string receiver, TextEditor editor)
     {
         if (receiver == "game") return ["GetService"];
+        if (receiver == "workspace" || receiver == "game.Workspace") return ["Raycast", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA"];
         if (receiver.Equals("Touched", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Touched", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".Activated", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".MouseButton1Click", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".TextChanged", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Triggered", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".MouseClick", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Changed", StringComparison.OrdinalIgnoreCase)) return ["Connect"];
         var inferredType = InferLuaXReceiverType(receiver, editor);
-        if (inferredType is "Vector3Constructor" or "Color3Constructor" or "UDimConstructor" or "UDim2Constructor" or "UDim" or "UDim2") return [];
+        if (inferredType is "Vector3Constructor" or "Color3Constructor" or "UDimConstructor" or "UDim2Constructor" or "RaycastParamsConstructor" or "RaycastParams" or "RaycastResult" or "UDim" or "UDim2") return [];
         if (inferredType == "Vector3") return ["Cross", "Dot", "Lerp"];
         if (inferredType == "Color3") return ["Lerp", "ToHex", "ToHSV"];
         if (inferredType == "RBXScriptSignal") return ["Connect"];
+        if (inferredType == "Workspace") return ["Raycast", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA"];
         if (inferredType is "number" or "string" or "boolean" or "table") return [];
         var receiverNode = ResolveLuaXNode(receiver) ?? ResolveLuaXReceiverNode(receiver, editor);
         if (inferredType == "Sound" || receiverNode?.Type == "Sound") return ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Play", "Stop"];
@@ -2651,11 +2739,13 @@ public partial class MainWindow : Window
         if (receiver == "Color3") return "Color3Constructor";
         if (receiver == "UDim") return "UDimConstructor";
         if (receiver == "UDim2") return "UDim2Constructor";
+        if (receiver == "RaycastParams") return "RaycastParamsConstructor";
         var directExpression = StripExpressionParentheses(receiver);
         if (Regex.IsMatch(directExpression, @"^Vector3\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "Vector3";
         if (Regex.IsMatch(directExpression, @"^Color3\s*\.\s*(?:new|fromRGB|fromHSV|fromHex)\s*\(", RegexOptions.CultureInvariant)) return "Color3";
         if (Regex.IsMatch(directExpression, @"^UDim\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "UDim";
         if (Regex.IsMatch(directExpression, @"^UDim2\s*\.\s*(?:new|fromOffset|fromScale)\s*\(", RegexOptions.CultureInvariant)) return "UDim2";
+        if (Regex.IsMatch(directExpression, @"^RaycastParams\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "RaycastParams";
         var memberMatch = Regex.Match(directExpression, @"^(?<parent>.+)\.(?<member>[A-Za-z_][A-Za-z0-9_]*)$", RegexOptions.CultureInvariant);
         if (memberMatch.Success)
         {
@@ -2683,6 +2773,7 @@ public partial class MainWindow : Window
         if (expression.StartsWith("Color3.new", StringComparison.Ordinal) || expression.StartsWith("Color3.fromRGB", StringComparison.Ordinal) || expression.StartsWith("Color3.fromHSV", StringComparison.Ordinal) || expression.StartsWith("Color3.fromHex", StringComparison.Ordinal)) return "Color3";
         if (expression.StartsWith("UDim.new", StringComparison.Ordinal)) return "UDim";
         if (expression.StartsWith("UDim2.new", StringComparison.Ordinal) || expression.StartsWith("UDim2.fromOffset", StringComparison.Ordinal) || expression.StartsWith("UDim2.fromScale", StringComparison.Ordinal)) return "UDim2";
+        if (expression.StartsWith("RaycastParams.new", StringComparison.Ordinal)) return "RaycastParams";
         if (ResolveLuaXExpressionNode(expression, editor) is not null) return "Instance";
         return InferLuaXReceiverType(expression, editor, visited);
     }
@@ -2969,18 +3060,18 @@ public partial class MainWindow : Window
     [
         "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
         "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs", "pcall", "print", "require", "warn", "rawequal", "rawget", "rawlen", "rawset", "select", "setmetatable", "tonumber", "tostring", "type", "typeof", "unpack", "xpcall",
-        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Instance", "Enum", "Vector3", "Color3", "UDim", "UDim2",
+        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Instance", "Enum", "Vector3", "Color3", "UDim", "UDim2", "RaycastParams",
         "SetProperty", "GetProperty", "WaitForChild", "GetAssetPath", "ConnectTouched", "LookAtRotation"
     ];
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Ambient", "ClockTime", "GlobalShadows", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"
+        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Raycast", "Ambient", "ClockTime", "GlobalShadows", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"
     ];
 
     private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Fire", "Invoke", "Disconnect"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIListLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "ProximityPrompt", "ClickDetector", "Highlight", "WeldConstraint", "Attachment", "Beam", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -3046,7 +3137,7 @@ public partial class MainWindow : Window
                   <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word><Word>task</Word><Word>wait</Word>
                   <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>Lighting</Word><Word>ReplicatedStorage</Word><Word>ServerScriptService</Word><Word>ServerStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>LookAtRotation</Word><Word>Color3</Word><Word>GetService</Word>
                 </Keywords>
-                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
+                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
                 <Rule color="LuauKeyword">(?m)^\s*(?:export\s+)?type\b</Rule>
                 <Rule color="Method">(?&lt;=[:.])[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
                 <Rule color="FunctionName">(?&lt;=function\s+)[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*</Rule>
@@ -3122,7 +3213,7 @@ public partial class MainWindow : Window
         if (selectedTool is "Move" or "Scale" or "Rotate" && node.Type != "ScreenGui")
         {
             var parent = FindParentNode(node);
-            var parentUsesLayout = parent?.Children.Any(child => child.Type is "UIListLayout" or "UITableLayout") == true;
+            var parentUsesLayout = parent?.Children.Any(child => child.Type is "UIListLayout" or "UIGridLayout" or "UITableLayout") == true;
             if (selectedTool != "Move" || !parentUsesLayout)
             {
                 isGuiTransformDragging = true;
@@ -3883,14 +3974,26 @@ public partial class MainWindow : Window
         if (parts.Length == 2)
         {
             if (!float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[1])
-                || !float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[3])) return null;
+                || !float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[3])
+                || !float.IsFinite(result[1]) || !float.IsFinite(result[3])) return null;
             return result;
         }
         for (var index = 0; index < 4; index++)
-            if (!float.TryParse(parts[index], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[index])) return null;
+            if (!float.TryParse(parts[index], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[index]) || !float.IsFinite(result[index])) return null;
+        return result;
+    }
+    private static float[]? ParseGuiUDim(string value)
+    {
+        var parts = value.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length is not (1 or 2)) return null;
+        var result = new float[2];
+        for (var index = 0; index < parts.Length; index++)
+            if (!float.TryParse(parts[index], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var number) || !float.IsFinite(number)) return null;
+            else result[parts.Length == 1 ? 1 : index] = number;
         return result;
     }
     private static string VectorText(float[] value) => string.Join(", ", value.Select(number => number.ToString("G9", System.Globalization.CultureInfo.InvariantCulture)));
+    private static string GuiUDimText(float[] value) => string.Join(", ", value.Select(number => number.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
     private static string GuiUDim2Text(float[] offset, float[] scale) => string.Join(", ", new[] { scale[0], offset[0], scale[1], offset[1] }.Select(number => number.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
     private void SetStatus(string message) => Dispatcher.Invoke(() => StatusText.Text = message);
     private void ShowError(Exception exception) => StudioDialog.Show(this, "Buller Studio", exception.Message, StudioDialogKind.Error);
@@ -3932,6 +4035,9 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["coroutine.yield"] = "yield(...: any): (...any) — Suspends the current Lua X script until the runtime resumes it.",
         ["GetService"] = "GetService(name: string): Instance? — Returns Workspace, Players, Lighting, ReplicatedStorage, ServerScriptService, ServerStorage, or Gui.",
         ["Instance.new"] = "Instance.new(className: string, parent: Instance?): Instance? — Creates a supported object during play.",
+        ["Raycast"] = "Raycast(origin: Vector3, direction: Vector3, params: RaycastParams?): RaycastResult? — Casts through Workspace parts; direction sets the maximum range.",
+        ["RaycastParams"] = "RaycastParams.new(): RaycastParams — FilterDescendantsInstances and FilterType (Enum.RaycastFilterType.Exclude or Include) control hits.",
+        ["CanQuery"] = "boolean — Whether a BasePart can be hit by Workspace:Raycast, independently of CanCollide and CanTouch.",
         ["require"] = "require(module: ModuleScript | string): any — Runs once per play runtime; paths may start ./, ../, @self/, or @game/.",
         ["task.wait"] = "task.wait(duration: number?): number — Resumes on a later play update after at least this many seconds.",
         ["task.spawn"] = "task.spawn(callback: function, ...: any): coroutine — Starts a function immediately in a separate task.",
@@ -4003,6 +4109,8 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["SkyboxTop"] = "string — Project-relative image path for the Workspace skybox top face.",
         ["SkyboxBottom"] = "string — Project-relative image path for the Workspace skybox bottom face.",
         ["Visible"] = "boolean — Whether this GUI object is rendered.",
+        ["ZIndex"] = "integer — Draw order among overlapping GUI siblings; higher values appear on top.",
+        ["LayoutOrder"] = "integer — Placement order within list, grid, and table layouts.",
         ["Text"] = "string — Text displayed by a TextLabel, TextButton, or TextBox.",
         ["TextColor"] = "string — Hex color used for GUI text, for example #FFFFFF.",
         ["TextSize"] = "number — GUI text size in pixels.",
@@ -4012,6 +4120,10 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["LayoutDirection"] = "string — UIListLayout direction: Vertical or Horizontal.",
         ["LayoutSpacing"] = "number — Pixel spacing used by a UI layout.",
         ["TableColumns"] = "number — UITableLayout column count.",
+        ["CellSize"] = "UDim2 — Width and height of UIGridLayout cells.",
+        ["CellPadding"] = "UDim2 — Horizontal and vertical gap between UIGridLayout cells.",
+        ["FillDirection"] = "string — Fill UIGridLayout horizontally or vertically.",
+        ["FillDirectionMaxCells"] = "integer — Maximum grid cells per row or column; zero uses available space.",
         ["AspectRatio"] = "number — UIAspectRatio width-to-height ratio.",
         ["Anchored"] = "boolean — Whether the part is anchored.",
         ["CastShadow"] = "boolean — Whether the part casts a shadow."

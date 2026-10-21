@@ -7,6 +7,40 @@ internal static class CollisionGeometry
 {
     private const float AxisEpsilon = 1e-8f;
 
+    internal readonly record struct RayHit(Vector3 Position, Vector3 Normal, float Distance);
+
+    public static RayHit? Raycast(SceneNode part, Vector3 origin, Vector3 direction)
+    {
+        var box = new Box(part);
+        var offset = origin - box.Center;
+        var entry = float.NegativeInfinity;
+        var exit = float.PositiveInfinity;
+        var entryNormal = Vector3.Zero;
+        var exitNormal = Vector3.Zero;
+        for (var index = 0; index < 3; index++)
+        {
+            var axis = box.Axes[index];
+            var localOrigin = Vector3.Dot(offset, axis);
+            var rate = Vector3.Dot(direction, axis);
+            var half = box.HalfSize[index];
+            if (Math.Abs(rate) < AxisEpsilon)
+            {
+                if (Math.Abs(localOrigin) > half) return null;
+                continue;
+            }
+            var first = (-half - localOrigin) / rate;
+            var last = (half - localOrigin) / rate;
+            var nearNormal = rate > 0 ? -axis : axis;
+            if (first > last) (first, last) = (last, first);
+            if (first > entry) { entry = first; entryNormal = nearNormal; }
+            if (last < exit) { exit = last; exitNormal = -nearNormal; }
+            if (entry > exit) return null;
+        }
+        var time = entry >= 0 ? entry : exit;
+        if (time < 0 || time > 1 || !float.IsFinite(time)) return null;
+        return new RayHit(origin + direction * time, entry >= 0 ? entryNormal : exitNormal, direction.Length() * time);
+    }
+
     public static bool Intersects(SceneNode first, SceneNode second)
     {
         var a = new Box(first);
