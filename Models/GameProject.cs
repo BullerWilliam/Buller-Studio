@@ -60,6 +60,9 @@ public sealed class SceneNode
     public float OffsetStudsV { get; set; }
     public string Material { get; set; } = "Plastic";
     public float Transparency { get; set; }
+    public float BackgroundTransparency { get; set; }
+    public float TextTransparency { get; set; }
+    public float ImageTransparency { get; set; }
     public bool Enabled { get; set; } = true;
     public float Brightness { get; set; } = 1;
     public string Ambient { get; set; } = "#808080";
@@ -124,6 +127,9 @@ public sealed class SceneNode
     public string TextColor { get; set; } = "#FFFFFF";
     public string StrokeColor { get; set; } = "#FFFFFF";
     public float TextSize { get; set; } = 18;
+    public bool TextScaled { get; set; }
+    public float MinTextSize { get; set; } = 1;
+    public float MaxTextSize { get; set; } = 1000;
     public float CornerRadius { get; set; }
     public float StrokeThickness { get; set; } = 1;
     public float LayoutSpacing { get; set; }
@@ -135,6 +141,8 @@ public sealed class SceneNode
     public int FillDirectionMaxCells { get; set; }
     public int TableColumns { get; set; } = 2;
     public float AspectRatio { get; set; } = 1;
+    public float[] MinSize { get; set; } = [0, 0];
+    public float[] MaxSize { get; set; } = [1000000, 1000000];
     public string LayoutDirection { get; set; } = "Vertical";
     public bool Visible { get; set; } = true;
     public string SkyboxFront { get; set; } = string.Empty;

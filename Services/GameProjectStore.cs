@@ -298,6 +298,13 @@ public static class GameProjectStore
             node.CellSizeScale = EnsurePair(node.CellSizeScale);
             node.CellPadding = EnsurePair(node.CellPadding);
             node.CellPaddingScale = EnsurePair(node.CellPaddingScale);
+            node.MinSize = EnsurePair(node.MinSize);
+            node.MaxSize = node.MaxSize is null ? [1000000, 1000000] : EnsurePair(node.MaxSize);
+            for (var axis = 0; axis < 2; axis++)
+            {
+                node.MinSize[axis] = float.IsFinite(node.MinSize[axis]) ? Math.Clamp(node.MinSize[axis], 0, 1000000) : 0;
+                node.MaxSize[axis] = float.IsFinite(node.MaxSize[axis]) ? Math.Clamp(node.MaxSize[axis], node.MinSize[axis], 1000000) : 1000000;
+            }
             if (node.FillDirection is not ("Horizontal" or "Vertical")) node.FillDirection = "Horizontal";
             node.FillDirectionMaxCells = Math.Clamp(node.FillDirectionMaxCells, 0, 1000);
             node.Scale = float.IsFinite(node.Scale) ? Math.Clamp(node.Scale, .01f, 100) : 1;
@@ -309,6 +316,11 @@ public static class GameProjectStore
             node.OffsetStudsV = float.IsFinite(node.OffsetStudsV) ? Math.Clamp(node.OffsetStudsV, -10000, 10000) : 0;
             if (node.Material is not ("Plastic" or "Metal" or "Neon" or "Glass" or "Wood" or "Concrete")) node.Material = "Plastic";
             node.Transparency = float.IsFinite(node.Transparency) ? Math.Clamp(node.Transparency, 0, 1) : 0;
+            node.BackgroundTransparency = float.IsFinite(node.BackgroundTransparency) ? Math.Clamp(node.BackgroundTransparency, 0, 1) : 0;
+            node.TextTransparency = float.IsFinite(node.TextTransparency) ? Math.Clamp(node.TextTransparency, 0, 1) : 0;
+            node.ImageTransparency = float.IsFinite(node.ImageTransparency) ? Math.Clamp(node.ImageTransparency, 0, 1) : 0;
+            node.MinTextSize = float.IsFinite(node.MinTextSize) ? Math.Clamp(node.MinTextSize, 1, 1000) : 1;
+            node.MaxTextSize = float.IsFinite(node.MaxTextSize) ? Math.Clamp(node.MaxTextSize, node.MinTextSize, 1000) : 1000;
             node.FillColor ??= "#00BFFF";
             node.OutlineColor ??= "#FFFFFF";
             node.StartColor ??= "#FFFFFF";
@@ -623,7 +635,7 @@ public static class GameProjectStore
 
     private static bool IsGuiObject(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
 
-    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio";
+    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UISizeConstraint" or "UITextSizeConstraint";
 
     private static bool IsGuiSubtreeCompatible(SceneNode node, bool isGuiServiceChild, string? destinationType = null)
     {
@@ -631,6 +643,7 @@ public static class GameProjectStore
         if (node.Type is "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript") return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (node.Type == "Script") return node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node)) return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
+        if (node.Type == "UITextSizeConstraint") return destinationType is "TextLabel" or "TextButton" or "TextBox" && node.Children.Count == 0;
         if (IsGuiComponent(node.Type)) return destinationType is not null && IsGuiObject(destinationType) && node.Children.Count == 0;
         if (!IsGuiObject(node.Type)) return false;
         return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));

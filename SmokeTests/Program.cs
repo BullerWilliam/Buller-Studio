@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using BullerStudio.Models;
 using BullerStudio.Services;
@@ -531,18 +532,54 @@ var gradientOutput = new List<string>();
 var gradientRuntime = new LuaXRuntime(gradientProject, output: gradientOutput.Add);
 var gradientScript = new GameScript
 {
-    Source = "local g = Instance.new('UIGradient', game.Gui.ScreenGui.GradientFrame); g.StartColor = Color3.fromRGB(255, 0, 0); g.EndColor = Color3.fromRGB(0, 0, 255); g.Rotation = Vector3.new(0, 0, 90); print('gradient-values', g.StartColor:ToHex(), g.EndColor:ToHex(), g.Rotation.Z)"
+    Source = """
+        local frame = game.Gui.ScreenGui.GradientFrame
+        local g = Instance.new('UIGradient', frame)
+        g.StartColor = Color3.fromRGB(255, 0, 0)
+        g.EndColor = Color3.fromRGB(0, 0, 255)
+        g.Rotation = Vector3.new(0, 0, 90)
+        frame.BackgroundTransparency = 0.5
+        local label = Instance.new('TextLabel', frame)
+        label.TextTransparency = 0.25
+        local image = Instance.new('ImageLabel', frame)
+        image.ImageTransparency = 0.75
+        label.TextScaled = true
+        local textLimit = Instance.new('UITextSizeConstraint', label)
+        textLimit.MinTextSize = 12
+        textLimit.MaxTextSize = 60
+        local sizeLimit = Instance.new('UISizeConstraint', frame)
+        sizeLimit.MinSize = Vector2.new(20, 20)
+        sizeLimit.MaxSize = Vector2.new(200, 200)
+        print('gradient-values', g.StartColor:ToHex(), g.EndColor:ToHex(), g.Rotation.Z)
+        print('gui-alpha', frame.BackgroundTransparency, label.TextTransparency, image.ImageTransparency)
+        print('size-limit', sizeLimit:IsA('UIComponent'), sizeLimit.MinSize.X, sizeLimit.MaxSize.Y)
+        print('text-limit', label.TextScaled, textLimit:IsA('UIComponent'), textLimit.MinTextSize, textLimit.MaxTextSize)
+        """
 };
 gradientProject.Scripts.Add(gradientScript);
 gradientRuntime.Run(gradientScript.Id);
 var gradientNode = gradientFrame.Children.SingleOrDefault(node => node.Type == "UIGradient");
 if (gradientNode is null || gradientNode.StartColor != "#FF0000" || gradientNode.EndColor != "#0000FF" || gradientNode.Rotation[2] != 90
-    || !gradientOutput.Any(line => line.Contains("gradient-values\tFF0000\t0000FF\t90", StringComparison.Ordinal)))
+    || gradientFrame.BackgroundTransparency != .5f
+    || !gradientOutput.Any(line => line.Contains("gradient-values\tFF0000\t0000FF\t90", StringComparison.Ordinal))
+    || !gradientOutput.Any(line => line.Contains("gui-alpha\t0.5\t0.25\t0.75", StringComparison.Ordinal))
+    || !gradientOutput.Any(line => line.Contains("size-limit\ttrue\t20\t200", StringComparison.Ordinal))
+    || !gradientOutput.Any(line => line.Contains("text-limit\ttrue\ttrue\t12\t60", StringComparison.Ordinal)))
     throw new Exception("UIGradient Lua X properties failed: " + string.Join(" | ", gradientOutput));
 var gradientJson = JsonSerializer.Serialize(gradientProject, GameProjectStore.JsonOptions);
 var restoredGradientProject = JsonSerializer.Deserialize<GameProject>(gradientJson, GameProjectStore.JsonOptions)
     ?? throw new Exception("UIGradient project did not deserialize.");
 GameProjectStore.EnsureProject(restoredGradientProject);
+var restoredSizeLimit = restoredGradientProject.Gui.Children.Single(node => node.Type == "ScreenGui")
+    .Children.Single(node => node.Name == "GradientFrame").Children.Single(node => node.Type == "UISizeConstraint");
+if (!restoredSizeLimit.MinSize.SequenceEqual(new float[] { 20, 20 })
+    || !restoredSizeLimit.MaxSize.SequenceEqual(new float[] { 200, 200 }))
+    throw new Exception("UISizeConstraint did not survive project serialization.");
+var restoredTextLabel = restoredGradientProject.Gui.Children.Single(node => node.Type == "ScreenGui")
+    .Children.Single(node => node.Name == "GradientFrame").Children.Single(node => node.Type == "TextLabel");
+var restoredTextLimit = restoredTextLabel.Children.Single(node => node.Type == "UITextSizeConstraint");
+if (!restoredTextLabel.TextScaled || restoredTextLimit.MinTextSize != 12 || restoredTextLimit.MaxTextSize != 60)
+    throw new Exception("UITextSizeConstraint and TextScaled did not survive project serialization.");
 var gradientAssetRoot = Path.Combine(Path.GetTempPath(), "BullerStudioGradientSmoke_" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(Path.Combine(gradientAssetRoot, "assets"));
 restoredGradientProject.ProjectPath = gradientAssetRoot;
@@ -556,8 +593,9 @@ var renderThread = new Thread(() =>
         var content = (System.Windows.Controls.Grid)frameBorder.Child;
         var visual = (System.Windows.Controls.Border)content.Children[0];
         var brush = visual.Background as System.Windows.Media.LinearGradientBrush;
-        if (brush is null || brush.GradientStops[0].Color != System.Windows.Media.Color.FromRgb(0x22, 0, 0)
-            || brush.GradientStops[1].Color != System.Windows.Media.Color.FromRgb(0, 0, 0x66)
+        if (brush is null || brush.GradientStops[0].Color != System.Windows.Media.Color.FromArgb(128, 0x22, 0, 0)
+            || brush.GradientStops[1].Color != System.Windows.Media.Color.FromArgb(128, 0, 0, 0x66)
+            || brush.GradientStops[0].Color.A != 128 || brush.GradientStops[1].Color.A != 128
             || Math.Abs(brush.StartPoint.X - .5) > .001 || Math.Abs(brush.StartPoint.Y) > .001)
             throw new Exception("UIGradient did not render the saved colors and rotation.");
         var restoredGradient = restoredGradientProject.Gui.Children.Single(node => node.Type == "ScreenGui")
@@ -567,7 +605,7 @@ var renderThread = new Thread(() =>
         var plainFrame = (System.Windows.Controls.Border)plainCanvas.Children[0];
         var plainVisual = (System.Windows.Controls.Border)((System.Windows.Controls.Grid)plainFrame.Child).Children[0];
         if (plainVisual.Background is not System.Windows.Media.SolidColorBrush plainBrush
-            || plainBrush.Color != System.Windows.Media.Color.FromRgb(0x22, 0x44, 0x66))
+            || plainBrush.Color != System.Windows.Media.Color.FromArgb(128, 0x22, 0x44, 0x66))
             throw new Exception("Disabling UIGradient did not restore the frame background.");
 
         var assets = Path.Combine(gradientAssetRoot, "assets");
@@ -580,16 +618,16 @@ var renderThread = new Thread(() =>
         var screenNode = restoredGradientProject.Gui.Children.Single(node => node.Type == "ScreenGui");
         static SceneNode Gradient(string start, string end, float rotation = 0) => new()
             { Type = "UIGradient", StartColor = start, EndColor = end, Rotation = [0, 0, rotation] };
-        var textLabel = new SceneNode { Type = "TextLabel", Name = "GradientText", Text = "Color", TextColor = "#80FFFF", Color = "#FFFFFF" };
+        var textLabel = new SceneNode { Type = "TextLabel", Name = "GradientText", Text = "Color", TextColor = "#80FFFF", Color = "#FFFFFF", TextTransparency = .5f, BackgroundTransparency = .25f };
         textLabel.Children.Add(Gradient("#FF0000", "#0000FF", 90));
         var textButton = new SceneNode { Type = "TextButton", Name = "GradientButton", Text = "Click", TextColor = "#FFFFFF", Color = "#FFFFFF" };
         textButton.Children.Add(Gradient("#FF0000", "#0000FF"));
-        var imageLabel = new SceneNode { Type = "ImageLabel", Name = "GradientImage", Asset = "assets/gradient-test.png", Color = "#FFFFFF" };
+        var imageLabel = new SceneNode { Type = "ImageLabel", Name = "GradientImage", Asset = "assets/gradient-test.png", Color = "#FFFFFF", ImageTransparency = .25f, BackgroundTransparency = .5f };
         var imageGradient = Gradient("#FF0000", "#0000FF");
         imageLabel.Children.Add(imageGradient);
         var imageButton = new SceneNode { Type = "ImageButton", Name = "GradientImageButton", Asset = "assets/gradient-test.png", Color = "#FFFFFF" };
         imageButton.Children.Add(Gradient("#FF0000", "#0000FF"));
-        var unsupportedTextBox = new SceneNode { Type = "TextBox", Name = "GradientTextBox", TextColor = "#FFFFFF" };
+        var unsupportedTextBox = new SceneNode { Type = "TextBox", Name = "GradientTextBox", TextColor = "#FFFFFF", TextTransparency = .5f };
         unsupportedTextBox.Children.Add(Gradient("#FF0000", "#0000FF"));
         screenNode.Children.Add(textLabel); screenNode.Children.Add(textButton); screenNode.Children.Add(imageLabel);
         screenNode.Children.Add(imageButton); screenNode.Children.Add(unsupportedTextBox);
@@ -602,14 +640,17 @@ var renderThread = new Thread(() =>
         }
         var labelVisual = (System.Windows.Controls.TextBlock)OwnVisual(gradientCanvas, "GradientText");
         if (labelVisual.Foreground is not System.Windows.Media.LinearGradientBrush textBrush
-            || textBrush.GradientStops[0].Color != System.Windows.Media.Color.FromRgb(0x80, 0, 0)
-            || textBrush.GradientStops[1].Color != System.Windows.Media.Color.FromRgb(0, 0, 0xFF))
+            || textBrush.GradientStops[0].Color != System.Windows.Media.Color.FromArgb(128, 0x80, 0, 0)
+            || textBrush.GradientStops[1].Color != System.Windows.Media.Color.FromArgb(128, 0, 0, 0xFF)
+            || textBrush.GradientStops[0].Color.A != 128
+            || labelVisual.Background is not System.Windows.Media.LinearGradientBrush labelBackground
+            || labelBackground.GradientStops[0].Color.A != 191)
             throw new Exception("UIGradient did not tint the TextLabel foreground with TextColor.");
         var buttonVisual = (System.Windows.Controls.Button)OwnVisual(gradientCanvas, "GradientButton");
         if (buttonVisual.Foreground is not System.Windows.Media.LinearGradientBrush)
             throw new Exception("UIGradient did not tint the TextButton foreground.");
         if (OwnVisual(gradientCanvas, "GradientTextBox") is not System.Windows.Controls.TextBox textBoxVisual
-            || textBoxVisual.Foreground is not System.Windows.Media.SolidColorBrush)
+            || textBoxVisual.Foreground is not System.Windows.Media.SolidColorBrush textBoxBrush || textBoxBrush.Color.A != 128)
             throw new Exception("UIGradient unexpectedly tinted an unsupported TextBox.");
         var imageGrid = (System.Windows.Controls.Grid)OwnVisual(gradientCanvas, "GradientImage");
         var imageVisual = (System.Windows.Controls.Image)imageGrid.Children[0];
@@ -617,7 +658,9 @@ var renderThread = new Thread(() =>
         var tintedPixels = new byte[8];
         imageBitmap.CopyPixels(tintedPixels, 8, 0);
         if (tintedPixels[2] <= tintedPixels[0] || tintedPixels[4] <= tintedPixels[6]
-            || tintedPixels[3] != 255 || tintedPixels[7] != 255)
+            || tintedPixels[3] != 191 || tintedPixels[7] != 191
+            || imageGrid.Background is not System.Windows.Media.LinearGradientBrush imageBackground
+            || imageBackground.GradientStops[0].Color.A != 128)
             throw new Exception("UIGradient did not tint image pixels across their width.");
         var imageButtonVisual = (System.Windows.Controls.Button)OwnVisual(gradientCanvas, "GradientImageButton");
         var buttonImage = (System.Windows.Controls.Image)imageButtonVisual.Content;
@@ -631,6 +674,59 @@ var renderThread = new Thread(() =>
         ((System.Windows.Media.Imaging.BitmapSource)disabledImage.Source).CopyPixels(disabledPixels, 8, 0);
         if (disabledPixels[0] != 255 || disabledPixels[2] != 255 || disabledPixels[4] != 255 || disabledPixels[6] != 255)
             throw new Exception("Disabling UIGradient did not restore image pixels.");
+
+        var constrainedFrame = new SceneNode { Type = "Frame", Name = "ConstrainedFrame", Size = [20, 20, 2], SizeScale = [.5f, .5f] };
+        var sizeConstraint = new SceneNode { Type = "UISizeConstraint", Name = "SizeLimit", MinSize = [120, 80], MaxSize = [180, 140] };
+        screenNode.Children.Add(constrainedFrame);
+        if (!GameProjectStore.CanParentNode(restoredGradientProject, sizeConstraint, constrainedFrame)
+            || GameProjectStore.CanParentNode(restoredGradientProject, sizeConstraint, screenNode))
+            throw new Exception("UISizeConstraint parenting rules are wrong.");
+        constrainedFrame.Children.Add(sizeConstraint);
+        var smallCanvas = GuiRenderService.Render(restoredGradientProject, false, 200, 100);
+        var smallFrame = smallCanvas.Children.OfType<System.Windows.Controls.Border>()
+            .Single(element => (element.Tag as SceneNode)?.Name == "ConstrainedFrame");
+        var largeCanvas = GuiRenderService.Render(restoredGradientProject, false, 1000, 1000);
+        var largeFrame = largeCanvas.Children.OfType<System.Windows.Controls.Border>()
+            .Single(element => (element.Tag as SceneNode)?.Name == "ConstrainedFrame");
+        if (smallFrame.Width != 120 || smallFrame.Height != 80 || largeFrame.Width != 180 || largeFrame.Height != 140)
+            throw new Exception("UISizeConstraint did not clamp the GUI size at different viewport dimensions.");
+
+        var scrolling = new SceneNode { Type = "ScrollingFrame", Name = "ConstrainedScroll", Size = [100, 100, 2] };
+        scrolling.Children.Add(new SceneNode { Type = "UIGridLayout", CellSize = [40, 40] });
+        scrolling.Children.Add(new SceneNode { Type = "Frame", Name = "GridFirst" });
+        var gridSecond = new SceneNode { Type = "Frame", Name = "GridSecond" };
+        gridSecond.Children.Add(new SceneNode { Type = "UISizeConstraint", MinSize = [120, 80] });
+        scrolling.Children.Add(gridSecond);
+        screenNode.Children.Add(scrolling);
+        var scrollCanvas = GuiRenderService.Render(restoredGradientProject, false, 200, 100);
+        var scrollRoot = scrollCanvas.Children.OfType<System.Windows.Controls.Border>()
+            .Single(element => (element.Tag as SceneNode)?.Name == "ConstrainedScroll");
+        var scrollView = (System.Windows.Controls.ScrollViewer)((System.Windows.Controls.Grid)scrollRoot.Child).Children[1];
+        var scrollContent = (System.Windows.Controls.Canvas)scrollView.Content;
+        var secondVisual = scrollContent.Children.OfType<System.Windows.Controls.Border>()
+            .Single(element => (element.Tag as SceneNode)?.Name == "GridSecond");
+        if (secondVisual.Width != 120 || secondVisual.Height != 80 || scrollContent.Width < 160)
+            throw new Exception("UISizeConstraint was clipped by grid scrolling bounds.");
+
+        var fittedLabel = new SceneNode { Type = "TextLabel", Name = "FittedText", Text = "Hello", TextScaled = true, Size = [0, 0, 2], SizeScale = [.5f, .5f] };
+        var textLimit = new SceneNode { Type = "UITextSizeConstraint", MinTextSize = 12, MaxTextSize = 60 };
+        screenNode.Children.Add(fittedLabel);
+        if (!GameProjectStore.CanParentNode(restoredGradientProject, textLimit, fittedLabel)
+            || GameProjectStore.CanParentNode(restoredGradientProject, textLimit, constrainedFrame))
+            throw new Exception("UITextSizeConstraint parenting rules are wrong.");
+        fittedLabel.Children.Add(textLimit);
+        var fittedSmall = (System.Windows.Controls.TextBlock)OwnVisual(
+            GuiRenderService.Render(restoredGradientProject, false, 200, 100), "FittedText");
+        var fittedLarge = (System.Windows.Controls.TextBlock)OwnVisual(
+            GuiRenderService.Render(restoredGradientProject, false, 1000, 1000), "FittedText");
+        if (fittedSmall.FontSize < 12 || fittedSmall.FontSize >= 60 || fittedLarge.FontSize < 59.9 || fittedLarge.FontSize > 60)
+            throw new Exception($"TextScaled did not fit text within UITextSizeConstraint bounds: small={fittedSmall.FontSize}, large={fittedLarge.FontSize}.");
+        fittedLabel.TextScaled = false;
+        fittedLabel.TextSize = 90;
+        var fixedText = (System.Windows.Controls.TextBlock)OwnVisual(
+            GuiRenderService.Render(restoredGradientProject, false, 200, 100), "FittedText");
+        if (fixedText.FontSize != 60)
+            throw new Exception("UITextSizeConstraint did not clamp fixed TextSize.");
     }
     catch (Exception exception) { gradientRenderError = exception; }
 });

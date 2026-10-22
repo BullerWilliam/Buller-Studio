@@ -86,7 +86,7 @@ public sealed class LuaXRuntime
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue",
         "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "VectorForce", "LinearVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam",
         "Sky", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
-        "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"
+        "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UISizeConstraint", "UITextSizeConstraint"
     };
 
     public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null, bool isStudio = true)
@@ -910,6 +910,8 @@ public sealed class LuaXRuntime
         instance.Set("PaddingRight", CreateUDim(node.PaddingRight[0], node.PaddingRight[1]));
         instance.Set("PaddingBottom", CreateUDim(node.PaddingBottom[0], node.PaddingBottom[1]));
         instance.Set("Scale", DynValue.NewNumber(node.Scale));
+        instance.Set("MinSize", Vector2Value(node.MinSize));
+        instance.Set("MaxSize", Vector2Value(node.MaxSize));
         instance.Set("CellSize", CreateUDim2Value(node.CellSizeScale, node.CellSize));
         instance.Set("CellPadding", CreateUDim2Value(node.CellPaddingScale, node.CellPadding));
         instance.Set("FillDirection", DynValue.NewString(node.FillDirection));
@@ -924,6 +926,9 @@ public sealed class LuaXRuntime
         instance.Set("OffsetStudsV", DynValue.NewNumber(node.OffsetStudsV));
         instance.Set("Material", DynValue.NewString(node.Material));
         instance.Set("Transparency", DynValue.NewNumber(node.Transparency));
+        instance.Set("BackgroundTransparency", DynValue.NewNumber(node.BackgroundTransparency));
+        instance.Set("TextTransparency", DynValue.NewNumber(node.TextTransparency));
+        instance.Set("ImageTransparency", DynValue.NewNumber(node.ImageTransparency));
         instance.Set("Enabled", DynValue.NewBoolean(node.Enabled));
         instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
         instance.Set("Range", DynValue.NewNumber(node.Range));
@@ -959,6 +964,9 @@ public sealed class LuaXRuntime
         instance.Set("StrokeColor", DynValue.NewString(node.StrokeColor));
         instance.Set("StrokeThickness", DynValue.NewNumber(node.StrokeThickness));
         instance.Set("TextSize", DynValue.NewNumber(node.TextSize));
+        instance.Set("TextScaled", DynValue.NewBoolean(node.TextScaled));
+        instance.Set("MinTextSize", DynValue.NewNumber(node.MinTextSize));
+        instance.Set("MaxTextSize", DynValue.NewNumber(node.MaxTextSize));
         instance.Set("LayoutSpacing", DynValue.NewNumber(node.LayoutSpacing));
         instance.Set("TableColumns", DynValue.NewNumber(node.TableColumns));
         instance.Set("AspectRatio", DynValue.NewNumber(node.AspectRatio));
@@ -2329,6 +2337,14 @@ public sealed class LuaXRuntime
             "offsetstudsv" => "OffsetStudsV",
             "material" => "Material",
             "transparency" => "Transparency",
+            "backgroundtransparency" => "BackgroundTransparency",
+            "texttransparency" => "TextTransparency",
+            "imagetransparency" => "ImageTransparency",
+            "minsize" => "MinSize",
+            "maxsize" => "MaxSize",
+            "textscaled" => "TextScaled",
+            "mintextsize" => "MinTextSize",
+            "maxtextsize" => "MaxTextSize",
             "enabled" => "Enabled",
             "brightness" => "Brightness",
             "range" => "Range",
@@ -2609,6 +2625,40 @@ public sealed class LuaXRuntime
                 case "transparency":
                     if ((!IsBasePart(node) && node.Type is not ("Decal" or "Texture" or "Beam")) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.Transparency = (float)Math.Clamp(value.Number, 0, 1);
+                    break;
+                case "backgroundtransparency":
+                    if (!IsGuiObject(node) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.BackgroundTransparency = (float)Math.Clamp(value.Number, 0, 1);
+                    break;
+                case "texttransparency":
+                    if (node.Type is not ("TextLabel" or "TextButton" or "TextBox") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.TextTransparency = (float)Math.Clamp(value.Number, 0, 1);
+                    break;
+                case "imagetransparency":
+                    if (!IsGuiObject(node) || node.Type is not ("ImageLabel" or "ImageButton") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.ImageTransparency = (float)Math.Clamp(value.Number, 0, 1);
+                    break;
+                case "minsize":
+                    if (node.Type != "UISizeConstraint" || !TryReadVector2(value, out var minSize)) return DynValue.Nil;
+                    node.MinSize = minSize.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                    node.MaxSize = [Math.Max(node.MaxSize[0], node.MinSize[0]), Math.Max(node.MaxSize[1], node.MinSize[1])];
+                    break;
+                case "maxsize":
+                    if (node.Type != "UISizeConstraint" || !TryReadVector2(value, out var maxSize)) return DynValue.Nil;
+                    node.MaxSize = [Math.Clamp(maxSize[0], node.MinSize[0], 1000000), Math.Clamp(maxSize[1], node.MinSize[1], 1000000)];
+                    break;
+                case "textscaled":
+                    if (node.Type is not ("TextLabel" or "TextButton" or "TextBox") || value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.TextScaled = value.Boolean;
+                    break;
+                case "mintextsize":
+                    if (node.Type != "UITextSizeConstraint" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.MinTextSize = (float)Math.Clamp(value.Number, 1, 1000);
+                    node.MaxTextSize = Math.Max(node.MaxTextSize, node.MinTextSize);
+                    break;
+                case "maxtextsize":
+                    if (node.Type != "UITextSizeConstraint" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.MaxTextSize = (float)Math.Clamp(value.Number, node.MinTextSize, 1000);
                     break;
                 case "enabled":
                     if (value.Type != DataType.Boolean) return DynValue.Nil;
@@ -3138,6 +3188,14 @@ public sealed class LuaXRuntime
         "offsetstudsv" => DynValue.NewNumber(node.OffsetStudsV),
         "material" => DynValue.NewString(node.Material),
         "transparency" => DynValue.NewNumber(node.Transparency),
+        "backgroundtransparency" => IsGuiObject(node) ? DynValue.NewNumber(node.BackgroundTransparency) : DynValue.Nil,
+        "texttransparency" => node.Type is "TextLabel" or "TextButton" or "TextBox" ? DynValue.NewNumber(node.TextTransparency) : DynValue.Nil,
+        "imagetransparency" => IsGuiObject(node) && node.Type is "ImageLabel" or "ImageButton" ? DynValue.NewNumber(node.ImageTransparency) : DynValue.Nil,
+        "minsize" => node.Type == "UISizeConstraint" ? Vector2Value(node.MinSize) : DynValue.Nil,
+        "maxsize" => node.Type == "UISizeConstraint" ? Vector2Value(node.MaxSize) : DynValue.Nil,
+        "textscaled" => node.Type is "TextLabel" or "TextButton" or "TextBox" ? DynValue.NewBoolean(node.TextScaled) : DynValue.Nil,
+        "mintextsize" => node.Type == "UITextSizeConstraint" ? DynValue.NewNumber(node.MinTextSize) : DynValue.Nil,
+        "maxtextsize" => node.Type == "UITextSizeConstraint" ? DynValue.NewNumber(node.MaxTextSize) : DynValue.Nil,
         "enabled" => DynValue.NewBoolean(node.Enabled),
         "brightness" => DynValue.NewNumber(node.Brightness),
         "range" => DynValue.NewNumber(node.Range),
@@ -3345,7 +3403,7 @@ public sealed class LuaXRuntime
         "BasePart" => IsBasePart(node),
         "Light" => SceneNodeTypes.IsLight(node),
         "ValueBase" => SceneNodeTypes.IsValueObject(node),
-        "UIComponent" => node.Type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio",
+        "UIComponent" => node.Type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UISizeConstraint" or "UITextSizeConstraint",
         "LuaSourceContainer" => node.Type is "Script" or "ModuleScript",
         "BaseScript" => node.Type == "Script",
         "FaceInstance" or "Decal" => node.Type is "Decal" or "Texture",
@@ -3592,6 +3650,12 @@ public sealed class LuaXRuntime
             }
             else if ((IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam") && instance.Get("Transparency").Type == DataType.Number && double.IsFinite(instance.Get("Transparency").Number))
                 Assign(node, "Transparency", node.Transparency, (float)Math.Clamp(instance.Get("Transparency").Number, 0, 1), value => node.Transparency = value);
+            if (IsGuiObject(node) && instance.Get("BackgroundTransparency") is { Type: DataType.Number } backgroundTransparency && double.IsFinite(backgroundTransparency.Number))
+                Assign(node, "BackgroundTransparency", node.BackgroundTransparency, (float)Math.Clamp(backgroundTransparency.Number, 0, 1), value => node.BackgroundTransparency = value);
+            if (node.Type is "TextLabel" or "TextButton" or "TextBox" && instance.Get("TextTransparency") is { Type: DataType.Number } textTransparency && double.IsFinite(textTransparency.Number))
+                Assign(node, "TextTransparency", node.TextTransparency, (float)Math.Clamp(textTransparency.Number, 0, 1), value => node.TextTransparency = value);
+            if (IsGuiObject(node) && node.Type is "ImageLabel" or "ImageButton" && instance.Get("ImageTransparency") is { Type: DataType.Number } imageTransparency && double.IsFinite(imageTransparency.Number))
+                Assign(node, "ImageTransparency", node.ImageTransparency, (float)Math.Clamp(imageTransparency.Number, 0, 1), value => node.ImageTransparency = value);
             if (instance.Get("Enabled").Type == DataType.Boolean)
             {
                 var wasEnabled = node.Enabled;
@@ -3797,9 +3861,31 @@ public sealed class LuaXRuntime
             if (instance.Get("StrokeColor").CastToString() is { } strokeColor) Assign(node, "StrokeColor", node.StrokeColor, strokeColor, value => node.StrokeColor = value);
             if (instance.Get("StrokeThickness").Type == DataType.Number) Assign(node, "StrokeThickness", node.StrokeThickness, (float)Math.Max(0, instance.Get("StrokeThickness").Number), value => node.StrokeThickness = value);
             if (instance.Get("TextSize").Type == DataType.Number) Assign(node, "TextSize", node.TextSize, (float)Math.Clamp(instance.Get("TextSize").Number, 1, 200), value => node.TextSize = value);
+            if (node.Type is "TextLabel" or "TextButton" or "TextBox" && instance.Get("TextScaled").Type == DataType.Boolean)
+                Assign(node, "TextScaled", node.TextScaled, instance.Get("TextScaled").Boolean, value => node.TextScaled = value);
+            if (node.Type == "UITextSizeConstraint")
+            {
+                if (instance.Get("MinTextSize") is { Type: DataType.Number } minTextSize && double.IsFinite(minTextSize.Number))
+                    Assign(node, "MinTextSize", node.MinTextSize, (float)Math.Clamp(minTextSize.Number, 1, 1000), value => node.MinTextSize = value);
+                if (instance.Get("MaxTextSize") is { Type: DataType.Number } maxTextSize && double.IsFinite(maxTextSize.Number))
+                    Assign(node, "MaxTextSize", node.MaxTextSize, (float)Math.Clamp(maxTextSize.Number, node.MinTextSize, 1000), value => node.MaxTextSize = value);
+            }
             if (instance.Get("LayoutSpacing").Type == DataType.Number) Assign(node, "LayoutSpacing", node.LayoutSpacing, (float)Math.Max(0, instance.Get("LayoutSpacing").Number), value => node.LayoutSpacing = value);
             if (instance.Get("TableColumns").Type == DataType.Number) Assign(node, "TableColumns", node.TableColumns, (int)Math.Clamp(instance.Get("TableColumns").Number, 1, 24), value => node.TableColumns = value);
             if (instance.Get("AspectRatio").Type == DataType.Number) Assign(node, "AspectRatio", node.AspectRatio, (float)Math.Max(.001, instance.Get("AspectRatio").Number), value => node.AspectRatio = value);
+            if (node.Type == "UISizeConstraint")
+            {
+                if (TryReadVector2(instance.Get("MinSize"), out var requestedMin))
+                {
+                    var nextMin = requestedMin.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                    if (!node.MinSize.SequenceEqual(nextMin)) { node.MinSize = nextMin; MarkChanged(node, "MinSize"); }
+                }
+                if (TryReadVector2(instance.Get("MaxSize"), out var requestedMax))
+                {
+                    var nextMax = new[] { Math.Clamp(requestedMax[0], node.MinSize[0], 1000000), Math.Clamp(requestedMax[1], node.MinSize[1], 1000000) };
+                    if (!node.MaxSize.SequenceEqual(nextMax)) { node.MaxSize = nextMax; MarkChanged(node, "MaxSize"); }
+                }
+            }
             if (instance.Get("LayoutDirection").CastToString() is { } layoutDirection) Assign(node, "LayoutDirection", node.LayoutDirection, layoutDirection == "Horizontal" ? "Horizontal" : "Vertical", value => node.LayoutDirection = value);
             if (node.Type == "UIGridLayout")
             {

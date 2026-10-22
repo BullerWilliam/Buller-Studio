@@ -9,7 +9,7 @@ namespace BullerStudio.Services;
 
 public static class GuiRenderService
 {
-    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UISizeConstraint", "UITextSizeConstraint"];
 
     public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null)
     {
@@ -88,6 +88,9 @@ public static class GuiRenderService
                 var aspect = node.Children.FirstOrDefault(child => child.Type == "UIAspectRatio");
                 height = aspect is not null && aspect.AspectRatio > 0 ? width / aspect.AspectRatio : rowHeight;
             }
+            var constrained = ApplyLayoutConstraints(node, width, height);
+            width = constrained.Width;
+            height = constrained.Height;
             var visual = CreateNode(node, project, width, height, selectedId, activated, textChanged);
             if (visual is null) continue;
             Canvas.SetLeft(visual, left);
@@ -119,7 +122,7 @@ public static class GuiRenderService
         };
         var content = new Grid();
         root.Child = content;
-        var element = CreateVisual(node, project, activated, textChanged);
+        var element = CreateVisual(node, project, width, height, activated, textChanged);
         if (element is not null) content.Children.Add(element);
         var childCanvas = new Canvas { ClipToBounds = node.Type != "ScrollingFrame" };
         var childExtent = GetChildrenExtent(node, width, height);
@@ -132,7 +135,7 @@ public static class GuiRenderService
                 Content = childCanvas,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                Background = BackgroundFor(node),
+                Background = Brushes.Transparent,
                 BorderThickness = new Thickness(0)
             };
             content.Children.Add(scroll);
@@ -144,23 +147,47 @@ public static class GuiRenderService
         return root;
     }
 
-    private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged)
+    private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, double width, double height, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged)
     {
         var background = BackgroundFor(node);
+        var fontSize = FontSizeFor(node, width, height);
         FrameworkElement? visual = node.Type switch
         {
             "Frame" => new Border { Background = background },
             "ScrollingFrame" => new Border { Background = background },
             "ImageLabel" => CreateImageLabel(node, project, background),
             "ImageButton" => new Button { Content = new Image { Source = ImageFor(node, project), Stretch = Stretch.Fill }, Background = background, BorderThickness = new Thickness(0), Padding = new Thickness(0) },
-            "TextLabel" => new TextBlock { Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = Math.Max(1, node.TextSize), TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap },
-            "TextButton" => new Button { Content = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = Math.Max(1, node.TextSize), Padding = new Thickness(2) },
-            "TextBox" => new TextBox { Tag = node, Text = node.Text, Foreground = BrushFrom(node.TextColor, Brushes.White), Background = background, FontSize = Math.Max(1, node.TextSize), VerticalContentAlignment = VerticalAlignment.Center },
+            "TextLabel" => new TextBlock { Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap },
+            "TextButton" => new Button { Content = node.TextScaled ? new TextBlock { Text = node.Text, FontSize = fontSize, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center } : node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, Padding = new Thickness(2) },
+            "TextBox" => new TextBox { Tag = node, Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, TextWrapping = node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap, VerticalContentAlignment = VerticalAlignment.Center },
             _ => null
         };
         if (visual is Button button && activated is not null) button.Click += (_, _) => activated(node);
         if (visual is TextBox textBox && textChanged is not null) textBox.TextChanged += (_, _) => textChanged(node, textBox.Text);
         return visual;
+    }
+
+    private static double FontSizeFor(SceneNode node, double width, double height)
+    {
+        if (node.Type is not ("TextLabel" or "TextButton" or "TextBox")) return 1;
+        var constraint = node.Children.FirstOrDefault(child => child.Type == "UITextSizeConstraint");
+        var min = constraint is null ? 1 : Math.Clamp(constraint.MinTextSize, 1, 1000);
+        var max = constraint is null ? 100 : Math.Clamp(constraint.MaxTextSize, min, 1000);
+        if (!node.TextScaled) return Math.Clamp(node.TextSize, min, max);
+        var availableWidth = Math.Max(1, width - 8);
+        var availableHeight = Math.Max(1, height - 8);
+        if (string.IsNullOrEmpty(node.Text)) return Math.Clamp(availableHeight, min, max);
+        var lower = min;
+        var upper = max;
+        for (var attempt = 0; attempt < 12; attempt++)
+        {
+            var candidate = (lower + upper) / 2;
+            var probe = new TextBlock { Text = node.Text, FontSize = candidate, TextWrapping = TextWrapping.Wrap };
+            probe.Measure(new Size(availableWidth, double.PositiveInfinity));
+            if (probe.DesiredSize.Width <= availableWidth + .5 && probe.DesiredSize.Height <= availableHeight + .5) lower = candidate;
+            else upper = candidate;
+        }
+        return lower;
     }
 
     private static Grid CreateImageLabel(SceneNode node, GameProject project, Brush background)
@@ -212,6 +239,15 @@ public static class GuiRenderService
                 : (int)Math.Ceiling(children.Length / (double)grid.Capacity);
             var contentWidth = columns * grid.CellWidth + Math.Max(0, columns - 1) * grid.GapX;
             var contentHeight = rows * grid.CellHeight + Math.Max(0, rows - 1) * grid.GapY;
+            var ordered = children.OrderBy(node => node.LayoutOrder).ToArray();
+            for (var index = 0; index < ordered.Length; index++)
+            {
+                var column = gridLayout.FillDirection == "Vertical" ? index / grid.Capacity : index % grid.Capacity;
+                var row = gridLayout.FillDirection == "Vertical" ? index % grid.Capacity : index / grid.Capacity;
+                var constrained = ApplyLayoutConstraints(ordered[index], grid.CellWidth, grid.CellHeight);
+                contentWidth = Math.Max(contentWidth, column * (grid.CellWidth + grid.GapX) + constrained.Width);
+                contentHeight = Math.Max(contentHeight, row * (grid.CellHeight + grid.GapY) + constrained.Height);
+            }
             return new Size(Math.Max(availableWidth, padding.Left + contentWidth + padding.Right),
                 Math.Max(availableHeight, padding.Top + contentHeight + padding.Bottom));
         }
@@ -285,9 +321,25 @@ public static class GuiRenderService
     {
         var width = Math.Max(1, widthOverride ?? node.SizeScale[0] * availableWidth + node.Size[0]);
         double height = Math.Max(1, node.SizeScale[1] * availableHeight + node.Size[1]);
+        return ApplyLayoutConstraints(node, width, height);
+    }
+
+    private static Size ApplyLayoutConstraints(SceneNode node, double width, double height)
+    {
         var aspect = node.Children.FirstOrDefault(child => child.Type == "UIAspectRatio");
         if (aspect is not null && aspect.AspectRatio > 0) height = width / aspect.AspectRatio;
-        return new Size(width, height);
+        return ApplySizeConstraint(node, width, height);
+    }
+
+    private static Size ApplySizeConstraint(SceneNode node, double width, double height)
+    {
+        var constraint = node.Children.FirstOrDefault(child => child.Type == "UISizeConstraint");
+        if (constraint is null) return new Size(width, height);
+        var min = constraint.MinSize;
+        var max = constraint.MaxSize;
+        if (min.Length < 2 || max.Length < 2) return new Size(width, height);
+        return new Size(Math.Clamp(width, Math.Max(0, min[0]), Math.Max(min[0], max[0])),
+            Math.Clamp(height, Math.Max(0, min[1]), Math.Max(min[1], max[1])));
     }
 
     private static ImageSource? LoadImage(GameProject project, string relativePath)
@@ -340,16 +392,19 @@ public static class GuiRenderService
     private static Brush BackgroundFor(SceneNode node)
     {
         var gradient = ActiveGradient(node);
-        return gradient is null ? BrushFrom(node.Color, Brushes.Transparent)
-            : GradientBrush(gradient, ColorFrom(node.Color, Colors.Transparent));
+        var baseColor = WithTransparency(ColorFrom(node.Color, Colors.Transparent), node.BackgroundTransparency);
+        return gradient is null ? new SolidColorBrush(baseColor) : GradientBrush(gradient, baseColor);
     }
 
     private static Brush ForegroundFor(SceneNode node)
     {
         var gradient = ActiveGradient(node);
-        return gradient is null ? BrushFrom(node.TextColor, Brushes.White)
-            : GradientBrush(gradient, ColorFrom(node.TextColor, Colors.White));
+        var baseColor = WithTransparency(ColorFrom(node.TextColor, Colors.White), node.TextTransparency);
+        return gradient is null ? new SolidColorBrush(baseColor) : GradientBrush(gradient, baseColor);
     }
+
+    private static Color WithTransparency(Color color, float transparency) =>
+        Color.FromArgb((byte)Math.Round(color.A * (1 - Math.Clamp(transparency, 0, 1))), color.R, color.G, color.B);
 
     private static SceneNode? ActiveGradient(SceneNode node) =>
         node.Type is "Frame" or "TextLabel" or "TextButton" or "ImageLabel" or "ImageButton"
@@ -369,6 +424,7 @@ public static class GuiRenderService
         if (source is not BitmapSource image) return source;
         var gradient = ActiveGradient(node);
         var baseColor = ColorFrom(node.Color, Colors.White);
+        baseColor = WithTransparency(baseColor, node.ImageTransparency);
         if (gradient is null && baseColor == Colors.White) return source;
         var width = image.PixelWidth;
         var height = image.PixelHeight;
