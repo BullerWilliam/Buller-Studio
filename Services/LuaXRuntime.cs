@@ -24,6 +24,11 @@ public sealed class LuaXRuntime
     private readonly Dictionary<string, List<ScriptCallback>> explosionHitCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> valueChangedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<BindableConnection>> bindableEventCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<(string NodeId, string? Attribute), List<BindableConnection>> attributeCallbacks = [];
+    private readonly Dictionary<(string NodeId, string? Attribute), Table> attributeSignals = [];
+    private readonly Dictionary<(string Tag, bool Added), List<BindableConnection>> tagCallbacks = [];
+    private readonly Dictionary<(string Tag, bool Added), Table> tagSignals = [];
+    private readonly Dictionary<string, List<BindableConnection>> runServiceCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ScriptCallback> bindableFunctionCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<Coroutine, Stack<BindableInvocationScope>> bindableInvocationScopes = new();
     private readonly Dictionary<string, bool> humanoidWasAlive = new(StringComparer.Ordinal);
@@ -37,6 +42,8 @@ public sealed class LuaXRuntime
     private readonly HashSet<string> queuedScriptIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> startedScriptIds = new(StringComparer.Ordinal);
     private readonly ConditionalWeakTable<Table, LuaXTypeTag> runtimeTypeTags = new();
+    private readonly bool isStudio;
+    private double simulationTime;
     private Script script = null!;
     private DynValue bindableInvokeFactory = DynValue.Nil;
     private DynValue contextualRequireFactory = DynValue.Nil;
@@ -77,16 +84,17 @@ public sealed class LuaXRuntime
     {
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue",
-        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam",
         "Sky", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"
     };
 
-    public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null)
+    public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null, bool isStudio = true)
     {
         this.project = project;
         this.propertyChanged = propertyChanged;
         this.output = output;
+        this.isStudio = isStudio;
         Initialize();
     }
 
@@ -98,6 +106,15 @@ public sealed class LuaXRuntime
         foreach (var callbacks in bindableEventCallbacks.Values)
             foreach (var connection in callbacks) connection.Disconnect();
         bindableEventCallbacks.Clear();
+        foreach (var callbacks in attributeCallbacks.Values)
+            foreach (var connection in callbacks) connection.Disconnect();
+        attributeCallbacks.Clear();
+        foreach (var callbacks in tagCallbacks.Values)
+            foreach (var connection in callbacks) connection.Disconnect();
+        tagCallbacks.Clear();
+        foreach (var callbacks in runServiceCallbacks.Values)
+            foreach (var connection in callbacks) connection.Disconnect();
+        runServiceCallbacks.Clear();
         bindableFunctionCallbacks.Clear();
         explosionHitCallbacks.Clear();
         detonatedExplosions.Clear();
@@ -109,6 +126,7 @@ public sealed class LuaXRuntime
         pendingScriptStarts.Clear();
         queuedScriptIds.Clear();
         startedScriptIds.Clear();
+        simulationTime = 0;
         foreach (var gameScript in project.Scripts.ToArray())
         {
             var node = FindScriptNode(gameScript.Id);
@@ -133,11 +151,24 @@ public sealed class LuaXRuntime
     public void Update(float elapsedSeconds = .05f)
     {
         var elapsed = Math.Clamp(elapsedSeconds, .001f, .25f);
+        UpdateBeforePhysics(elapsed);
+        FireFrameSignal("PostSimulation", DynValue.NewNumber(elapsed));
+        RunDeferredTasks();
         ResumePendingScripts(elapsed);
         RunDelayedTasks(elapsed);
         StartQueuedScripts();
         AdvanceExplosions(elapsed);
         AdvanceDebris(elapsed);
+        FireEndOfFrameSignals(elapsed);
+    }
+
+    public void UpdateBeforePhysics(float elapsedSeconds)
+    {
+        var elapsed = Math.Clamp(elapsedSeconds, .001f, .25f);
+        FireFrameSignal("Stepped", DynValue.NewNumber(simulationTime), DynValue.NewNumber(elapsed));
+        FireFrameSignal("PreSimulation", DynValue.NewNumber(elapsed));
+        RunDeferredTasks();
+        simulationTime += elapsed;
     }
 
     private SceneNode? FindScriptNode(string id) =>
@@ -252,6 +283,8 @@ public sealed class LuaXRuntime
     public void UpdateTouched(float elapsedSeconds = .05f)
     {
         var elapsed = Math.Clamp(elapsedSeconds, .001f, .25f);
+        FireFrameSignal("PostSimulation", DynValue.NewNumber(elapsed));
+        RunDeferredTasks();
         ResumePendingScripts(elapsed);
         RunDelayedTasks(elapsed);
         SynchronizeInstances();
@@ -273,6 +306,7 @@ public sealed class LuaXRuntime
         }
         activeContacts.Clear();
         activeContacts.UnionWith(touchingNow);
+        FireEndOfFrameSignals(elapsed);
     }
 
     public void SynchronizeExternalProperty(SceneNode node, string property)
@@ -338,6 +372,8 @@ public sealed class LuaXRuntime
         debris.Set("Name", DynValue.NewString("Debris"));
         debris.Set("ClassName", DynValue.NewString("Debris"));
         debris.Set("AddItem", DynValue.NewCallback((_, args) => AddDebrisItem(debris, args)));
+        var collectionService = CreateCollectionService();
+        var runService = CreateRunService();
         game.Set("Workspace", DynValue.NewTable(workspace));
         game.Set("Players", DynValue.NewTable(players));
         game.Set("Lighting", DynValue.NewTable(lighting));
@@ -346,6 +382,8 @@ public sealed class LuaXRuntime
         game.Set("ServerStorage", DynValue.NewTable(serverStorage));
         game.Set("Gui", DynValue.NewTable(gui));
         game.Set("Debris", DynValue.NewTable(debris));
+        game.Set("CollectionService", DynValue.NewTable(collectionService));
+        game.Set("RunService", DynValue.NewTable(runService));
         game.Set("GetService", DynValue.NewCallback((_, args) =>
         {
             var serviceName = args.Count > 1 ? args[1].CastToString() : args.Count == 1 ? args[0].CastToString() : null;
@@ -359,6 +397,8 @@ public sealed class LuaXRuntime
                 "ServerStorage" => DynValue.NewTable(serverStorage),
                 "Gui" => DynValue.NewTable(gui),
                 "Debris" => DynValue.NewTable(debris),
+                "CollectionService" => DynValue.NewTable(collectionService),
+                "RunService" => DynValue.NewTable(runService),
                 _ => DynValue.Nil
             };
         }));
@@ -387,6 +427,10 @@ public sealed class LuaXRuntime
         raycastFilterEnum.Set("Exclude", DynValue.NewString("Exclude"));
         raycastFilterEnum.Set("Include", DynValue.NewString("Include"));
         enumTable.Set("RaycastFilterType", DynValue.NewTable(raycastFilterEnum));
+        var normalIdEnum = new Table(script);
+        foreach (var face in new[] { "Top", "Bottom", "Front", "Back", "Left", "Right" })
+            normalIdEnum.Set(face, DynValue.NewString(face));
+        enumTable.Set("NormalId", DynValue.NewTable(normalIdEnum));
         script.Globals.Set("Enum", DynValue.NewTable(enumTable));
         var raycastParams = new Table(script);
         raycastParams.Set("new", DynValue.NewCallback((_, _) =>
@@ -403,6 +447,9 @@ public sealed class LuaXRuntime
         vector3.Set("zero", VectorValue([0, 0, 0]));
         vector3.Set("one", VectorValue([1, 1, 1]));
         script.Globals.Set("Vector3", DynValue.NewTable(vector3));
+        var vector2 = new Table(script);
+        vector2.Set("new", DynValue.NewCallback((_, args) => Vector2Value([NumberArgument(args, 0), NumberArgument(args, 1)])));
+        script.Globals.Set("Vector2", DynValue.NewTable(vector2));
         script.Globals.Set("LookAtRotation", DynValue.NewCallback((_, args) => CreateLookAtRotation(args)));
         var color3 = new Table(script);
         color3.Set("new", DynValue.NewCallback((_, args) => CreateColor(NumberArgument(args, 0), NumberArgument(args, 1), NumberArgument(args, 2))));
@@ -414,6 +461,36 @@ public sealed class LuaXRuntime
             return ColorValue(hex.Length > 0 && !hex.StartsWith('#') ? $"#{hex}" : hex);
         }));
         script.Globals.Set("Color3", DynValue.NewTable(color3));
+        var numberRange = new Table(script);
+        numberRange.Set("new", DynValue.NewCallback((_, args) =>
+        {
+            if (args.Count == 0 || args[0].Type != DataType.Number || !double.IsFinite(args[0].Number)) return DynValue.Nil;
+            var minimum = (float)args[0].Number;
+            var maximum = args.Count > 1 && args[1].Type == DataType.Number && double.IsFinite(args[1].Number) ? (float)args[1].Number : minimum;
+            return NumberRangeValue([Math.Min(minimum, maximum), Math.Max(minimum, maximum)]);
+        }));
+        script.Globals.Set("NumberRange", DynValue.NewTable(numberRange));
+        var numberSequenceKeypoint = new Table(script);
+        numberSequenceKeypoint.Set("new", DynValue.NewCallback((_, args) =>
+            args.Count >= 2 && args[0].Type == DataType.Number && args[1].Type == DataType.Number
+            && float.IsFinite((float)args[0].Number) && float.IsFinite((float)args[1].Number)
+            && (args.Count < 3 || args[2].Type == DataType.Number && float.IsFinite((float)args[2].Number) && args[2].Number >= 0)
+                ? NumberSequenceKeypointValue(new ParticleNumberKeypoint((float)args[0].Number, (float)args[1].Number,
+                    args.Count > 2 ? (float)args[2].Number : 0)) : DynValue.Nil));
+        script.Globals.Set("NumberSequenceKeypoint", DynValue.NewTable(numberSequenceKeypoint));
+        var numberSequence = new Table(script);
+        numberSequence.Set("new", DynValue.NewCallback((_, args) => CreateNumberSequence(args)));
+        script.Globals.Set("NumberSequence", DynValue.NewTable(numberSequence));
+        var colorSequenceKeypoint = new Table(script);
+        colorSequenceKeypoint.Set("new", DynValue.NewCallback((_, args) =>
+            args.Count >= 2 && args[0].Type == DataType.Number && float.IsFinite((float)args[0].Number)
+            && IsTypedValue(args[1], "Color3")
+                ? ColorSequenceKeypointValue(new ParticleColorKeypoint((float)args[0].Number, ReadColor(args[1], "#FFFFFF")))
+                : DynValue.Nil));
+        script.Globals.Set("ColorSequenceKeypoint", DynValue.NewTable(colorSequenceKeypoint));
+        var colorSequence = new Table(script);
+        colorSequence.Set("new", DynValue.NewCallback((_, args) => CreateColorSequence(args)));
+        script.Globals.Set("ColorSequence", DynValue.NewTable(colorSequence));
         var udim = new Table(script);
         udim.Set("new", DynValue.NewCallback((_, args) => CreateUDim(NumberArgument(args, 0), NumberArgument(args, 1))));
         script.Globals.Set("UDim", DynValue.NewTable(udim));
@@ -915,6 +992,52 @@ public sealed class LuaXRuntime
         instance.Set("Mode", DynValue.NewString(node.CameraMode));
         instance.Set("Subject", DynValue.NewString(node.Subject));
         instance.Set("FieldOfView", DynValue.NewNumber(node.FieldOfView));
+        if (node.Type == "ParticleEmitter")
+        {
+            instance.Set("Size", NumberSequenceValue(node.SizeSequence.Count > 0 ? node.SizeSequence : [new(0, node.EffectSize), new(1, node.EffectSize)]));
+            instance.Set("Color", ColorSequenceValue(node.ColorSequence.Count > 0 ? node.ColorSequence : [new(0, node.Color), new(1, node.Color)]));
+            instance.Set("Transparency", NumberSequenceValue(node.TransparencySequence.Count > 0 ? node.TransparencySequence : [new(0, node.Transparency), new(1, node.Transparency)]));
+            instance.Set("Rate", DynValue.NewNumber(node.Rate));
+            instance.Set("Speed", NumberRangeValue(node.SpeedRange));
+            instance.Set("Lifetime", NumberRangeValue(node.LifetimeRange));
+            instance.Set("SpreadAngle", Vector2Value(node.SpreadAngle));
+            instance.Set("EmissionDirection", DynValue.NewString(node.EmissionDirection));
+            instance.Set("Emit", DynValue.NewCallback((_, args) =>
+            {
+                var index = GetInstanceMethodArgumentIndex(node, args);
+                if (args.Count > index && args[index].Type == DataType.Number && double.IsFinite(args[index].Number))
+                {
+                    var count = (int)Math.Clamp(Math.Truncate(args[index].Number), 0, 500);
+                    node.PendingParticleEmits = Math.Min(500, node.PendingParticleEmits + count);
+                    if (count > 0) propertyChanged?.Invoke(node, "Emit", DynValue.NewNumber(count));
+                }
+                return DynValue.Nil;
+            }));
+            instance.Set("Clear", DynValue.NewCallback((_, _) =>
+            {
+                node.PendingParticleEmits = 0;
+                node.ParticleClearVersion++;
+                propertyChanged?.Invoke(node, "Clear", DynValue.Nil);
+                return DynValue.Nil;
+            }));
+        }
+        if (node.Type == "Trail")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("Lifetime", DynValue.NewNumber(node.TrailLifetime));
+            instance.Set("MinLength", DynValue.NewNumber(node.TrailMinLength));
+            instance.Set("MaxLength", DynValue.NewNumber(node.TrailMaxLength));
+            instance.Set("WidthScale", NumberSequenceValue(node.TrailWidthSequence.Count > 0 ? node.TrailWidthSequence : [new(0, node.TrailWidth), new(1, node.TrailWidth)]));
+            instance.Set("Color", ColorSequenceValue(node.ColorSequence.Count > 0 ? node.ColorSequence : [new(0, node.Color), new(1, node.Color)]));
+            instance.Set("Transparency", NumberSequenceValue(node.TransparencySequence.Count > 0 ? node.TransparencySequence : [new(0, node.Transparency), new(1, node.Transparency)]));
+            instance.Set("Clear", DynValue.NewCallback((_, _) =>
+            {
+                node.TrailClearVersion++;
+                propertyChanged?.Invoke(node, "Clear", DynValue.Nil);
+                return DynValue.Nil;
+            }));
+        }
         instance.Set("SetProperty", DynValue.NewCallback((_, args) =>
         {
             var index = GetInstanceMethodArgumentIndex(node, args);
@@ -945,6 +1068,8 @@ public sealed class LuaXRuntime
         }));
         instance.Set("Destroy", DynValue.NewCallback((_, _) => DestroyInstance(node)));
         instance.Set("Clone", DynValue.NewCallback((_, _) => CloneInstance(node)));
+        InstallAttributeApi(node, instance);
+        InstallTagApi(node, instance);
         if (node.Type == "Workspace") instance.Set("Raycast", DynValue.NewCallback((_, args) => Raycast(node, args)));
         if (SceneNodeTypes.IsValueObject(node))
         {
@@ -1156,6 +1281,338 @@ public sealed class LuaXRuntime
             return DynValue.Nil;
         }));
     }
+
+    private void InstallAttributeApi(SceneNode node, Table instance)
+    {
+        instance.Set("AttributeChanged", DynValue.NewTable(GetAttributeSignal(node, null)));
+        instance.Set("GetAttribute", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            return args.Count > index && args[index].Type == DataType.String
+                && node.Attributes.TryGetValue(args[index].String, out var value) ? AttributeValueToLua(value) : DynValue.Nil;
+        }));
+        instance.Set("GetAttributes", DynValue.NewCallback((_, _) =>
+        {
+            var values = new Table(script);
+            foreach (var (name, value) in node.Attributes) values.Set(name, AttributeValueToLua(value));
+            return DynValue.NewTable(values);
+        }));
+        instance.Set("SetAttribute", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            if (args.Count <= index || args[index].Type != DataType.String || string.IsNullOrWhiteSpace(args[index].String)
+                || args[index].String.Length > 256 || !instances.ContainsKey(node.Id)) return DynValue.Nil;
+            var name = args[index].String;
+            var value = args.Count > index + 1 ? args[index + 1] : DynValue.Nil;
+            if (value.Type == DataType.Nil)
+            {
+                if (node.Attributes.Remove(name)) FireAttributeChanged(node, name);
+                return DynValue.Nil;
+            }
+            if (!TryReadAttributeValue(value, out var next)) return DynValue.Nil;
+            if (node.Attributes.TryGetValue(name, out var previous) && AttributeValuesEqual(previous, next)) return DynValue.Nil;
+            node.Attributes[name] = next;
+            FireAttributeChanged(node, name);
+            return DynValue.Nil;
+        }));
+        instance.Set("GetAttributeChangedSignal", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            return args.Count > index && args[index].Type == DataType.String && !string.IsNullOrWhiteSpace(args[index].String)
+                ? DynValue.NewTable(GetAttributeSignal(node, args[index].String)) : DynValue.Nil;
+        }));
+    }
+
+    private Table GetAttributeSignal(SceneNode node, string? attribute)
+    {
+        var key = (node.Id, attribute);
+        if (attributeSignals.TryGetValue(key, out var existing)) return existing;
+        var signal = new Table(script);
+        runtimeTypeTags.Add(signal, new LuaXTypeTag("RBXScriptSignal"));
+        signal.Set("Connect", DynValue.NewCallback((_, args) =>
+        {
+            var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, signal) ? 1 : 0;
+            if (currentGameScript is not { } owner || args.Count <= index || args[index].Type != DataType.Function) return DynValue.Nil;
+            var connectionTable = new Table(script);
+            runtimeTypeTags.Add(connectionTable, new LuaXTypeTag("RBXScriptConnection"));
+            var connection = new BindableConnection(owner, args[index], connectionTable);
+            connectionTable.Set("Connected", DynValue.NewBoolean(true));
+            connectionTable.Set("Disconnect", DynValue.NewCallback((_, _) =>
+            {
+                connection.Disconnect();
+                if (attributeCallbacks.TryGetValue(key, out var current)) current.Remove(connection);
+                return DynValue.Nil;
+            }));
+            if (!attributeCallbacks.TryGetValue(key, out var callbacks)) attributeCallbacks[key] = callbacks = [];
+            callbacks.Add(connection);
+            return DynValue.NewTable(connectionTable);
+        }));
+        attributeSignals[key] = signal;
+        return signal;
+    }
+
+    private void FireAttributeChanged(SceneNode node, string name)
+    {
+        foreach (var (key, arguments) in new[]
+        {
+            ((node.Id, (string?)null), new[] { DynValue.NewString(name) }),
+            ((node.Id, (string?)name), Array.Empty<DynValue>())
+        })
+        {
+            if (!attributeCallbacks.TryGetValue(key, out var callbacks)) continue;
+            foreach (var connection in callbacks.ToArray())
+                if (connection.Connected)
+                    scheduledTasks.Add(new ScheduledTask(connection.Owner, script.CreateCoroutine(connection.Function), arguments, 0, true));
+        }
+    }
+
+    private Table CreateCollectionService()
+    {
+        var service = new Table(script);
+        runtimeTypeTags.Add(service, new LuaXTypeTag("CollectionService"));
+        service.Set("Name", DynValue.NewString("CollectionService"));
+        service.Set("ClassName", DynValue.NewString("CollectionService"));
+        int ArgumentIndex(CallbackArguments args) => args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, service) ? 1 : 0;
+        service.Set("AddTag", DynValue.NewCallback((_, args) =>
+        {
+            var index = ArgumentIndex(args);
+            if (args.Count > index + 1 && ReadNodeArgument(args[index]) is { } node && args[index + 1].Type == DataType.String)
+                AddTag(node, args[index + 1].String);
+            return DynValue.Nil;
+        }));
+        service.Set("RemoveTag", DynValue.NewCallback((_, args) =>
+        {
+            var index = ArgumentIndex(args);
+            if (args.Count > index + 1 && ReadNodeArgument(args[index]) is { } node && args[index + 1].Type == DataType.String)
+                RemoveTag(node, args[index + 1].String);
+            return DynValue.Nil;
+        }));
+        service.Set("HasTag", DynValue.NewCallback((_, args) =>
+        {
+            var index = ArgumentIndex(args);
+            return DynValue.NewBoolean(args.Count > index + 1 && ReadNodeArgument(args[index]) is { } node
+                && args[index + 1].Type == DataType.String && node.Tags.Contains(args[index + 1].String, StringComparer.Ordinal));
+        }));
+        service.Set("GetTags", DynValue.NewCallback((_, args) =>
+        {
+            var index = ArgumentIndex(args);
+            return TagArray(args.Count > index ? ReadNodeArgument(args[index])?.Tags : null);
+        }));
+        service.Set("GetTagged", DynValue.NewCallback((_, args) =>
+        {
+            var index = ArgumentIndex(args);
+            var values = new Table(script);
+            if (args.Count > index && args[index].Type == DataType.String)
+            {
+                var item = 1;
+                foreach (var node in GameProjectStore.Flatten(project).Where(node => node.Tags.Contains(args[index].String, StringComparer.Ordinal)))
+                    if (instances.TryGetValue(node.Id, out var instance)) values.Set(item++, DynValue.NewTable(instance));
+            }
+            return DynValue.NewTable(values);
+        }));
+        service.Set("GetAllTags", DynValue.NewCallback((_, _) => TagArray(GameProjectStore.Flatten(project)
+            .SelectMany(node => node.Tags).Distinct(StringComparer.Ordinal).OrderBy(tag => tag, StringComparer.Ordinal).ToArray())));
+        service.Set("GetInstanceAddedSignal", DynValue.NewCallback((_, args) =>
+        {
+            var index = ArgumentIndex(args);
+            return args.Count > index && args[index].Type == DataType.String
+                ? DynValue.NewTable(GetTagSignal(args[index].String, true)) : DynValue.Nil;
+        }));
+        service.Set("GetInstanceRemovedSignal", DynValue.NewCallback((_, args) =>
+        {
+            var index = ArgumentIndex(args);
+            return args.Count > index && args[index].Type == DataType.String
+                ? DynValue.NewTable(GetTagSignal(args[index].String, false)) : DynValue.Nil;
+        }));
+        return service;
+    }
+
+    private Table CreateRunService()
+    {
+        var service = new Table(script);
+        runtimeTypeTags.Add(service, new LuaXTypeTag("RunService"));
+        service.Set("Name", DynValue.NewString("RunService"));
+        service.Set("ClassName", DynValue.NewString("RunService"));
+        service.Set("IsRunning", DynValue.NewCallback((_, _) => DynValue.NewBoolean(true)));
+        service.Set("IsEdit", DynValue.NewCallback((_, _) => DynValue.NewBoolean(false)));
+        service.Set("IsStudio", DynValue.NewCallback((_, _) => DynValue.NewBoolean(isStudio)));
+        foreach (var eventName in new[] { "PreSimulation", "Stepped", "PostSimulation", "Heartbeat", "PreRender", "RenderStepped" })
+        {
+            var signal = new Table(script);
+            runtimeTypeTags.Add(signal, new LuaXTypeTag("RBXScriptSignal"));
+            signal.Set("Connect", DynValue.NewCallback((_, args) =>
+            {
+                var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, signal) ? 1 : 0;
+                if (currentGameScript is not { } owner || args.Count <= index || args[index].Type != DataType.Function) return DynValue.Nil;
+                var connectionTable = new Table(script);
+                runtimeTypeTags.Add(connectionTable, new LuaXTypeTag("RBXScriptConnection"));
+                var connection = new BindableConnection(owner, args[index], connectionTable);
+                connectionTable.Set("Connected", DynValue.NewBoolean(true));
+                connectionTable.Set("Disconnect", DynValue.NewCallback((_, _) =>
+                {
+                    connection.Disconnect();
+                    if (runServiceCallbacks.TryGetValue(eventName, out var current)) current.Remove(connection);
+                    return DynValue.Nil;
+                }));
+                if (!runServiceCallbacks.TryGetValue(eventName, out var callbacks)) runServiceCallbacks[eventName] = callbacks = [];
+                callbacks.Add(connection);
+                return DynValue.NewTable(connectionTable);
+            }));
+            service.Set(eventName, DynValue.NewTable(signal));
+        }
+        return service;
+    }
+
+    private void FireFrameSignal(string eventName, params DynValue[] arguments)
+    {
+        if (!runServiceCallbacks.TryGetValue(eventName, out var callbacks)) return;
+        foreach (var connection in callbacks.ToArray())
+            if (connection.Connected)
+                scheduledTasks.Add(new ScheduledTask(connection.Owner, script.CreateCoroutine(connection.Function), arguments, 0, true));
+    }
+
+    private void FireEndOfFrameSignals(float elapsed)
+    {
+        var delta = DynValue.NewNumber(elapsed);
+        FireFrameSignal("Heartbeat", delta);
+        RunDeferredTasks();
+        FireFrameSignal("PreRender", delta);
+        FireFrameSignal("RenderStepped", delta);
+        RunDeferredTasks();
+    }
+
+    private void InstallTagApi(SceneNode node, Table instance)
+    {
+        instance.Set("AddTag", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            if (args.Count > index && args[index].Type == DataType.String) AddTag(node, args[index].String);
+            return DynValue.Nil;
+        }));
+        instance.Set("RemoveTag", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            if (args.Count > index && args[index].Type == DataType.String) RemoveTag(node, args[index].String);
+            return DynValue.Nil;
+        }));
+        instance.Set("HasTag", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            return DynValue.NewBoolean(args.Count > index && args[index].Type == DataType.String
+                && node.Tags.Contains(args[index].String, StringComparer.Ordinal));
+        }));
+        instance.Set("GetTags", DynValue.NewCallback((_, _) => TagArray(node.Tags)));
+    }
+
+    private DynValue TagArray(IEnumerable<string>? tags)
+    {
+        var values = new Table(script);
+        var index = 1;
+        if (tags is not null)
+            foreach (var tag in tags) values.Set(index++, DynValue.NewString(tag));
+        return DynValue.NewTable(values);
+    }
+
+    private bool IsAttached(SceneNode node) => GameProjectStore.Flatten(project).Any(item => ReferenceEquals(item, node));
+
+    private void AddTag(SceneNode node, string tag)
+    {
+        if (!instances.ContainsKey(node.Id) || string.IsNullOrWhiteSpace(tag) || tag.Length > 256 || node.Tags.Contains(tag, StringComparer.Ordinal)) return;
+        node.Tags.Add(tag);
+        if (IsAttached(node)) FireTagChanged(node, tag, true);
+    }
+
+    private void RemoveTag(SceneNode node, string tag)
+    {
+        if (!instances.ContainsKey(node.Id) || !node.Tags.Remove(tag)) return;
+        if (IsAttached(node)) FireTagChanged(node, tag, false);
+    }
+
+    private Table GetTagSignal(string tag, bool added)
+    {
+        var key = (tag, added);
+        if (tagSignals.TryGetValue(key, out var existing)) return existing;
+        var signal = new Table(script);
+        runtimeTypeTags.Add(signal, new LuaXTypeTag("RBXScriptSignal"));
+        signal.Set("Connect", DynValue.NewCallback((_, args) =>
+        {
+            var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, signal) ? 1 : 0;
+            if (currentGameScript is not { } owner || args.Count <= index || args[index].Type != DataType.Function) return DynValue.Nil;
+            var connectionTable = new Table(script);
+            runtimeTypeTags.Add(connectionTable, new LuaXTypeTag("RBXScriptConnection"));
+            var connection = new BindableConnection(owner, args[index], connectionTable);
+            connectionTable.Set("Connected", DynValue.NewBoolean(true));
+            connectionTable.Set("Disconnect", DynValue.NewCallback((_, _) =>
+            {
+                connection.Disconnect();
+                if (tagCallbacks.TryGetValue(key, out var current)) current.Remove(connection);
+                return DynValue.Nil;
+            }));
+            if (!tagCallbacks.TryGetValue(key, out var callbacks)) tagCallbacks[key] = callbacks = [];
+            callbacks.Add(connection);
+            return DynValue.NewTable(connectionTable);
+        }));
+        tagSignals[key] = signal;
+        return signal;
+    }
+
+    private void FireTagChanged(SceneNode node, string tag, bool added)
+    {
+        if (!instances.TryGetValue(node.Id, out var instance) || !tagCallbacks.TryGetValue((tag, added), out var callbacks)) return;
+        foreach (var connection in callbacks.ToArray())
+            if (connection.Connected)
+                scheduledTasks.Add(new ScheduledTask(connection.Owner, script.CreateCoroutine(connection.Function), [DynValue.NewTable(instance)], 0, true));
+    }
+
+    private void FireSubtreeTagChanges(SceneNode source, bool added)
+    {
+        foreach (var node in new[] { source }.Concat(GameProjectStore.Flatten(source.Children)))
+            foreach (var tag in node.Tags) FireTagChanged(node, tag, added);
+    }
+
+    private DynValue AttributeValueToLua(SceneAttributeValue value) => value.Type switch
+    {
+        "String" => DynValue.NewString(value.StringValue),
+        "Boolean" => DynValue.NewBoolean(value.BooleanValue),
+        "Number" => DynValue.NewNumber(value.NumberValue),
+        "Vector3" => VectorValue(value.Vector3Value),
+        "Color3" => ColorValue(value.Color3Value),
+        _ => DynValue.Nil
+    };
+
+    private bool TryReadAttributeValue(DynValue value, out SceneAttributeValue attribute)
+    {
+        attribute = new SceneAttributeValue();
+        if (value.Type == DataType.String) { attribute.Type = "String"; attribute.StringValue = value.String; return true; }
+        if (value.Type == DataType.Boolean) { attribute.Type = "Boolean"; attribute.BooleanValue = value.Boolean; return true; }
+        if (value.Type == DataType.Number && double.IsFinite(value.Number)) { attribute.Type = "Number"; attribute.NumberValue = value.Number; return true; }
+        if (IsTypedValue(value, "Vector3"))
+        {
+            var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+            if (!vector.All(float.IsFinite)) return false;
+            attribute.Type = "Vector3";
+            attribute.Vector3Value = vector;
+            return true;
+        }
+        if (IsTypedValue(value, "Color3"))
+        {
+            attribute.Type = "Color3";
+            attribute.Color3Value = ReadColor(value, "#000000");
+            return true;
+        }
+        return false;
+    }
+
+    private static bool AttributeValuesEqual(SceneAttributeValue left, SceneAttributeValue right) =>
+        left.Type == right.Type && (left.Type switch
+        {
+            "String" => left.StringValue == right.StringValue,
+            "Boolean" => left.BooleanValue == right.BooleanValue,
+            "Number" => left.NumberValue == right.NumberValue,
+            "Vector3" => left.Vector3Value.SequenceEqual(right.Vector3Value),
+            "Color3" => left.Color3Value == right.Color3Value,
+            _ => false
+        });
 
     public void InvokePromptTriggered(string promptId, string playerId)
     {
@@ -1417,6 +1874,7 @@ public sealed class LuaXRuntime
         if (className == "Fire") { node.Color = "#FF6A00"; node.EffectSize = 5; }
         if (className == "Smoke") node.Color = "#B0B0B0";
         if (className == "Sparkles") node.Color = "#FFFFFF";
+        if (className == "ParticleEmitter") node.Color = "#FFFFFF";
         createdNodes[node.Id] = node;
         var instance = CreateInstance(node);
         instances[node.Id] = instance;
@@ -1452,7 +1910,7 @@ public sealed class LuaXRuntime
                 instances[node.Id].Set("Part0", GetPartReferenceValue(node.Part0));
                 instances[node.Id].Set("Part1", GetPartReferenceValue(node.Part1));
             }
-            if (node.Type == "Beam")
+            if (node.Type is "Beam" or "Trail")
             {
                 instances[node.Id].Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
                 instances[node.Id].Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
@@ -1506,9 +1964,11 @@ public sealed class LuaXRuntime
     private DynValue DestroyInstance(SceneNode node)
     {
         if (node.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" || !instances.ContainsKey(node.Id)) return DynValue.Nil;
+        var wasAttached = IsAttached(node);
         var oldParent = FindParentNode(node);
         var sourceCollection = FindSourceCollection(node);
         sourceCollection?.Remove(node);
+        if (wasAttached) FireSubtreeTagChanges(node, false);
         if (oldParent is not null) RefreshParentChildren(oldParent);
         if (instances.TryGetValue(node.Id, out var removedInstance)) removedInstance.Set("Parent", DynValue.Nil);
         var removedNodes = new[] { node }.Concat(GameProjectStore.Flatten(node.Children)).ToArray();
@@ -1536,6 +1996,12 @@ public sealed class LuaXRuntime
             project.Scripts.RemoveAll(script => script.Id == removed.Id);
         }
         var removedIds = removedNodes.Select(removed => removed.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var key in attributeCallbacks.Keys.Where(key => removedIds.Contains(key.NodeId)).ToArray())
+        {
+            foreach (var connection in attributeCallbacks[key]) connection.Disconnect();
+            attributeCallbacks.Remove(key);
+        }
+        foreach (var key in attributeSignals.Keys.Where(key => removedIds.Contains(key.NodeId)).ToArray()) attributeSignals.Remove(key);
         debrisItems.RemoveAll(item => removedIds.Contains(item.Node.Id));
         foreach (var objectValue in KnownNodes().Where(item => item.Type == "ObjectValue" && removedIds.Contains(item.ObjectValueId)))
         {
@@ -1574,6 +2040,24 @@ public sealed class LuaXRuntime
                 connection.Disconnect();
                 callbacks.Remove(connection);
             }
+        foreach (var callbacks in attributeCallbacks.Values)
+            foreach (var connection in callbacks.Where(item => scriptIds.Contains(item.Owner.Id)).ToArray())
+            {
+                connection.Disconnect();
+                callbacks.Remove(connection);
+            }
+        foreach (var callbacks in tagCallbacks.Values)
+            foreach (var connection in callbacks.Where(item => scriptIds.Contains(item.Owner.Id)).ToArray())
+            {
+                connection.Disconnect();
+                callbacks.Remove(connection);
+            }
+        foreach (var callbacks in runServiceCallbacks.Values)
+            foreach (var connection in callbacks.Where(item => scriptIds.Contains(item.Owner.Id)).ToArray())
+            {
+                connection.Disconnect();
+                callbacks.Remove(connection);
+            }
         foreach (var id in bindableFunctionCallbacks.Where(item => scriptIds.Contains(item.Value.GameScript.Id)).Select(item => item.Key).ToArray())
             bindableFunctionCallbacks.Remove(id);
     }
@@ -1605,6 +2089,7 @@ public sealed class LuaXRuntime
     private bool TrySetParent(SceneNode source, DynValue value, bool updateLinks = true)
     {
         if (source.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return false;
+        var wasAttached = IsAttached(source);
         if (value.Type == DataType.Nil)
         {
             var detachedOldParent = FindParentNode(source);
@@ -1612,6 +2097,7 @@ public sealed class LuaXRuntime
             if (oldCollection is null) return createdNodes.ContainsKey(source.Id);
             oldCollection.Remove(source);
             createdNodes[source.Id] = source;
+            if (wasAttached) FireSubtreeTagChanges(source, false);
             if (updateLinks) RefreshLinksForMove(source, detachedOldParent, null);
             StopInactiveScripts(source);
             return true;
@@ -1627,6 +2113,8 @@ public sealed class LuaXRuntime
         if (sourceCollection is null && !createdNodes.ContainsKey(source.Id)) return false;
         sourceCollection?.Remove(source);
         parent.Children.Add(source);
+        var isAttached = IsAttached(source);
+        if (wasAttached != isAttached) FireSubtreeTagChanges(source, isAttached);
         if (updateLinks) RefreshLinksForMove(source, oldParent, parent);
         StopInactiveScripts(source);
         QueueRunnableScripts(source);
@@ -1722,7 +2210,7 @@ public sealed class LuaXRuntime
                 instance.Set("Part0", GetPartReferenceValue(node.Part0));
                 instance.Set("Part1", GetPartReferenceValue(node.Part1));
             }
-            if (node.Type == "Beam")
+            if (node.Type is "Beam" or "Trail")
             {
                 instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
                 instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
@@ -1897,6 +2385,30 @@ public sealed class LuaXRuntime
     private DynValue SetPropertyValue(SceneNode node, string property, DynValue value)
     {
         var normalized = property.ToLowerInvariant();
+        if (node.Type == "Trail" && normalized is ("color" or "transparency" or "widthscale" or "lifetime" or "minlength" or "maxlength"))
+        {
+            if (!TrySetTrailProperty(node, normalized, value)) return DynValue.Nil;
+            var canonical = normalized switch
+            {
+                "widthscale" => "WidthScale",
+                "minlength" => "MinLength",
+                "maxlength" => "MaxLength",
+                _ => char.ToUpperInvariant(normalized[0]) + normalized[1..]
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var trailInstance)) trailInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "ParticleEmitter" && normalized is ("size" or "color" or "transparency" or "rate" or "speed" or "lifetime" or "spreadangle" or "emissiondirection"))
+        {
+            if (!TrySetParticleEmitterProperty(node, normalized, value)) return DynValue.Nil;
+            var canonical = char.ToUpperInvariant(normalized[0]) + normalized[1..];
+            if (instances.TryGetValue(node.Id, out var emitterInstance))
+                emitterInstance.Set(canonical, GetPropertyValue(node, canonical));
+            propertyChanged?.Invoke(node, canonical, GetPropertyValue(node, canonical));
+            return DynValue.Nil;
+        }
         if (normalized == "oninvoke" && node.Type == "BindableFunction")
         {
             SetBindableFunctionCallback(node, value);
@@ -2153,7 +2665,7 @@ public sealed class LuaXRuntime
                     break;
                 case "attachment0":
                 case "attachment1":
-                    if (node.Type != "Beam") return DynValue.Nil;
+                    if (node.Type is not ("Beam" or "Trail")) return DynValue.Nil;
                     var attachment = value.Type == DataType.Nil ? null : ReadNodeArgument(value);
                     if (value.Type != DataType.Nil && attachment?.Type != "Attachment") return DynValue.Nil;
                     var attachmentId = attachment?.Id ?? string.Empty;
@@ -2304,10 +2816,106 @@ public sealed class LuaXRuntime
         && instances.TryGetValue(humanoid.Id, out var instance)
             ? DynValue.NewTable(instance) : DynValue.Nil;
 
+    private bool TrySetTrailProperty(SceneNode node, string property, DynValue value)
+    {
+        switch (property)
+        {
+            case "color" when TryReadColorSequence(value, out var color):
+                node.ColorSequence = ParticleSequenceService.NormalizeColor(color);
+                node.Color = node.ColorSequence[0].Value;
+                return true;
+            case "transparency" when TryReadNumberSequence(value, out var transparency):
+                node.TransparencySequence = ParticleSequenceService.NormalizeNumber(transparency, 0, 1);
+                node.Transparency = node.TransparencySequence[0].Value;
+                return true;
+            case "widthscale" when TryReadNumberSequence(value, out var width):
+                node.TrailWidthSequence = ParticleSequenceService.NormalizeNumber(width, 0, 1);
+                node.TrailWidth = node.TrailWidthSequence[0].Value;
+                return true;
+            case "lifetime" when value.Type == DataType.Number && float.IsFinite((float)value.Number):
+                node.TrailLifetime = (float)Math.Clamp(value.Number, .01, 20);
+                return true;
+            case "minlength" when value.Type == DataType.Number && float.IsFinite((float)value.Number):
+                node.TrailMinLength = (float)Math.Clamp(value.Number, 0, 100);
+                return true;
+            case "maxlength" when value.Type == DataType.Number && float.IsFinite((float)value.Number):
+                node.TrailMaxLength = (float)Math.Clamp(value.Number, 0, 10000);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private bool TrySetParticleEmitterProperty(SceneNode node, string property, DynValue value)
+    {
+        switch (property)
+        {
+            case "size" when TryReadNumberSequence(value, out var size):
+                node.SizeSequence = ParticleSequenceService.NormalizeNumber(size, 0, 100);
+                node.EffectSize = node.SizeSequence[0].Value;
+                return true;
+            case "color" when TryReadColorSequence(value, out var color):
+                node.ColorSequence = ParticleSequenceService.NormalizeColor(color);
+                node.Color = node.ColorSequence[0].Value;
+                return true;
+            case "transparency" when TryReadNumberSequence(value, out var transparency):
+                node.TransparencySequence = ParticleSequenceService.NormalizeNumber(transparency, 0, 1);
+                node.Transparency = node.TransparencySequence[0].Value;
+                return true;
+            case "rate" when value.Type == DataType.Number && double.IsFinite(value.Number):
+                node.Rate = (float)Math.Clamp(value.Number, 0, 200);
+                return true;
+            case "speed" when TryReadNumberRange(value, out var speed):
+                node.SpeedRange = [Math.Clamp(speed[0], -100, 100), Math.Clamp(speed[1], Math.Clamp(speed[0], -100, 100), 100)];
+                return true;
+            case "lifetime" when TryReadNumberRange(value, out var lifetime):
+                node.LifetimeRange = [Math.Clamp(lifetime[0], .05f, 30), Math.Clamp(lifetime[1], Math.Clamp(lifetime[0], .05f, 30), 30)];
+                return true;
+            case "spreadangle" when TryReadVector2(value, out var spread):
+                node.SpreadAngle = [Math.Clamp(spread[0], 0, 360), Math.Clamp(spread[1], 0, 360)];
+                return true;
+            case "emissiondirection" when SceneNodeTypes.IsFace(value.CastToString()):
+                node.EmissionDirection = value.String;
+                return true;
+            default:
+                return false;
+        }
+    }
+
     private DynValue GetPropertyValue(SceneNode node, string property)
     {
         if (node.Type == "BindableFunction" && property.Equals("OnInvoke", StringComparison.OrdinalIgnoreCase))
             return DynValue.Nil;
+        if (node.Type == "Trail")
+        {
+            var trailValue = property.ToLowerInvariant() switch
+            {
+                "color" => ColorSequenceValue(node.ColorSequence.Count > 0 ? node.ColorSequence : [new(0, node.Color), new(1, node.Color)]),
+                "transparency" => NumberSequenceValue(node.TransparencySequence.Count > 0 ? node.TransparencySequence : [new(0, node.Transparency), new(1, node.Transparency)]),
+                "widthscale" => NumberSequenceValue(node.TrailWidthSequence.Count > 0 ? node.TrailWidthSequence : [new(0, node.TrailWidth), new(1, node.TrailWidth)]),
+                "lifetime" => DynValue.NewNumber(node.TrailLifetime),
+                "minlength" => DynValue.NewNumber(node.TrailMinLength),
+                "maxlength" => DynValue.NewNumber(node.TrailMaxLength),
+                _ => DynValue.Nil
+            };
+            if (trailValue.Type != DataType.Nil) return trailValue;
+        }
+        if (node.Type == "ParticleEmitter")
+        {
+            var emitterValue = property.ToLowerInvariant() switch
+            {
+                "size" => NumberSequenceValue(node.SizeSequence.Count > 0 ? node.SizeSequence : [new(0, node.EffectSize), new(1, node.EffectSize)]),
+                "color" => ColorSequenceValue(node.ColorSequence.Count > 0 ? node.ColorSequence : [new(0, node.Color), new(1, node.Color)]),
+                "transparency" => NumberSequenceValue(node.TransparencySequence.Count > 0 ? node.TransparencySequence : [new(0, node.Transparency), new(1, node.Transparency)]),
+                "rate" => DynValue.NewNumber(node.Rate),
+                "speed" => NumberRangeValue(node.SpeedRange),
+                "lifetime" => NumberRangeValue(node.LifetimeRange),
+                "spreadangle" => Vector2Value(node.SpreadAngle),
+                "emissiondirection" => DynValue.NewString(node.EmissionDirection),
+                _ => DynValue.Nil
+            };
+            if (emitterValue.Type != DataType.Nil) return emitterValue;
+        }
         if (node.Type == "Lighting" && instances.TryGetValue(node.Id, out var lightingInstance))
         {
             var pendingLighting = lightingInstance.Get(property.ToLowerInvariant() switch
@@ -2711,9 +3319,19 @@ public sealed class LuaXRuntime
                 }
                 else if (!node.Rotation.SequenceEqual(rotation)) { node.Rotation = rotation; MarkChanged(node, "Rotation"); }
             }
-            if (SceneNodeTypes.IsSizedParticleEffect(node) && instance.Get("Size").Type == DataType.Number && double.IsFinite(instance.Get("Size").Number))
+            if (node.Type == "ParticleEmitter" && TryReadNumberSequence(instance.Get("Size"), out var particleSize))
+            {
+                var normalized = ParticleSequenceService.NormalizeNumber(particleSize, 0, 100);
+                if (!node.SizeSequence.SequenceEqual(normalized))
+                {
+                    node.SizeSequence = normalized;
+                    node.EffectSize = normalized[0].Value;
+                    MarkChanged(node, "Size");
+                }
+            }
+            else if (SceneNodeTypes.IsSizedParticleEffect(node) && instance.Get("Size").Type == DataType.Number && double.IsFinite(instance.Get("Size").Number))
                 Assign(node, "Size", node.EffectSize, (float)Math.Clamp(instance.Get("Size").Number, node.Type == "Fire" ? 2 : .1f, node.Type == "Fire" ? 30 : 100), value => node.EffectSize = value);
-            else if (instance.Get("Size").Type == DataType.Table && !SceneNodeTypes.IsSizedParticleEffect(node))
+            else if (instance.Get("Size").Type == DataType.Table && !SceneNodeTypes.IsSizedParticleEffect(node) && node.Type != "ParticleEmitter")
             {
                 if (IsGuiObject(node) && TryReadUDim2(instance.Get("Size"), out var sizeScale, out var sizeOffset))
                 {
@@ -2737,6 +3355,19 @@ public sealed class LuaXRuntime
                 Assign(node, "SparkleColor", node.Color, sparkleColor != node.Color ? sparkleColor : colorAlias, value => node.Color = value);
                 instance.Set("Color", ColorValue(node.Color));
                 instance.Set("SparkleColor", ColorValue(node.Color));
+            }
+            else if (node.Type is "ParticleEmitter" or "Trail")
+            {
+                if (TryReadColorSequence(instance.Get("Color"), out var particleColor))
+                {
+                    var normalized = ParticleSequenceService.NormalizeColor(particleColor);
+                    if (!node.ColorSequence.SequenceEqual(normalized))
+                    {
+                        node.ColorSequence = normalized;
+                        node.Color = normalized[0].Value;
+                        MarkChanged(node, "Color");
+                    }
+                }
             }
             else Assign(node, "Color", node.Color, ReadColor(instance.Get("Color"), node.Color), value => node.Color = value);
             if (node.Type == "Fire") Assign(node, "SecondaryColor", node.SecondaryColor, ReadColor(instance.Get("SecondaryColor"), node.SecondaryColor), value => node.SecondaryColor = value);
@@ -2780,7 +3411,17 @@ public sealed class LuaXRuntime
             }
             if (IsBasePart(node) && instance.Get("Material").CastToString() is "Plastic" or "Metal" or "Neon" or "Glass" or "Wood" or "Concrete")
                 Assign(node, "Material", node.Material, instance.Get("Material").String, value => node.Material = value);
-            if ((IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam") && instance.Get("Transparency").Type == DataType.Number && double.IsFinite(instance.Get("Transparency").Number))
+            if (node.Type is "ParticleEmitter" or "Trail" && TryReadNumberSequence(instance.Get("Transparency"), out var particleTransparency))
+            {
+                var normalized = ParticleSequenceService.NormalizeNumber(particleTransparency, 0, 1);
+                if (!node.TransparencySequence.SequenceEqual(normalized))
+                {
+                    node.TransparencySequence = normalized;
+                    node.Transparency = normalized[0].Value;
+                    MarkChanged(node, "Transparency");
+                }
+            }
+            else if ((IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam") && instance.Get("Transparency").Type == DataType.Number && double.IsFinite(instance.Get("Transparency").Number))
                 Assign(node, "Transparency", node.Transparency, (float)Math.Clamp(instance.Get("Transparency").Number, 0, 1), value => node.Transparency = value);
             if (instance.Get("Enabled").Type == DataType.Boolean)
             {
@@ -2806,6 +3447,28 @@ public sealed class LuaXRuntime
             {
                 if (instance.Get("TimeScale").Type == DataType.Number && double.IsFinite(instance.Get("TimeScale").Number))
                     Assign(node, "TimeScale", node.TimeScale, (float)Math.Clamp(instance.Get("TimeScale").Number, 0, 1), value => node.TimeScale = value);
+                if (node.Type == "ParticleEmitter")
+                {
+                    if (instance.Get("Rate").Type == DataType.Number && double.IsFinite(instance.Get("Rate").Number))
+                        Assign(node, "Rate", node.Rate, (float)Math.Clamp(instance.Get("Rate").Number, 0, 200), value => node.Rate = value);
+                    if (TryReadNumberRange(instance.Get("Speed"), out var speedRange))
+                    {
+                        var next = new[] { Math.Clamp(speedRange[0], -100, 100), Math.Clamp(speedRange[1], Math.Clamp(speedRange[0], -100, 100), 100) };
+                        if (!node.SpeedRange.SequenceEqual(next)) { node.SpeedRange = next; MarkChanged(node, "Speed"); }
+                    }
+                    if (TryReadNumberRange(instance.Get("Lifetime"), out var lifetimeRange))
+                    {
+                        var next = new[] { Math.Clamp(lifetimeRange[0], .05f, 30), Math.Clamp(lifetimeRange[1], Math.Clamp(lifetimeRange[0], .05f, 30), 30) };
+                        if (!node.LifetimeRange.SequenceEqual(next)) { node.LifetimeRange = next; MarkChanged(node, "Lifetime"); }
+                    }
+                    if (TryReadVector2(instance.Get("SpreadAngle"), out var spreadAngle))
+                    {
+                        var next = new[] { Math.Clamp(spreadAngle[0], 0, 360), Math.Clamp(spreadAngle[1], 0, 360) };
+                        if (!node.SpreadAngle.SequenceEqual(next)) { node.SpreadAngle = next; MarkChanged(node, "SpreadAngle"); }
+                    }
+                    if (SceneNodeTypes.IsFace(instance.Get("EmissionDirection").CastToString()))
+                        Assign(node, "EmissionDirection", node.EmissionDirection, instance.Get("EmissionDirection").String, value => node.EmissionDirection = value);
+                }
                 if (node.Type == "Fire" && instance.Get("Heat").Type == DataType.Number && double.IsFinite(instance.Get("Heat").Number))
                     Assign(node, "Heat", node.Heat, (float)Math.Clamp(instance.Get("Heat").Number, -25, 25), value => node.Heat = value);
                 if (node.Type == "Smoke")
@@ -2857,7 +3520,7 @@ public sealed class LuaXRuntime
                     Assign(node, "Part1", node.Part1, requestedPart1.Id, value => node.Part1 = value);
                 else if (part1Value.Type == DataType.Nil) Assign(node, "Part1", node.Part1, string.Empty, value => node.Part1 = value);
             }
-            if (node.Type == "Beam")
+            if (node.Type is "Beam" or "Trail")
             {
                 var attachment0Value = instance.Get("Attachment0");
                 var requestedAttachment0 = ReadNodeArgument(attachment0Value);
@@ -2873,6 +3536,25 @@ public sealed class LuaXRuntime
                     Assign(node, "Width0", node.Width0, (float)Math.Clamp(instance.Get("Width0").Number, 0, 100), value => node.Width0 = value);
                 if (instance.Get("Width1").Type == DataType.Number && double.IsFinite(instance.Get("Width1").Number))
                     Assign(node, "Width1", node.Width1, (float)Math.Clamp(instance.Get("Width1").Number, 0, 100), value => node.Width1 = value);
+            }
+            if (node.Type == "Trail")
+            {
+                if (TryReadNumberSequence(instance.Get("WidthScale"), out var requestedWidth))
+                {
+                    var normalizedWidth = ParticleSequenceService.NormalizeNumber(requestedWidth, 0, 1);
+                    if (!node.TrailWidthSequence.SequenceEqual(normalizedWidth))
+                    {
+                        node.TrailWidthSequence = normalizedWidth;
+                        node.TrailWidth = normalizedWidth[0].Value;
+                        MarkChanged(node, "WidthScale");
+                    }
+                }
+                if (instance.Get("Lifetime").Type == DataType.Number && float.IsFinite((float)instance.Get("Lifetime").Number))
+                    Assign(node, "Lifetime", node.TrailLifetime, (float)Math.Clamp(instance.Get("Lifetime").Number, .01, 20), value => node.TrailLifetime = value);
+                if (instance.Get("MinLength").Type == DataType.Number && float.IsFinite((float)instance.Get("MinLength").Number))
+                    Assign(node, "MinLength", node.TrailMinLength, (float)Math.Clamp(instance.Get("MinLength").Number, 0, 100), value => node.TrailMinLength = value);
+                if (instance.Get("MaxLength").Type == DataType.Number && float.IsFinite((float)instance.Get("MaxLength").Number))
+                    Assign(node, "MaxLength", node.TrailMaxLength, (float)Math.Clamp(instance.Get("MaxLength").Number, 0, 10000), value => node.TrailMaxLength = value);
             }
             if (instance.Get("Texture").CastToString() is { } texture) Assign(node, "Texture", node.Texture, texture, value => node.Texture = value);
             if (instance.Get("Text").CastToString() is { } text) Assign(node, "Text", node.Text, text, value => node.Text = value);
@@ -3046,6 +3728,188 @@ public sealed class LuaXRuntime
         var yaw = x * x + z * z < 0.000000000001 ? 0 : Math.Atan2(-x, -z) * 180 / Math.PI;
         return VectorValue([(float)pitch, (float)yaw, 0]);
     }
+
+    private DynValue Vector2Value(float[] values)
+    {
+        var table = new Table(script);
+        runtimeTypeTags.Add(table, new LuaXTypeTag("Vector2"));
+        table.Set("X", DynValue.NewNumber(values[0]));
+        table.Set("Y", DynValue.NewNumber(values[1]));
+        table.ReadOnly = true;
+        return DynValue.NewTable(table);
+    }
+
+    private DynValue NumberRangeValue(float[] values)
+    {
+        var table = new Table(script);
+        runtimeTypeTags.Add(table, new LuaXTypeTag("NumberRange"));
+        table.Set("Min", DynValue.NewNumber(values[0]));
+        table.Set("Max", DynValue.NewNumber(values[1]));
+        table.ReadOnly = true;
+        return DynValue.NewTable(table);
+    }
+
+    private DynValue CreateNumberSequence(CallbackArguments args)
+    {
+        if (args.Count == 0) return DynValue.Nil;
+        if (args[0].Type == DataType.Number && float.IsFinite((float)args[0].Number))
+        {
+            if (args.Count > 1 && (args[1].Type != DataType.Number || !float.IsFinite((float)args[1].Number))) return DynValue.Nil;
+            var first = (float)args[0].Number;
+            var last = args.Count > 1 ? (float)args[1].Number : first;
+            return NumberSequenceValue([new(0, first), new(1, last)]);
+        }
+        return TryReadNumberKeypoints(args[0], out var points) ? NumberSequenceValue(points) : DynValue.Nil;
+    }
+
+    private DynValue CreateColorSequence(CallbackArguments args)
+    {
+        if (args.Count == 0) return DynValue.Nil;
+        if (IsTypedValue(args[0], "Color3"))
+        {
+            if (args.Count > 1 && !IsTypedValue(args[1], "Color3")) return DynValue.Nil;
+            var first = ReadColor(args[0], "#FFFFFF");
+            var last = args.Count > 1 ? ReadColor(args[1], first) : first;
+            return ColorSequenceValue([new(0, first), new(1, last)]);
+        }
+        return TryReadColorKeypoints(args[0], out var points) ? ColorSequenceValue(points) : DynValue.Nil;
+    }
+
+    private DynValue NumberSequenceKeypointValue(ParticleNumberKeypoint point)
+    {
+        var table = new Table(script);
+        runtimeTypeTags.Add(table, new LuaXTypeTag("NumberSequenceKeypoint"));
+        table.Set("Time", DynValue.NewNumber(point.Time));
+        table.Set("Value", DynValue.NewNumber(point.Value));
+        table.Set("Envelope", DynValue.NewNumber(point.Envelope));
+        table.ReadOnly = true;
+        return DynValue.NewTable(table);
+    }
+
+    private DynValue ColorSequenceKeypointValue(ParticleColorKeypoint point)
+    {
+        var table = new Table(script);
+        runtimeTypeTags.Add(table, new LuaXTypeTag("ColorSequenceKeypoint"));
+        table.Set("Time", DynValue.NewNumber(point.Time));
+        table.Set("Value", ColorValue(point.Value));
+        table.ReadOnly = true;
+        return DynValue.NewTable(table);
+    }
+
+    private DynValue NumberSequenceValue(float value) => NumberSequenceValue([new(0, value), new(1, value)]);
+
+    private DynValue NumberSequenceValue(IReadOnlyList<ParticleNumberKeypoint> points)
+    {
+        var table = new Table(script);
+        runtimeTypeTags.Add(table, new LuaXTypeTag("NumberSequence"));
+        var keypoints = new Table(script);
+        for (var index = 0; index < points.Count; index++) keypoints.Set(index + 1, NumberSequenceKeypointValue(points[index]));
+        keypoints.ReadOnly = true;
+        table.Set("Keypoints", DynValue.NewTable(keypoints));
+        table.Set("Value", DynValue.NewNumber(points[0].Value));
+        table.ReadOnly = true;
+        return DynValue.NewTable(table);
+    }
+
+    private DynValue ColorSequenceValue(string color) => ColorSequenceValue([new(0, color), new(1, color)]);
+
+    private DynValue ColorSequenceValue(IReadOnlyList<ParticleColorKeypoint> points)
+    {
+        var table = new Table(script);
+        runtimeTypeTags.Add(table, new LuaXTypeTag("ColorSequence"));
+        var keypoints = new Table(script);
+        for (var index = 0; index < points.Count; index++) keypoints.Set(index + 1, ColorSequenceKeypointValue(points[index]));
+        keypoints.ReadOnly = true;
+        table.Set("Keypoints", DynValue.NewTable(keypoints));
+        table.Set("Value", ColorValue(points[0].Value));
+        table.ReadOnly = true;
+        return DynValue.NewTable(table);
+    }
+
+    private bool TryReadNumberRange(DynValue value, out float[] range)
+    {
+        range = [0, 0];
+        if (!IsTypedValue(value, "NumberRange")) return false;
+        var min = value.Table.Get("Min");
+        var max = value.Table.Get("Max");
+        if (min.Type != DataType.Number || max.Type != DataType.Number || !double.IsFinite(min.Number) || !double.IsFinite(max.Number)) return false;
+        range = [(float)min.Number, (float)max.Number];
+        return range.All(float.IsFinite);
+    }
+
+    private bool TryReadNumberKeypoints(DynValue value, out List<ParticleNumberKeypoint> points)
+    {
+        points = [];
+        if (value.Type != DataType.Table) return false;
+        for (var index = 1; index <= 20; index++)
+        {
+            var item = value.Table.Get(index);
+            if (item.Type == DataType.Nil) break;
+            if (!IsTypedValue(item, "NumberSequenceKeypoint")) return false;
+            var time = item.Table.Get("Time");
+            var number = item.Table.Get("Value");
+            var envelope = item.Table.Get("Envelope");
+            if (time.Type != DataType.Number || number.Type != DataType.Number || envelope.Type != DataType.Number
+                || !float.IsFinite((float)time.Number) || !float.IsFinite((float)number.Number)
+                || !float.IsFinite((float)envelope.Number)) return false;
+            points.Add(new ParticleNumberKeypoint((float)time.Number, (float)number.Number, (float)envelope.Number));
+        }
+        if (value.Table.Get(points.Count + 1).Type != DataType.Nil) return false;
+        return (points = ParticleSequenceService.NormalizeNumber(points, -float.MaxValue, float.MaxValue)).Count > 0;
+    }
+
+    private bool TryReadColorKeypoints(DynValue value, out List<ParticleColorKeypoint> points)
+    {
+        points = [];
+        if (value.Type != DataType.Table) return false;
+        for (var index = 1; index <= 20; index++)
+        {
+            var item = value.Table.Get(index);
+            if (item.Type == DataType.Nil) break;
+            if (!IsTypedValue(item, "ColorSequenceKeypoint")) return false;
+            var time = item.Table.Get("Time");
+            var color = item.Table.Get("Value");
+            if (time.Type != DataType.Number || !float.IsFinite((float)time.Number) || !IsTypedValue(color, "Color3")) return false;
+            points.Add(new ParticleColorKeypoint((float)time.Number, ReadColor(color, "#FFFFFF")));
+        }
+        if (value.Table.Get(points.Count + 1).Type != DataType.Nil) return false;
+        return (points = ParticleSequenceService.NormalizeColor(points)).Count > 0;
+    }
+
+    private bool TryReadNumberSequence(DynValue value, out List<ParticleNumberKeypoint> points)
+    {
+        points = [];
+        if (value.Type == DataType.Number && float.IsFinite((float)value.Number))
+        {
+            points = [new(0, (float)value.Number), new(1, (float)value.Number)];
+            return true;
+        }
+        return IsTypedValue(value, "NumberSequence") && TryReadNumberKeypoints(value.Table.Get("Keypoints"), out points);
+    }
+
+    private bool TryReadColorSequence(DynValue value, out List<ParticleColorKeypoint> points)
+    {
+        points = [];
+        if (IsTypedValue(value, "Color3"))
+        {
+            var color = ReadColor(value, "#FFFFFF");
+            points = [new(0, color), new(1, color)];
+            return true;
+        }
+        return IsTypedValue(value, "ColorSequence") && TryReadColorKeypoints(value.Table.Get("Keypoints"), out points);
+    }
+
+    private bool TryReadVector2(DynValue value, out float[] vector)
+    {
+        vector = [0, 0];
+        if (!IsTypedValue(value, "Vector2")) return false;
+        var x = value.Table.Get("X");
+        var y = value.Table.Get("Y");
+        if (x.Type != DataType.Number || y.Type != DataType.Number || !double.IsFinite(x.Number) || !double.IsFinite(y.Number)) return false;
+        vector = [(float)x.Number, (float)y.Number];
+        return vector.All(float.IsFinite);
+    }
+
     private DynValue VectorValue(float[] values)
     {
         var table = new Table(script);

@@ -21,8 +21,19 @@ public sealed class SceneRenderService
     private readonly Dictionary<string, MeshGeometryModel3D> forceFieldVisuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (MeshGeometryModel3D Outer, MeshGeometryModel3D? Inner)> particleEffectVisuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, float> particleEffectTimes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<ParticleBurst>> particleBursts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> particleClearVersions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, float> particleClearTimes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, float> particleDisabledTimes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> particleWasEnabled = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (DateTime Modified, TextureModel? Texture)> particleTextures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, OutLineMeshGeometryModel3D> beamVisuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, BeamState> beamStates = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MeshGeometryModel3D> trailVisuals = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<TrailSample>> trailSamples = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, float> trailTimes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> trailClearVersions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> trailWasEnabled = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SceneNode> highlightSources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> renderedAssetSources = new(StringComparer.Ordinal);
     private readonly List<Light3D> objectLights = [];
@@ -34,10 +45,12 @@ public sealed class SceneRenderService
     private float orbitPitch = -24;
     private float orbitDistance = 12;
     private bool hasBeamNodes;
+    private bool hasTrailNodes;
     private bool hasVisibleForceFields;
     private bool hasParticleEffects;
 
     private sealed record BeamState(Point3D Start, Point3D End, float Width0, float Width1, string Color, float Transparency);
+    private sealed record ParticleBurst(float StartedAt, int Count);
 
     public SceneRenderService(Viewport3DX viewport, SceneNode cameraNode, bool showAttachmentGizmos = false)
     {
@@ -84,7 +97,20 @@ public sealed class SceneRenderService
 
     public void Refresh(GameProject project)
     {
-        if (!ReferenceEquals(activeProject, project)) particleEffectTimes.Clear();
+        if (!ReferenceEquals(activeProject, project))
+        {
+            particleEffectTimes.Clear();
+            particleBursts.Clear();
+            particleClearVersions.Clear();
+            particleClearTimes.Clear();
+            particleDisabledTimes.Clear();
+            particleWasEnabled.Clear();
+            particleTextures.Clear();
+            trailSamples.Clear();
+            trailTimes.Clear();
+            trailClearVersions.Clear();
+            trailWasEnabled.Clear();
+        }
         activeProject = project;
         var currentCamera = project.Workspace.Children.First(node => node.Type == "Camera");
         if (!ReferenceEquals(cameraNode, currentCamera))
@@ -110,6 +136,8 @@ public sealed class SceneRenderService
         foreach (var beam in beamVisuals.Values) viewport.Items.Remove(beam);
         beamVisuals.Clear();
         beamStates.Clear();
+        foreach (var visual in trailVisuals.Values) viewport.Items.Remove(visual);
+        trailVisuals.Clear();
         viewport.IsShadowMappingEnabled = project.Settings.Shadows;
         RefreshLighting(project.Lighting);
         foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type is not ("Decal" or "Texture" or "Attachment") || FindPartParent(project, node) is not null)))
@@ -120,6 +148,7 @@ public sealed class SceneRenderService
         }
         RefreshObjectLights(project);
         RefreshBeams(project);
+        RefreshTrails(project);
         RefreshHighlights(project);
         RefreshForceFields(project);
         RefreshParticleEffects(project);
@@ -138,6 +167,7 @@ public sealed class SceneRenderService
         if (node.Type == "Model")
         {
             if (hasBeamNodes) RefreshBeams(project);
+            if (hasTrailNodes) RefreshTrails(project);
             if (hasVisibleForceFields) RefreshForceFields(project);
             if (hasParticleEffects) RefreshParticleEffects(project);
             if (showAttachmentGizmos)
@@ -148,6 +178,7 @@ public sealed class SceneRenderService
         {
             if (showAttachmentGizmos) UpdateAttachmentVisual(node, project);
             RefreshBeams(project);
+            if (hasTrailNodes) RefreshTrails(project);
             if (hasParticleEffects) RefreshParticleEffects(project);
             SetSelection(selectedId);
             return;
@@ -156,6 +187,11 @@ public sealed class SceneRenderService
         {
             RefreshBeams(project);
             SetSelection(selectedId);
+            return;
+        }
+        if (node.Type == "Trail")
+        {
+            RefreshTrails(project);
             return;
         }
         if (SceneNodeTypes.IsLight(node) || SceneNodeTypes.IsBasePart(node) && node.Children.Any(SceneNodeTypes.IsLight)) RefreshObjectLights(project);
@@ -216,6 +252,7 @@ public sealed class SceneRenderService
         if (SceneNodeTypes.IsBasePart(node))
         {
             if (hasBeamNodes) RefreshBeams(project);
+            if (hasTrailNodes) RefreshTrails(project);
             if (hasVisibleForceFields) RefreshForceFields(project);
             if (hasParticleEffects) RefreshParticleEffects(project);
             if (showAttachmentGizmos)
@@ -294,6 +331,7 @@ public sealed class SceneRenderService
                 camera.LookDirection = new Vector3D(look.X, look.Y, look.Z);
                 camera.UpDirection = new Vector3D(0, 1, 0);
                 UpdateSkybox(camera.Position);
+                if (activeProject is not null && hasParticleEffects) RefreshParticleEffects(activeProject);
             }
             return;
         }
@@ -304,6 +342,7 @@ public sealed class SceneRenderService
         camera.LookDirection = new Vector3D(direction.X, direction.Y, direction.Z);
         camera.UpDirection = new Vector3D(0, 1, 0);
         UpdateSkybox(camera.Position);
+        if (activeProject is not null && hasParticleEffects) RefreshParticleEffects(activeProject);
     }
 
     private MeshGeometryModel3D CreateVisual(SceneNode node, GameProject project)
@@ -438,12 +477,95 @@ public sealed class SceneRenderService
     private static SceneNode? FindPartParent(GameProject project, SceneNode child) =>
         GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(parent => SceneNodeTypes.IsBasePart(parent) && parent.Children.Contains(child));
 
+    private void AdvanceTrails(GameProject project, float elapsedSeconds)
+    {
+        var nodes = GameProjectStore.Flatten(project.Workspace.Children);
+        var parts = nodes.Where(SceneNodeTypes.IsBasePart).ToArray();
+        var attachments = nodes.Where(node => node.Type == "Attachment").ToDictionary(node => node.Id, StringComparer.Ordinal);
+        foreach (var trail in nodes.Where(node => node.Type == "Trail"))
+        {
+            var now = trailTimes.GetValueOrDefault(trail.Id) + Math.Clamp(elapsedSeconds, 0, .25f);
+            trailTimes[trail.Id] = now;
+            if (!trailSamples.TryGetValue(trail.Id, out var samples)) trailSamples[trail.Id] = samples = [];
+            if (trailClearVersions.GetValueOrDefault(trail.Id) != trail.TrailClearVersion)
+            {
+                samples.Clear();
+                trailClearVersions[trail.Id] = trail.TrailClearVersion;
+            }
+            if (trailWasEnabled.TryGetValue(trail.Id, out var wasEnabled) && !wasEnabled && trail.Enabled) samples.Clear();
+            trailWasEnabled[trail.Id] = trail.Enabled;
+            samples.RemoveAll(sample => now - sample.Time >= trail.TrailLifetime);
+            if (!trail.Enabled || !attachments.TryGetValue(trail.Attachment0, out var first)
+                || !attachments.TryGetValue(trail.Attachment1, out var second) || ReferenceEquals(first, second)) continue;
+            var firstPart = parts.FirstOrDefault(part => part.Children.Contains(first));
+            var secondPart = parts.FirstOrDefault(part => part.Children.Contains(second));
+            if (firstPart is null || secondPart is null) continue;
+            var point0 = ToVector(TransformFor(firstPart, false).Transform(new Point3D(first.Position[0], first.Position[1], first.Position[2])));
+            var point1 = ToVector(TransformFor(secondPart, false).Transform(new Point3D(second.Position[0], second.Position[1], second.Position[2])));
+            var current = new TrailSample(now, point0, point1);
+            if (samples.Count == 0 || Math.Max(Vector3.Distance(samples[^1].Point0, point0), Vector3.Distance(samples[^1].Point1, point1)) >= trail.TrailMinLength)
+                samples.Add(current);
+            if (trail.TrailMaxLength > 0)
+                while (samples.Count > 1 && TrailPathLength(samples) > trail.TrailMaxLength) samples.RemoveAt(0);
+        }
+    }
+
+    private static float TrailPathLength(IReadOnlyList<TrailSample> samples)
+    {
+        var length = 0f;
+        for (var index = 1; index < samples.Count; index++)
+            length += Vector3.Distance((samples[index - 1].Point0 + samples[index - 1].Point1) * .5f,
+                (samples[index].Point0 + samples[index].Point1) * .5f);
+        return length;
+    }
+
+    private void RefreshTrails(GameProject project)
+    {
+        var trails = GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "Trail").ToArray();
+        hasTrailNodes = trails.Length > 0;
+        var activeIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var trail in trails)
+        {
+            if (!trailSamples.TryGetValue(trail.Id, out var samples) || samples.Count < 2) continue;
+            var geometry = TrailGeometryService.Build(trail, samples, trailTimes.GetValueOrDefault(trail.Id));
+            if (geometry.Positions is null || geometry.Positions.Count == 0) continue;
+            activeIds.Add(trail.Id);
+            if (!trailVisuals.TryGetValue(trail.Id, out var visual))
+            {
+                visual = new MeshGeometryModel3D { IsThrowingShadow = false, IsHitTestVisible = false, IsTransparent = true };
+                trailVisuals[trail.Id] = visual;
+                viewport.Items.Add(visual);
+            }
+            visual.Geometry = geometry;
+            var material = ParticleEffectMaterial("#FFFFFF", 1, false);
+            material.VertexColorBlendingFactor = 1;
+            if (GetParticleTexture(project, trail.Texture) is { } texture) material.DiffuseMap = texture;
+            visual.Material = material;
+        }
+        foreach (var id in trailVisuals.Keys.Where(id => !activeIds.Contains(id)).ToArray())
+        {
+            viewport.Items.Remove(trailVisuals[id]);
+            trailVisuals.Remove(id);
+        }
+        var currentIds = trails.Select(trail => trail.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var id in trailSamples.Keys.Where(id => !currentIds.Contains(id)).ToArray()) trailSamples.Remove(id);
+        foreach (var id in trailTimes.Keys.Where(id => !currentIds.Contains(id)).ToArray()) trailTimes.Remove(id);
+        foreach (var id in trailClearVersions.Keys.Where(id => !currentIds.Contains(id)).ToArray()) trailClearVersions.Remove(id);
+        foreach (var id in trailWasEnabled.Keys.Where(id => !currentIds.Contains(id)).ToArray()) trailWasEnabled.Remove(id);
+    }
+
     public void UpdateParticleEffects(float elapsedSeconds)
     {
-        if (activeProject is null || !hasParticleEffects) return;
+        if (activeProject is null) return;
+        if (hasTrailNodes)
+        {
+            AdvanceTrails(activeProject, elapsedSeconds);
+            RefreshTrails(activeProject);
+        }
+        if (!hasParticleEffects) return;
         var advanced = false;
         foreach (var effect in GameProjectStore.Flatten(activeProject.Workspace.Children).Where(SceneNodeTypes.IsParticleEffect))
-            if (effect.Enabled && effect.TimeScale > 0)
+            if ((effect.Enabled || effect.Type == "ParticleEmitter") && effect.TimeScale > 0)
             {
                 particleEffectTimes[effect.Id] = particleEffectTimes.GetValueOrDefault(effect.Id) + Math.Clamp(elapsedSeconds, 0, .25f) * effect.TimeScale;
                 advanced = true;
@@ -458,8 +580,10 @@ public sealed class SceneRenderService
         var effects = workspaceNodes.Where(SceneNodeTypes.IsParticleEffect).ToArray();
         hasParticleEffects = effects.Length > 0;
         var activeIds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var effect in effects.Where(item => item.Enabled && (item.Type != "Smoke" || item.Opacity > 0)))
+        foreach (var effect in effects)
         {
+            if (effect.Type == "ParticleEmitter") UpdateParticleEmitterState(effect);
+            else if (!effect.Enabled || effect.Type == "Smoke" && effect.Opacity <= 0) continue;
             var part = parts.FirstOrDefault(item => item.Children.Contains(effect));
             SceneNode? attachment = null;
             if (part is null)
@@ -471,9 +595,11 @@ public sealed class SceneRenderService
                     break;
                 }
             if (part is null) continue;
+            if (effect.Type == "ParticleEmitter" && !HasVisibleParticleEmitterParticles(effect)) continue;
             activeIds.Add(effect.Id);
             var transform = ParticleEffectTransform(part, attachment);
             var phase = particleEffectTimes.GetValueOrDefault(effect.Id);
+            var texture = effect.Type == "ParticleEmitter" ? GetParticleTexture(project, effect.Texture) : null;
             if (!particleEffectVisuals.TryGetValue(effect.Id, out var visual))
             {
                 var outer = new MeshGeometryModel3D { IsThrowingShadow = false, IsHitTestVisible = false, IsTransparent = true };
@@ -485,8 +611,15 @@ public sealed class SceneRenderService
                 viewport.Items.Add(outer);
                 if (inner is not null) viewport.Items.Add(inner);
             }
-            visual.Outer.Geometry = BuildParticleEffectGeometry(effect, phase, false, attachment is null ? part.Size : [1, 1, 1]);
-            visual.Outer.Material = ParticleEffectMaterial(effect.Color, effect.Type == "Fire" ? .52f : effect.Type == "Sparkles" ? .9f : effect.Opacity * .38f, effect.Type is "Fire" or "Sparkles");
+            visual.Outer.Geometry = effect.Type == "ParticleEmitter"
+                ? BuildParticleEmitterGeometry(effect, phase, attachment is null ? part.Size : [0, 0, 0], particleBursts.GetValueOrDefault(effect.Id), particleClearTimes.GetValueOrDefault(effect.Id, float.NegativeInfinity), particleDisabledTimes.GetValueOrDefault(effect.Id, float.PositiveInfinity), texture is not null ? CameraInParticleSpace(transform) : null)
+                : BuildParticleEffectGeometry(effect, phase, false, attachment is null ? part.Size : [1, 1, 1]);
+            var material = ParticleEffectMaterial(effect.Type == "ParticleEmitter" ? "#FFFFFF" : effect.Color,
+                effect.Type == "ParticleEmitter" ? 1 : effect.Type == "Fire" ? .52f : effect.Type == "Sparkles" ? .9f : effect.Opacity * .38f,
+                effect.Type is "Fire" or "Sparkles");
+            if (effect.Type == "ParticleEmitter") material.VertexColorBlendingFactor = 1;
+            if (texture is not null) material.DiffuseMap = texture;
+            visual.Outer.Material = material;
             visual.Outer.Transform = transform;
             if (visual.Inner is not null)
             {
@@ -504,6 +637,11 @@ public sealed class SceneRenderService
         }
         var workspaceIds = effects.Select(effect => effect.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var id in particleEffectTimes.Keys.Where(id => !workspaceIds.Contains(id)).ToArray()) particleEffectTimes.Remove(id);
+        foreach (var id in particleBursts.Keys.Where(id => !workspaceIds.Contains(id)).ToArray()) particleBursts.Remove(id);
+        foreach (var id in particleClearVersions.Keys.Where(id => !workspaceIds.Contains(id)).ToArray()) particleClearVersions.Remove(id);
+        foreach (var id in particleClearTimes.Keys.Where(id => !workspaceIds.Contains(id)).ToArray()) particleClearTimes.Remove(id);
+        foreach (var id in particleDisabledTimes.Keys.Where(id => !workspaceIds.Contains(id)).ToArray()) particleDisabledTimes.Remove(id);
+        foreach (var id in particleWasEnabled.Keys.Where(id => !workspaceIds.Contains(id)).ToArray()) particleWasEnabled.Remove(id);
     }
 
     private static Transform3D ParticleEffectTransform(SceneNode part, SceneNode? attachment)
@@ -516,6 +654,169 @@ public sealed class SceneRenderService
         transform.Children.Add(new TranslateTransform3D(attachment.Position[0], attachment.Position[1], attachment.Position[2]));
         transform.Children.Add(TransformFor(part, false));
         return transform;
+    }
+
+    private (Vector3 Position, Vector3 Up)? CameraInParticleSpace(Transform3D transform)
+    {
+        if (viewport.Camera is not HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera || transform.Inverse is not { } inverse) return null;
+        var position = inverse.Transform(camera.Position);
+        var upPoint = inverse.Transform(camera.Position + camera.UpDirection);
+        return (ToVector(position), Vector3.Normalize(ToVector(upPoint) - ToVector(position)));
+    }
+
+    private TextureModel? GetParticleTexture(GameProject project, string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative)) return null;
+        var path = ResolveTexture(project, relative);
+        if (path.Length == 0 || !File.Exists(path)) return null;
+        try
+        {
+            var modified = File.GetLastWriteTimeUtc(path);
+            if (particleTextures.TryGetValue(path, out var cached) && cached.Modified == modified) return cached.Texture;
+            ValidateImageFile(path);
+            var texture = TextureModel.Create(path);
+            particleTextures[path] = (modified, texture);
+            return texture;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void UpdateParticleEmitterState(SceneNode effect)
+    {
+        var phase = particleEffectTimes.GetValueOrDefault(effect.Id);
+        if (particleClearVersions.GetValueOrDefault(effect.Id) != effect.ParticleClearVersion)
+        {
+            particleBursts.Remove(effect.Id);
+            particleClearTimes[effect.Id] = phase;
+        }
+        particleClearVersions[effect.Id] = effect.ParticleClearVersion;
+        if (!particleWasEnabled.TryGetValue(effect.Id, out var wasEnabled))
+        {
+            if (!effect.Enabled) particleDisabledTimes[effect.Id] = phase - effect.LifetimeRange[1];
+        }
+        else if (wasEnabled != effect.Enabled)
+        {
+            if (effect.Enabled) particleDisabledTimes.Remove(effect.Id);
+            else particleDisabledTimes[effect.Id] = phase;
+        }
+        particleWasEnabled[effect.Id] = effect.Enabled;
+        if (effect.PendingParticleEmits > 0)
+        {
+            if (!particleBursts.TryGetValue(effect.Id, out var bursts)) particleBursts[effect.Id] = bursts = [];
+            bursts.Add(new ParticleBurst(phase, effect.PendingParticleEmits));
+            effect.PendingParticleEmits = 0;
+        }
+        if (particleBursts.TryGetValue(effect.Id, out var active))
+            active.RemoveAll(burst => phase - burst.StartedAt >= effect.LifetimeRange[1]);
+    }
+
+    private bool HasVisibleParticleEmitterParticles(SceneNode effect)
+    {
+        if (effect.TransparencySequence.Count > 0
+            ? effect.TransparencySequence.All(point => point.Value - point.Envelope >= 1)
+            : effect.Transparency >= 1) return false;
+        if (effect.SizeSequence.Count > 0
+            ? effect.SizeSequence.All(point => point.Value + point.Envelope <= 0)
+            : effect.EffectSize <= 0) return false;
+        if (particleBursts.TryGetValue(effect.Id, out var bursts) && bursts.Count > 0) return true;
+        if (effect.Rate <= 0) return false;
+        if (effect.Enabled) return true;
+        return particleDisabledTimes.TryGetValue(effect.Id, out var stoppedAt)
+            && particleEffectTimes.GetValueOrDefault(effect.Id) - stoppedAt < effect.LifetimeRange[1];
+    }
+
+    private static HelixToolkit.SharpDX.Core.MeshGeometry3D BuildParticleEmitterGeometry(
+        SceneNode effect, float phase, float[] parentSize, List<ParticleBurst>? bursts, float clearedAt, float disabledAt,
+        (Vector3 Position, Vector3 Up)? camera)
+    {
+        var builder = new MeshBuilder();
+        var colors = new Color4Collection();
+        var emitted = 0;
+        if (effect.Rate > 0)
+        {
+            var count = Math.Min(200, (int)MathF.Ceiling(effect.Rate * effect.LifetimeRange[1]));
+            for (var index = 0; index < count; index++)
+            {
+                var lifetime = ParticleRange(effect.LifetimeRange, ParticleHash(index, 19));
+                var age = (phase + (index + .5f) / effect.Rate) % lifetime;
+                var bornAt = phase - age;
+                if (bornAt < clearedAt || bornAt > disabledAt) continue;
+                AddEmitterParticle(builder, colors, effect, parentSize, index, age, lifetime, camera);
+                emitted++;
+            }
+        }
+        if (bursts is not null)
+            foreach (var burst in bursts)
+            {
+                var age = phase - burst.StartedAt;
+                for (var index = 0; index < burst.Count && emitted < 300; index++)
+                {
+                    var lifetime = ParticleRange(effect.LifetimeRange, ParticleHash(index + burst.Count, 29));
+                    if (age >= lifetime) continue;
+                    AddEmitterParticle(builder, colors, effect, parentSize, index + 1000, age, lifetime, camera);
+                    emitted++;
+                }
+            }
+        var geometry = builder.ToMeshGeometry3D();
+        geometry.Colors = colors;
+        return geometry;
+    }
+
+    private static void AddEmitterParticle(MeshBuilder builder, Color4Collection colors, SceneNode effect, float[] parentSize, int index, float age, float lifetime,
+        (Vector3 Position, Vector3 Up)? camera)
+    {
+        var spreadX = (ParticleHash(index, 31) - .5f) * effect.SpreadAngle[0] * MathF.PI / 180;
+        var spreadY = (ParticleHash(index, 37) - .5f) * effect.SpreadAngle[1] * MathF.PI / 180;
+        var local = Vector3.Normalize(new Vector3(MathF.Sin(spreadX), MathF.Cos(spreadX) * MathF.Cos(spreadY), MathF.Sin(spreadY)));
+        var direction = effect.EmissionDirection switch
+        {
+            "Bottom" => -local,
+            "Right" => new Vector3(local.Y, local.X, local.Z),
+            "Left" => new Vector3(-local.Y, local.X, local.Z),
+            "Front" => new Vector3(local.X, local.Z, -local.Y),
+            "Back" => new Vector3(local.X, local.Z, local.Y),
+            _ => local
+        };
+        var origin = new Vector3((ParticleHash(index, 41) - .5f) * parentSize[0],
+            (ParticleHash(index, 43) - .5f) * parentSize[1],
+            (ParticleHash(index, 47) - .5f) * parentSize[2]);
+        var speed = ParticleRange(effect.SpeedRange, ParticleHash(index, 53));
+        var position = origin + direction * speed * age;
+        var progress = age / lifetime;
+        var size = ParticleSequenceService.SampleNumber(effect.SizeSequence, effect.EffectSize, progress, ParticleHash(index, 59));
+        var transparency = ParticleSequenceService.SampleNumber(effect.TransparencySequence, effect.Transparency, progress, ParticleHash(index, 61));
+        if (size <= 0 || transparency >= 1) return;
+        var color = ParticleSequenceService.SampleColor(effect.ColorSequence, effect.Color, progress);
+        var tint = new Color4(color.R / 255f, color.G / 255f, color.B / 255f, 1 - Math.Clamp(transparency, 0, 1));
+        var radius = MathF.Max(.025f, size * .35f);
+        var first = builder.Positions.Count;
+        if (camera is not { } view)
+        {
+            builder.AddSphere(position, radius, 8, 6);
+        }
+        else
+        {
+            var towardCamera = view.Position - position;
+            if (towardCamera.LengthSquared() < .000001f) towardCamera = Vector3.UnitZ;
+            towardCamera = Vector3.Normalize(towardCamera);
+            var right = Vector3.Cross(view.Up, towardCamera);
+            if (right.LengthSquared() < .000001f) right = Vector3.Cross(Vector3.UnitX, towardCamera);
+            right = Vector3.Normalize(right) * radius;
+            var up = Vector3.Normalize(Vector3.Cross(towardCamera, right)) * radius;
+            builder.AddQuad(position - right - up, position + right - up, position + right + up, position - right + up);
+        }
+        for (var vertex = first; vertex < builder.Positions.Count; vertex++) colors.Add(tint);
+    }
+
+    private static float ParticleRange(float[] range, float fraction) => range[0] + (range[1] - range[0]) * fraction;
+
+    private static float ParticleHash(int index, int seed)
+    {
+        var value = MathF.Sin(index * 12.9898f + seed * 78.233f) * 43758.5453f;
+        return value - MathF.Floor(value);
     }
 
     private static HelixToolkit.SharpDX.Core.MeshGeometry3D BuildParticleEffectGeometry(SceneNode effect, float time, bool inner, float[] parentSize)

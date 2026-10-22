@@ -71,6 +71,16 @@ public sealed class SceneNode
     public float RiseVelocity { get; set; } = 1;
     public float Opacity { get; set; } = .5f;
     public float TimeScale { get; set; } = 1;
+    public float Rate { get; set; } = 5;
+    public List<ParticleNumberKeypoint> SizeSequence { get; set; } = [];
+    public List<ParticleColorKeypoint> ColorSequence { get; set; } = [];
+    public List<ParticleNumberKeypoint> TransparencySequence { get; set; } = [];
+    public float[] SpeedRange { get; set; } = [5, 5];
+    public float[] LifetimeRange { get; set; } = [5, 5];
+    public float[] SpreadAngle { get; set; } = [0, 0];
+    public string EmissionDirection { get; set; } = "Top";
+    [JsonIgnore] public int PendingParticleEmits { get; set; }
+    [JsonIgnore] public int ParticleClearVersion { get; set; }
     public float BlastRadius { get; set; } = 10;
     public float BlastPressure { get; set; } = 500000;
     public float DestroyJointRadiusPercent { get; set; } = 1;
@@ -90,6 +100,12 @@ public sealed class SceneNode
     public string Attachment1 { get; set; } = string.Empty;
     public float Width0 { get; set; } = .2f;
     public float Width1 { get; set; } = .2f;
+    public float TrailLifetime { get; set; } = 2;
+    public float TrailMinLength { get; set; } = .1f;
+    public float TrailMaxLength { get; set; }
+    public float TrailWidth { get; set; } = 1;
+    public List<ParticleNumberKeypoint> TrailWidthSequence { get; set; } = [];
+    [JsonIgnore] public int TrailClearVersion { get; set; }
     public string Text { get; set; } = "Text";
     public string TextColor { get; set; } = "#FFFFFF";
     public string StrokeColor { get; set; } = "#FFFFFF";
@@ -134,6 +150,8 @@ public sealed class SceneNode
     public float[] Vector3Value { get; set; } = [0, 0, 0];
     public string Color3Value { get; set; } = "#000000";
     public string ObjectValueId { get; set; } = string.Empty;
+    public Dictionary<string, SceneAttributeValue> Attributes { get; set; } = new(StringComparer.Ordinal);
+    public List<string> Tags { get; set; } = [];
     public string Asset { get; set; } = string.Empty;
     public string Texture { get; set; } = string.Empty;
     public string CameraMode { get; set; } = "Custom";
@@ -141,6 +159,19 @@ public sealed class SceneNode
     public float FieldOfView { get; set; } = 55;
     public List<SceneNode> Children { get; set; } = [];
     [JsonIgnore] public bool IsExplorerVisible { get; set; } = true;
+}
+
+public sealed record ParticleNumberKeypoint(float Time, float Value, float Envelope = 0);
+public sealed record ParticleColorKeypoint(float Time, string Value);
+
+public sealed class SceneAttributeValue
+{
+    public string Type { get; set; } = "String";
+    public string StringValue { get; set; } = string.Empty;
+    public bool BooleanValue { get; set; }
+    public double NumberValue { get; set; }
+    public float[] Vector3Value { get; set; } = [0, 0, 0];
+    public string Color3Value { get; set; } = "#000000";
 }
 
 public sealed class ProjectAsset

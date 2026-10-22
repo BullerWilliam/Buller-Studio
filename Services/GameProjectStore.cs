@@ -323,6 +323,20 @@ public static class GameProjectStore
             node.RiseVelocity = float.IsFinite(node.RiseVelocity) ? Math.Clamp(node.RiseVelocity, -25, 25) : 1;
             node.Opacity = float.IsFinite(node.Opacity) ? Math.Clamp(node.Opacity, 0, 1) : .5f;
             node.TimeScale = float.IsFinite(node.TimeScale) ? Math.Clamp(node.TimeScale, 0, 1) : 1;
+            node.Rate = float.IsFinite(node.Rate) ? Math.Clamp(node.Rate, 0, 200) : 5;
+            node.SizeSequence = ParticleSequenceService.NormalizeNumber(node.SizeSequence, 0, 100);
+            node.TransparencySequence = ParticleSequenceService.NormalizeNumber(node.TransparencySequence, 0, 1);
+            node.ColorSequence = ParticleSequenceService.NormalizeColor(node.ColorSequence);
+            node.SpeedRange = EnsurePair(node.SpeedRange);
+            node.SpeedRange[0] = float.IsFinite(node.SpeedRange[0]) ? Math.Clamp(node.SpeedRange[0], -100, 100) : 5;
+            node.SpeedRange[1] = float.IsFinite(node.SpeedRange[1]) ? Math.Clamp(node.SpeedRange[1], node.SpeedRange[0], 100) : node.SpeedRange[0];
+            node.LifetimeRange = EnsurePair(node.LifetimeRange);
+            node.LifetimeRange[0] = float.IsFinite(node.LifetimeRange[0]) ? Math.Clamp(node.LifetimeRange[0], .05f, 30) : 5;
+            node.LifetimeRange[1] = float.IsFinite(node.LifetimeRange[1]) ? Math.Clamp(node.LifetimeRange[1], node.LifetimeRange[0], 30) : node.LifetimeRange[0];
+            node.SpreadAngle = EnsurePair(node.SpreadAngle);
+            node.SpreadAngle[0] = float.IsFinite(node.SpreadAngle[0]) ? Math.Clamp(node.SpreadAngle[0], 0, 360) : 0;
+            node.SpreadAngle[1] = float.IsFinite(node.SpreadAngle[1]) ? Math.Clamp(node.SpreadAngle[1], 0, 360) : 0;
+            if (!SceneNodeTypes.IsFace(node.EmissionDirection)) node.EmissionDirection = "Top";
             node.BlastRadius = float.IsFinite(node.BlastRadius) ? Math.Clamp(node.BlastRadius, 0, 100) : 10;
             node.BlastPressure = float.IsFinite(node.BlastPressure) ? Math.Clamp(node.BlastPressure, 0, 1000000) : 500000;
             node.DestroyJointRadiusPercent = float.IsFinite(node.DestroyJointRadiusPercent) ? Math.Clamp(node.DestroyJointRadiusPercent, 0, 1) : 1;
@@ -349,6 +363,34 @@ public static class GameProjectStore
             node.ObjectValueId ??= string.Empty;
             node.Width0 = float.IsFinite(node.Width0) ? Math.Clamp(node.Width0, 0, 100) : .2f;
             node.Width1 = float.IsFinite(node.Width1) ? Math.Clamp(node.Width1, 0, 100) : .2f;
+            node.TrailLifetime = float.IsFinite(node.TrailLifetime) ? Math.Clamp(node.TrailLifetime, .01f, 20) : 2;
+            node.TrailMinLength = float.IsFinite(node.TrailMinLength) ? Math.Clamp(node.TrailMinLength, 0, 100) : .1f;
+            node.TrailMaxLength = float.IsFinite(node.TrailMaxLength) ? Math.Clamp(node.TrailMaxLength, 0, 10000) : 0;
+            node.TrailWidth = float.IsFinite(node.TrailWidth) ? Math.Clamp(node.TrailWidth, 0, 1) : 1;
+            node.TrailWidthSequence = ParticleSequenceService.NormalizeNumber(node.TrailWidthSequence, 0, 1);
+        }
+        foreach (var node in Flatten(project))
+        {
+            node.Tags = (node.Tags ?? [])
+                .Where(tag => !string.IsNullOrWhiteSpace(tag) && tag.Length <= 256)
+                .Distinct(StringComparer.Ordinal).ToList();
+            node.Attributes = node.Attributes is null
+                ? new Dictionary<string, SceneAttributeValue>(StringComparer.Ordinal)
+                : new Dictionary<string, SceneAttributeValue>(node.Attributes, StringComparer.Ordinal);
+            foreach (var (name, attribute) in node.Attributes.ToArray())
+            {
+                if (string.IsNullOrWhiteSpace(name) || name.Length > 256 || attribute is null
+                    || attribute.Type is not ("String" or "Boolean" or "Number" or "Vector3" or "Color3"))
+                {
+                    node.Attributes.Remove(name);
+                    continue;
+                }
+                attribute.StringValue ??= string.Empty;
+                attribute.NumberValue = double.IsFinite(attribute.NumberValue) ? attribute.NumberValue : 0;
+                attribute.Vector3Value = EnsureVector(attribute.Vector3Value, [0, 0, 0]);
+                if (attribute.Color3Value is null || !System.Text.RegularExpressions.Regex.IsMatch(attribute.Color3Value, "^#[0-9A-Fa-f]{6}$"))
+                    attribute.Color3Value = "#000000";
+            }
         }
         var validObjectIds = Flatten(project).Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var objectValue in Flatten(project).Where(node => node.Type == "ObjectValue" && node.ObjectValueId.Length > 0))
@@ -584,7 +626,7 @@ public static class GameProjectStore
         if (node.Type == "Attachment")
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
-        if (node.Type == "Beam")
+        if (node.Type is "Beam" or "Trail")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node))

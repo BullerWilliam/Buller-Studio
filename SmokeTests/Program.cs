@@ -1165,4 +1165,329 @@ if (restoredEffectPart.Children.Single(node => node.Type == "Fire").EffectSize !
     || restoredEffectPart.Children.Single(node => node.Type == "Sparkles").Color != "#16212C")
     throw new Exception("Fire, Smoke, or Sparkles did not persist.");
 
+var emitterProject = new GameProject();
+var emitterPart = new SceneNode { Type = "Part", Name = "EmitterPart" };
+var emitterAttachment = new SceneNode { Type = "Attachment", Name = "EmitterAttachment" };
+emitterProject.Workspace.Children.Add(emitterPart);
+emitterPart.Children.Add(emitterAttachment);
+if (!GameProjectStore.CanParentNode(emitterProject, new SceneNode { Type = "ParticleEmitter" }, emitterPart)
+    || !GameProjectStore.CanParentNode(emitterProject, new SceneNode { Type = "ParticleEmitter" }, emitterAttachment)
+    || GameProjectStore.CanParentNode(emitterProject, new SceneNode { Type = "ParticleEmitter" }, emitterProject.Workspace))
+    throw new Exception("ParticleEmitter parent rules failed.");
+var emitterOutput = new List<string>();
+var emitterRuntime = new LuaXRuntime(emitterProject, output: emitterOutput.Add);
+var emitterScript = new GameScript
+{
+    Source = """
+        local emitter = Instance.new('ParticleEmitter', workspace.EmitterPart.EmitterAttachment)
+        emitter.Color = ColorSequence.new(Color3.fromRGB(12, 34, 56))
+        emitter.Size = NumberSequence.new(2)
+        emitter.Transparency = NumberSequence.new(0.3)
+        emitter.Speed = NumberRange.new(2, 6)
+        emitter.Lifetime = NumberRange.new(0.5, 1)
+        emitter.SpreadAngle = Vector2.new(45, 30)
+        emitter.EmissionDirection = Enum.NormalId.Front
+        emitter.Rate = 20
+        emitter.Texture = 'spark.png'
+        emitter:Emit(15)
+        print('emitter-types', typeof(emitter), typeof(emitter.Color), typeof(emitter.Size), typeof(emitter.Speed), typeof(emitter.SpreadAngle), emitter.Speed.Max)
+        """
+};
+emitterProject.Scripts.Add(emitterScript);
+emitterRuntime.Run(emitterScript.Id);
+var particleEmitter = emitterAttachment.Children.Single(node => node.Type == "ParticleEmitter");
+if (!emitterOutput.Contains("emitter-types\tParticleEmitter\tColorSequence\tNumberSequence\tNumberRange\tVector2\t6")
+    || particleEmitter.Color != "#0C2238" || particleEmitter.EffectSize != 2 || Math.Abs(particleEmitter.Transparency - .3f) > .001f
+    || particleEmitter.SpeedRange[0] != 2 || particleEmitter.SpeedRange[1] != 6
+    || particleEmitter.LifetimeRange[0] != .5f || particleEmitter.LifetimeRange[1] != 1
+    || particleEmitter.SpreadAngle[0] != 45 || particleEmitter.SpreadAngle[1] != 30
+    || particleEmitter.EmissionDirection != "Front" || particleEmitter.Rate != 20 || particleEmitter.Texture != "spark.png" || particleEmitter.PendingParticleEmits != 15)
+    throw new Exception("ParticleEmitter Lua X properties or Emit failed: " + string.Join(" | ", emitterOutput));
+var particleGeometryMethod = typeof(SceneRenderService).GetMethod("BuildParticleEmitterGeometry", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+    ?? throw new Exception("ParticleEmitter geometry builder is missing.");
+var particleGeometry = particleGeometryMethod.Invoke(null, [particleEmitter, 0f, new float[] { 2, 2, 2 }, null, float.NegativeInfinity, float.PositiveInfinity, null])
+    as HelixToolkit.SharpDX.Core.MeshGeometry3D;
+if (particleGeometry?.Positions is null || particleGeometry.Positions.Count == 0)
+    throw new Exception("ParticleEmitter did not produce visible geometry.");
+var billboardGeometry = particleGeometryMethod.Invoke(null, [particleEmitter, 0f, new float[] { 2, 2, 2 }, null, float.NegativeInfinity, float.PositiveInfinity,
+    (new SharpDX.Vector3(0, 0, 10), SharpDX.Vector3.UnitY)]) as HelixToolkit.SharpDX.Core.MeshGeometry3D;
+if (billboardGeometry?.Positions is null || billboardGeometry.Positions.Count == 0
+    || billboardGeometry.Positions.Count >= particleGeometry.Positions.Count
+    || billboardGeometry.TextureCoordinates?.Count != billboardGeometry.Positions.Count)
+    throw new Exception("Textured ParticleEmitter did not produce UV mapped billboards.");
+var firstBillboard = billboardGeometry.Positions;
+var billboardNormal = SharpDX.Vector3.Cross(firstBillboard[1] - firstBillboard[0], firstBillboard[3] - firstBillboard[0]);
+if (SharpDX.Vector3.Dot(billboardNormal, new SharpDX.Vector3(0, 0, 10) - firstBillboard[0]) <= 0)
+    throw new Exception("ParticleEmitter billboard does not face the camera.");
+var clearedGeometry = particleGeometryMethod.Invoke(null, [particleEmitter, 0f, new float[] { 2, 2, 2 }, null, 0f, float.PositiveInfinity, null])
+    as HelixToolkit.SharpDX.Core.MeshGeometry3D;
+if (clearedGeometry?.Positions is null || clearedGeometry.Positions.Count != 0)
+    throw new Exception("ParticleEmitter.Clear left previously emitted geometry visible.");
+var emitterClone = GameProjectStore.CloneSubtree(particleEmitter, out _)
+    ?? throw new Exception("ParticleEmitter did not clone.");
+if (emitterClone.Rate != 20 || emitterClone.Texture != "spark.png" || emitterClone.PendingParticleEmits != 0)
+    throw new Exception("ParticleEmitter clone lost settings or copied transient particles.");
+var emitterJson = JsonSerializer.Serialize(emitterProject, GameProjectStore.JsonOptions);
+var restoredEmitterProject = JsonSerializer.Deserialize<GameProject>(emitterJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("ParticleEmitter project did not deserialize.");
+GameProjectStore.EnsureProject(restoredEmitterProject);
+var restoredEmitter = restoredEmitterProject.Workspace.Children.Single(node => node.Id == emitterPart.Id)
+    .Children.Single(node => node.Id == emitterAttachment.Id).Children.Single(node => node.Type == "ParticleEmitter");
+if (restoredEmitter.Color != "#0C2238" || restoredEmitter.SpeedRange[1] != 6 || restoredEmitter.Texture != "spark.png" || restoredEmitter.PendingParticleEmits != 0)
+    throw new Exception("ParticleEmitter settings did not persist correctly.");
+var clearEmitterScript = new GameScript { Source = "workspace.EmitterPart.EmitterAttachment.ParticleEmitter:Clear()" };
+emitterProject.Scripts.Add(clearEmitterScript);
+emitterRuntime.Run(clearEmitterScript.Id);
+if (particleEmitter.PendingParticleEmits != 0 || particleEmitter.ParticleClearVersion != 1)
+    throw new Exception("ParticleEmitter.Clear did not discard pending particles.");
+var sequenceScript = new GameScript
+{
+    Source = """
+        local emitter = workspace.EmitterPart.EmitterAttachment.ParticleEmitter
+        emitter.Size = NumberSequence.new{
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.5, 3, 0.25),
+            NumberSequenceKeypoint.new(1, 1)
+        }
+        emitter.Color = ColorSequence.new{
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 255))
+        }
+        emitter.Transparency = NumberSequence.new(0, 1)
+        print('sequence-keypoints', #emitter.Size.Keypoints, emitter.Size.Keypoints[2].Envelope,
+            #emitter.Color.Keypoints, emitter.Color.Keypoints[2].Value.B,
+            emitter.Transparency.Keypoints[2].Value)
+        """
+};
+emitterProject.Scripts.Add(sequenceScript);
+emitterRuntime.Run(sequenceScript.Id);
+if (!emitterOutput.Contains("sequence-keypoints\t3\t0.25\t2\t1\t1")
+    || particleEmitter.SizeSequence.Count != 3 || particleEmitter.SizeSequence[1].Envelope != .25f
+    || particleEmitter.ColorSequence.Count != 2 || particleEmitter.ColorSequence[1].Value != "#0000FF"
+    || particleEmitter.TransparencySequence.Count != 2 || particleEmitter.TransparencySequence[1].Value != 1)
+    throw new Exception("ParticleEmitter keypoint assignment failed: " + string.Join(" | ", emitterOutput));
+if (Math.Abs(ParticleSequenceService.SampleNumber(particleEmitter.SizeSequence, 0, .25f, .5f) - 2) > .001f
+    || ParticleSequenceService.SampleColor(particleEmitter.ColorSequence, "#FFFFFF", .5f) is not { R: 128, B: 128 })
+    throw new Exception("ParticleEmitter keypoint interpolation failed.");
+var sequenceGeometry = particleGeometryMethod.Invoke(null, [particleEmitter, .4f, new float[] { 2, 2, 2 }, null,
+    float.NegativeInfinity, float.PositiveInfinity, null]) as HelixToolkit.SharpDX.Core.MeshGeometry3D;
+if (sequenceGeometry?.Colors is null || sequenceGeometry.Positions is null
+    || sequenceGeometry.Colors.Count != sequenceGeometry.Positions.Count
+    || sequenceGeometry.Colors.Select(color => color.Red).Distinct().Count() < 2
+    || sequenceGeometry.Colors.Select(color => color.Alpha).Distinct().Count() < 2)
+    throw new Exception("ParticleEmitter sequences did not reach per-particle mesh colors.");
+var sequenceJson = JsonSerializer.Serialize(emitterProject, GameProjectStore.JsonOptions);
+var sequenceRestored = JsonSerializer.Deserialize<GameProject>(sequenceJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("ParticleEmitter keypoint project did not deserialize.");
+GameProjectStore.EnsureProject(sequenceRestored);
+var restoredSequence = sequenceRestored.Workspace.Children.Single(node => node.Id == emitterPart.Id)
+    .Children.Single(node => node.Id == emitterAttachment.Id).Children.Single(node => node.Id == particleEmitter.Id);
+if (restoredSequence.SizeSequence.Count != 3 || restoredSequence.ColorSequence[1].Value != "#0000FF"
+    || restoredSequence.TransparencySequence[1].Value != 1)
+    throw new Exception("ParticleEmitter keypoints did not persist.");
+var sequenceClone = GameProjectStore.CloneSubtree(particleEmitter, out _)
+    ?? throw new Exception("ParticleEmitter keypoints did not clone.");
+if (sequenceClone.SizeSequence.Count != 3 || sequenceClone.ColorSequence[1].Value != "#0000FF"
+    || sequenceClone.TransparencySequence[1].Value != 1)
+    throw new Exception("ParticleEmitter clone lost keypoints.");
+if (!ParticleSequenceService.TryParseNumberText("0:1, 0.5:2:0.25, 1:0", 0, 100, out var editedSize)
+    || editedSize.Count != 3 || ParticleSequenceService.TryParseNumberText("0.5:1, 1:0", 0, 100, out _)
+    || !ParticleSequenceService.TryParseColorText("0:#FF0000, 1:#0000FF", out var editedColor)
+    || editedColor.Count != 2 || ParticleSequenceService.TryParseColorText("0:bogus, 1:#0000FF", out _))
+    throw new Exception("ParticleEmitter numeric keypoint editor validation failed.");
+var invalidSequenceScript = new GameScript { Source = "print('invalid-sequence', typeof(NumberSequence.new(1e300)))" };
+emitterProject.Scripts.Add(invalidSequenceScript);
+emitterRuntime.Run(invalidSequenceScript.Id);
+if (!emitterOutput.Contains("invalid-sequence\tnil"))
+    throw new Exception("Overflowing NumberSequence values were accepted.");
+
+var attributeProject = new GameProject();
+var attributedPart = new SceneNode { Type = "Part", Name = "AttributedPart" };
+attributeProject.Workspace.Children.Add(attributedPart);
+var attributeOutput = new List<string>();
+var attributeRuntime = new LuaXRuntime(attributeProject, output: attributeOutput.Add);
+var attributeScript = new GameScript
+{
+    Source = """
+        local part = workspace.AttributedPart
+        local healthSignal = part:GetAttributeChangedSignal('Health')
+        print('attribute-signal-identity', healthSignal == part:GetAttributeChangedSignal('Health'))
+        part.AttributeChanged:Connect(function(name) print('attribute-any', name) end)
+        healthSignal:Connect(function() print('attribute-health') end)
+        part:SetAttribute('Health', 25)
+        part:SetAttribute('Health', 25)
+        part:SetAttribute('Offset', Vector3.new(1, 2, 3))
+        part:SetAttribute('Tint', Color3.fromRGB(10, 20, 30))
+        part:SetAttribute('Enabled', true)
+        part:SetAttribute('Label', 'hello')
+        local attrs = part:GetAttributes()
+        print('attribute-values', part:GetAttribute('Health'), attrs.Offset.Y, attrs.Tint.R > 0, attrs.Enabled, attrs.Label)
+        part:SetAttribute('Health', nil)
+        print('attribute-deleted', part:GetAttribute('Health') == nil)
+        """
+};
+attributeProject.Scripts.Add(attributeScript);
+attributeRuntime.Run(attributeScript.Id);
+if (!attributeOutput.Contains("attribute-signal-identity\ttrue")
+    || !attributeOutput.Contains("attribute-values\t25\t2\ttrue\ttrue\thello")
+    || !attributeOutput.Contains("attribute-deleted\ttrue")
+    || attributeOutput.Count(line => line == "attribute-health") != 2
+    || attributeOutput.Count(line => line == "attribute-any\tHealth") != 2
+    || attributedPart.Attributes.ContainsKey("Health")
+    || attributedPart.Attributes["Offset"].Vector3Value[1] != 2
+    || attributedPart.Attributes["Tint"].Color3Value != "#0A141E")
+    throw new Exception("Typed attributes or attribute signals failed: " + string.Join(" | ", attributeOutput));
+var disconnectScript = new GameScript
+{
+    Source = """
+        local part = workspace.AttributedPart
+        local connection = part:GetAttributeChangedSignal('Health'):Connect(function() print('disconnected-attribute') end)
+        print('attribute-connection', typeof(connection), connection.Connected)
+        connection:Disconnect()
+        print('attribute-disconnected', connection.Connected)
+        part:SetAttribute('Health', 9)
+        local attrs = part:GetAttributes()
+        attrs.Label = 'changed copy'
+        print('attribute-copy', part:GetAttribute('Label'))
+        """
+};
+attributeProject.Scripts.Add(disconnectScript);
+attributeRuntime.Run(disconnectScript.Id);
+if (!attributeOutput.Contains("attribute-connection\tRBXScriptConnection\ttrue")
+    || !attributeOutput.Contains("attribute-disconnected\tfalse")
+    || !attributeOutput.Contains("attribute-copy\thello")
+    || attributeOutput.Contains("disconnected-attribute"))
+    throw new Exception("Attribute connection or GetAttributes copy semantics failed: " + string.Join(" | ", attributeOutput));
+var clonedAttributedPart = GameProjectStore.CloneSubtree(attributedPart, out _)
+    ?? throw new Exception("Attributed part did not clone.");
+if (clonedAttributedPart.Attributes["Label"].StringValue != "hello") throw new Exception("Cloning lost attributes.");
+var attributeJson = JsonSerializer.Serialize(attributeProject, GameProjectStore.JsonOptions);
+var restoredAttributeProject = JsonSerializer.Deserialize<GameProject>(attributeJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("Attribute project did not deserialize.");
+GameProjectStore.EnsureProject(restoredAttributeProject);
+if (restoredAttributeProject.Workspace.Children.Single(node => node.Id == attributedPart.Id).Attributes["Tint"].Color3Value != "#0A141E")
+    throw new Exception("Attributes did not persist.");
+
+var tagProject = new GameProject();
+var taggedPart = new SceneNode { Type = "Part", Name = "TaggedPart", Tags = ["Enemy", "Enemy", " "] };
+tagProject.Workspace.Children.Add(taggedPart);
+GameProjectStore.EnsureProject(tagProject);
+if (!taggedPart.Tags.SequenceEqual(["Enemy"])) throw new Exception("Duplicate or blank tags were not normalized.");
+var clonedTaggedPart = GameProjectStore.CloneSubtree(taggedPart, out _)
+    ?? throw new Exception("Tagged part did not clone.");
+if (!clonedTaggedPart.Tags.SequenceEqual(["Enemy"])) throw new Exception("Cloning lost tags.");
+var tagJson = JsonSerializer.Serialize(tagProject, GameProjectStore.JsonOptions);
+var restoredTagProject = JsonSerializer.Deserialize<GameProject>(tagJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("Tag project did not deserialize.");
+GameProjectStore.EnsureProject(restoredTagProject);
+if (!restoredTagProject.Workspace.Children.Single(node => node.Id == taggedPart.Id).Tags.SequenceEqual(["Enemy"]))
+    throw new Exception("Tags did not persist.");
+var tagOutput = new List<string>();
+var tagRuntime = new LuaXRuntime(tagProject, output: tagOutput.Add);
+var tagScript = new GameScript
+{
+    Source = """
+        local tags = game:GetService('CollectionService')
+        local part = workspace.TaggedPart
+        print('tag-service', tags == game.CollectionService, typeof(tags), tags.ClassName)
+        print('tag-initial', #tags:GetTagged('Enemy'), #tags:GetTags(part), tags:HasTag(part, 'Enemy'), part:HasTag('Enemy'))
+        print('tag-signal-identity', tags:GetInstanceAddedSignal('Enemy') == tags:GetInstanceAddedSignal('Enemy'))
+        tags:GetInstanceAddedSignal('Enemy'):Connect(function(instance) print('tag-added', instance.Name) end)
+        tags:GetInstanceRemovedSignal('Enemy'):Connect(function(instance) print('tag-removed', instance.Name) end)
+        part:AddTag('Enemy')
+        tags:RemoveTag(part, 'Enemy')
+        tags:AddTag(part, 'Enemy')
+        local model = Instance.new('Model')
+        model.Name = 'TaggedModel'
+        local child = Instance.new('Part', model)
+        child.Name = 'TaggedChild'
+        child:AddTag('Enemy')
+        print('tag-detached', #tags:GetTagged('Enemy'), #child:GetTags())
+        model:SetProperty('Parent', workspace)
+        print('tag-attached', #tags:GetTagged('Enemy'))
+        model:SetProperty('Parent', nil)
+        print('tag-detached-again', #tags:GetTagged('Enemy'))
+        part:Destroy()
+        print('tag-final', #tags:GetTagged('Enemy'), #tags:GetAllTags())
+        """
+};
+tagProject.Scripts.Add(tagScript);
+tagRuntime.Run(tagScript.Id);
+if (!tagOutput.Contains("tag-service\ttrue\tCollectionService\tCollectionService")
+    || !tagOutput.Contains("tag-initial\t1\t1\ttrue\ttrue")
+    || !tagOutput.Contains("tag-signal-identity\ttrue")
+    || !tagOutput.Contains("tag-detached\t1\t1")
+    || !tagOutput.Contains("tag-attached\t2")
+    || !tagOutput.Contains("tag-detached-again\t1")
+    || !tagOutput.Contains("tag-final\t0\t0")
+    || tagOutput.Count(line => line == "tag-added\tTaggedPart") != 1
+    || tagOutput.Count(line => line == "tag-added\tTaggedChild") != 1
+    || tagOutput.Count(line => line == "tag-removed\tTaggedPart") != 2
+    || tagOutput.Count(line => line == "tag-removed\tTaggedChild") != 1)
+    throw new Exception("Tag queries or lifecycle signals failed: " + string.Join(" | ", tagOutput));
+
+var frameProject = new GameProject();
+frameProject.Workspace.Gravity = 0;
+var frameProbe = new SceneNode { Type = "Part", Name = "FrameProbe", Position = [0, 2, 0], Anchored = false };
+frameProject.Workspace.Children.Add(frameProbe);
+var frameScriptNode = new SceneNode { Type = "Script", Name = "FrameListener" };
+frameProject.ServerScriptService.Children.Add(frameScriptNode);
+frameProject.Scripts.Add(new GameScript
+{
+    Id = frameScriptNode.Id,
+    Name = frameScriptNode.Name,
+    Source = """
+        local rs = game:GetService('RunService')
+        print('frame-service', rs == game.RunService, typeof(rs), rs:IsRunning(), rs:IsStudio(), rs:IsEdit())
+        local pre
+        pre = rs.PreSimulation:Connect(function(dt)
+            print('frame-pre', dt)
+            workspace.FrameProbe.Velocity = Vector3.new(0, 10, 0)
+            pre:Disconnect()
+        end)
+        rs.PostSimulation:Connect(function(dt) print('frame-post', dt, workspace.FrameProbe.Position.Y) end)
+        rs.Heartbeat:Connect(function(dt) print('frame-heartbeat', dt) end)
+        rs.PreRender:Connect(function(dt) print('frame-render', dt) end)
+        """
+});
+var frameOutput = new List<string>();
+var frameRuntime = new LuaXRuntime(frameProject, output: frameOutput.Add);
+frameRuntime.Run(frameScriptNode.Id);
+var framePhysics = new PhysicsSimulationService(frameProject, node =>
+{
+    frameRuntime.SynchronizeExternalProperty(node, "Position");
+    frameRuntime.SynchronizeExternalProperty(node, "Velocity");
+});
+frameRuntime.UpdateBeforePhysics(.1f);
+if (frameProbe.Velocity[1] != 10) throw new Exception("PreSimulation did not run before physics.");
+framePhysics.Step(.1f);
+frameRuntime.UpdateTouched(.1f);
+var postLine = frameOutput.FirstOrDefault(line => line.StartsWith("frame-post\t", StringComparison.Ordinal));
+if (Math.Abs(frameProbe.Position[1] - 3) > .001f
+    || !frameOutput.Contains("frame-service\ttrue\tRunService\ttrue\ttrue\tfalse")
+    || postLine is null
+    || !double.TryParse(postLine.Split('\t')[^1], System.Globalization.CultureInfo.InvariantCulture, out var postPosition)
+    || Math.Abs(postPosition - 3) > .001)
+    throw new Exception("RunService context or post-physics position failed: " + string.Join(" | ", frameOutput));
+var preIndex = frameOutput.FindIndex(line => line.StartsWith("frame-pre\t", StringComparison.Ordinal));
+var postIndex = frameOutput.FindIndex(line => line.StartsWith("frame-post\t", StringComparison.Ordinal));
+var heartbeatIndex = frameOutput.FindIndex(line => line.StartsWith("frame-heartbeat\t", StringComparison.Ordinal));
+var renderIndex = frameOutput.FindIndex(line => line.StartsWith("frame-render\t", StringComparison.Ordinal));
+if (preIndex < 0 || postIndex <= preIndex || heartbeatIndex <= postIndex || renderIndex <= heartbeatIndex)
+    throw new Exception("RunService frame phases fired out of order: " + string.Join(" | ", frameOutput));
+frameRuntime.UpdateBeforePhysics(.1f);
+framePhysics.Step(.1f);
+frameRuntime.UpdateTouched(.1f);
+if (frameOutput.Count(line => line.StartsWith("frame-pre\t", StringComparison.Ordinal)) != 1
+    || frameOutput.Count(line => line.StartsWith("frame-heartbeat\t", StringComparison.Ordinal)) != 2)
+    throw new Exception("RunService connection lifecycle failed: " + string.Join(" | ", frameOutput));
+var frameDisabler = new GameScript { Source = "game.ServerScriptService.FrameListener.Enabled = false" };
+frameProject.Scripts.Add(frameDisabler);
+frameRuntime.Run(frameDisabler.Id);
+frameRuntime.UpdateBeforePhysics(.1f);
+framePhysics.Step(.1f);
+frameRuntime.UpdateTouched(.1f);
+if (frameOutput.Count(line => line.StartsWith("frame-heartbeat\t", StringComparison.Ordinal)) != 2)
+    throw new Exception("A disabled Script kept receiving RunService signals: " + string.Join(" | ", frameOutput));
+
 Console.WriteLine("Object and runtime smoke passed.");

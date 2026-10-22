@@ -52,6 +52,11 @@ public partial class PlayerWindow : Window
         Title = project.Name;
         renderer = new SceneRenderService(GameViewport, camera);
         renderer.Refresh(project);
+#if GAME_PLAYER_BUILD
+        const bool isStudioBuild = false;
+#else
+        const bool isStudioBuild = true;
+#endif
         var gameRuntime = new LuaXRuntime(project,
             (node, property, _) => Dispatcher.Invoke(() =>
             {
@@ -66,7 +71,7 @@ public partial class PlayerWindow : Window
             {
                 Title = $"{project.Name} — {message}";
                 scriptOutput?.Invoke(message);
-            }));
+            }), isStudio: isStudioBuild);
         runtime = gameRuntime;
         if (startupScriptId is null) gameRuntime.RunAll();
         else gameRuntime.Run(startupScriptId);
@@ -107,6 +112,7 @@ public partial class PlayerWindow : Window
             character?.ApplyInput(physics, renderer.CameraYaw, forward, strafe, canMove && jumpRequested);
         jumpRequested = false;
         if (character is not null) runtime?.SynchronizeExternalProperty(character.Root, "Velocity");
+        runtime?.UpdateBeforePhysics(elapsed);
         physics.Step(elapsed);
         if (seats is not null)
             foreach (var node in seats.AfterPhysics()) SyncSeatNode(node);

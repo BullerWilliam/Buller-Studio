@@ -693,8 +693,11 @@ public partial class MainWindow : Window
             if (selected.Type == "Sparkles") AddTextField("SparkleColor", selected.Color);
             else
             {
-                AddTextField("Color", selected.Color);
-                AddTextField("Size", selected.EffectSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("Color", selected.Type == "ParticleEmitter"
+                    ? ParticleSequenceService.FormatColor(selected.ColorSequence, selected.Color) : selected.Color);
+                AddTextField("Size", selected.Type == "ParticleEmitter"
+                    ? ParticleSequenceService.FormatNumber(selected.SizeSequence, selected.EffectSize)
+                    : selected.EffectSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
             AddTextField("TimeScale", selected.TimeScale.ToString(System.Globalization.CultureInfo.InvariantCulture));
             if (selected.Type == "Fire")
@@ -706,6 +709,17 @@ public partial class MainWindow : Window
             {
                 AddTextField("Opacity", selected.Opacity.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 AddTextField("RiseVelocity", selected.RiseVelocity.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            else if (selected.Type == "ParticleEmitter")
+            {
+                AddTextField("Texture", selected.Texture);
+                AddTextField("Rate", selected.Rate.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("Speed", VectorText(selected.SpeedRange));
+                AddTextField("Lifetime", VectorText(selected.LifetimeRange));
+                AddTextField("SpreadAngle", VectorText(selected.SpreadAngle));
+                AddComboField("EmissionDirection", ["Top", "Bottom", "Front", "Back", "Left", "Right"], selected.EmissionDirection);
+                AddTextField("Transparency", ParticleSequenceService.FormatNumber(selected.TransparencySequence, selected.Transparency));
+                AddLabel("Sequences: time:value[, time:value]. Number values may also use time:value:envelope.", "Size");
             }
             AddLabel("Emits a visual effect from the parent part or Attachment.", "Enabled");
         }
@@ -737,6 +751,21 @@ public partial class MainWindow : Window
             AddTextField("Color", selected.Color);
             AddTextField("Transparency", selected.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+        if (selected.Type == "Trail")
+        {
+            propertyTarget = AddPropertySection("Trail");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } trailAttachment0 ? trailAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } trailAttachment1 ? trailAttachment1 : null);
+            AddTextField("Lifetime", selected.TrailLifetime.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("MinLength", selected.TrailMinLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("MaxLength", selected.TrailMaxLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("WidthScale", ParticleSequenceService.FormatNumber(selected.TrailWidthSequence, selected.TrailWidth));
+            AddTextField("Color", ParticleSequenceService.FormatColor(selected.ColorSequence, selected.Color));
+            AddTextField("Transparency", ParticleSequenceService.FormatNumber(selected.TransparencySequence, selected.Transparency));
+            AddTextField("Texture", selected.Texture);
+            AddLabel("Moves between two Attachments. Keypoints use time:value from 0 to 1.", "WidthScale");
+        }
         if (selected.Type == "Humanoid")
         {
             propertyTarget = AddPropertySection("Humanoid");
@@ -757,7 +786,114 @@ public partial class MainWindow : Window
                 AddLabel("Double-click this script in Explorer to open it.", "Source");
             }
         }
+        RenderTags(selected);
+        RenderAttributes(selected);
         ApplyPropertyFilter(PropertySearch.Text.Trim());
+    }
+
+    private void RenderTags(SceneNode node)
+    {
+        propertyTarget = AddPropertySection("Tags");
+        foreach (var tag in node.Tags.OrderBy(value => value, StringComparer.Ordinal))
+        {
+            var property = $"Tag:{tag}";
+            var remove = new Button { Content = "×", ToolTip = $"Remove {tag}", Tag = property, Width = 24, Margin = new Thickness(3, 0, 0, 0) };
+            remove.Click += (_, _) =>
+            {
+                node.Tags.Remove(tag);
+                RecordEdit();
+                RenderProperties();
+            };
+            var row = CreatePropertyRow(tag, remove);
+            row.Tag = property;
+            propertyTarget.Children.Add(row);
+        }
+        var add = new Button { Content = "+ Add Tag", Tag = "Tags", Margin = new Thickness(3, 5, 3, 2), Padding = new Thickness(5, 3, 5, 3) };
+        add.Click += (_, _) =>
+        {
+            var tag = StudioDialog.Prompt(this, "Add Tag", "Tag name", "NewTag")?.Trim();
+            if (tag is null) return;
+            if (tag.Length == 0 || tag.Length > 256 || node.Tags.Contains(tag, StringComparer.Ordinal))
+            {
+                SetStatus("Enter a unique tag name of at most 256 characters.");
+                return;
+            }
+            node.Tags.Add(tag);
+            RecordEdit();
+            RenderProperties();
+        };
+        propertyTarget.Children.Add(add);
+    }
+
+    private void RenderAttributes(SceneNode node)
+    {
+        propertyTarget = AddPropertySection("Attributes");
+        foreach (var (name, attribute) in node.Attributes.OrderBy(item => item.Key, StringComparer.Ordinal))
+        {
+            var property = $"Attribute:{name}";
+            FrameworkElement editor;
+            if (attribute.Type == "Boolean")
+            {
+                var check = new CheckBox { IsChecked = attribute.BooleanValue, Tag = property, DataContext = node.Id, Margin = new Thickness(5, 2, 0, 2) };
+                check.Checked += PropertyCheck_Changed;
+                check.Unchecked += PropertyCheck_Changed;
+                editor = check;
+            }
+            else
+            {
+                var text = attribute.Type switch
+                {
+                    "Number" => attribute.NumberValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "Vector3" => VectorText(attribute.Vector3Value),
+                    "Color3" => attribute.Color3Value,
+                    _ => attribute.StringValue
+                };
+                var box = new TextBox { Text = text, Tag = property, DataContext = node.Id, MinWidth = 80, Padding = new Thickness(5, 3, 5, 3), ToolTip = attribute.Type };
+                box.LostFocus += PropertyText_LostFocus;
+                box.KeyDown += (_, args) => { if (args.Key == Key.Enter) { ApplyTextProperty(box); Keyboard.ClearFocus(); } };
+                editor = box;
+            }
+            var valuePanel = new Grid();
+            valuePanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            valuePanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            valuePanel.Children.Add(editor);
+            var delete = new Button { Content = "×", ToolTip = $"Delete {name}", Tag = property, Width = 24, Margin = new Thickness(3, 0, 0, 0) };
+            delete.Click += (_, _) =>
+            {
+                node.Attributes.Remove(name);
+                RecordEdit();
+                RenderProperties();
+            };
+            Grid.SetColumn(delete, 1);
+            valuePanel.Children.Add(delete);
+            var row = CreatePropertyRow(name, valuePanel);
+            row.Tag = property;
+            propertyTarget.Children.Add(row);
+        }
+        var add = new Button { Content = "+ Add Attribute", Tag = "Attributes", Margin = new Thickness(3, 5, 3, 2), Padding = new Thickness(5, 3, 5, 3) };
+        add.Click += (_, _) =>
+        {
+            var menu = new ContextMenu { PlacementTarget = add };
+            foreach (var type in new[] { "String", "Boolean", "Number", "Vector3", "Color3" })
+            {
+                var item = new MenuItem { Header = type };
+                item.Click += (_, _) =>
+                {
+                    var name = StudioDialog.Prompt(this, "Add Attribute", "Attribute name", "NewAttribute")?.Trim();
+                    if (string.IsNullOrWhiteSpace(name) || name.Length > 256 || node.Attributes.ContainsKey(name))
+                    {
+                        if (name is not null) SetStatus("Enter a unique attribute name of at most 256 characters.");
+                        return;
+                    }
+                    node.Attributes[name] = new SceneAttributeValue { Type = type };
+                    RecordEdit();
+                    RenderProperties();
+                };
+                menu.Items.Add(item);
+            }
+            menu.IsOpen = true;
+        };
+        propertyTarget.Children.Add(add);
     }
 
     private void RenderGuiProperties(SceneNode node)
@@ -964,6 +1100,11 @@ public partial class MainWindow : Window
     private void ApplyTextProperty(TextBox box)
     {
         if (project is null || box.Tag is not string property || box.DataContext is not string targetId || FindSceneNode(targetId) is not { } target) return;
+        if (property.StartsWith("Attribute:", StringComparison.Ordinal))
+        {
+            ApplyAttributeText(target, property[10..], box);
+            return;
+        }
         var text = box.Text.Trim();
         var currentNumber = NumericPropertyText(target, property);
         if (property == "Value" && target.Type == "IntValue")
@@ -1127,15 +1268,44 @@ public partial class MainWindow : Window
                 target.Size = [values[1], values[3], target.Size[2]];
             }
         }
-        else if (property == "Size" && SceneNodeTypes.IsSizedParticleEffect(target))
+        else if (property == "Size" && (SceneNodeTypes.IsSizedParticleEffect(target) || target.Type == "ParticleEmitter"))
         {
+            if (target.Type == "ParticleEmitter" && text.Contains(':'))
+            {
+                if (!ParticleSequenceService.TryParseNumberText(text, 0, 100, out var points))
+                {
+                    SetStatus("Use keypoints from time 0 to 1, such as 0:1, 0.5:2, 1:0.");
+                    box.Text = ParticleSequenceService.FormatNumber(target.SizeSequence, target.EffectSize);
+                    return;
+                }
+                target.SizeSequence = points;
+                target.EffectSize = points[0].Value;
+            }
+            else
+            {
             if (!float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var effectSize) || !float.IsFinite(effectSize))
             {
                 SetStatus("Enter a valid number for Size.");
-                box.Text = target.EffectSize.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                box.Text = target.Type == "ParticleEmitter" ? ParticleSequenceService.FormatNumber(target.SizeSequence, target.EffectSize)
+                    : target.EffectSize.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 return;
             }
             target.EffectSize = Math.Clamp(effectSize, target.Type == "Fire" ? 2 : .1f, target.Type == "Fire" ? 30 : 100);
+            if (target.Type == "ParticleEmitter") target.SizeSequence = [];
+            }
+        }
+        else if (target.Type == "ParticleEmitter" && property is "Speed" or "Lifetime" or "SpreadAngle")
+        {
+            var values = ParsePair(text);
+            if (values is null)
+            {
+                SetStatus("Enter two comma-separated numbers.");
+                box.Text = VectorText(property == "Speed" ? target.SpeedRange : property == "Lifetime" ? target.LifetimeRange : target.SpreadAngle);
+                return;
+            }
+            if (property == "Speed") target.SpeedRange = [Math.Clamp(values[0], -100, 100), Math.Clamp(values[1], Math.Clamp(values[0], -100, 100), 100)];
+            else if (property == "Lifetime") target.LifetimeRange = [Math.Clamp(values[0], .05f, 30), Math.Clamp(values[1], Math.Clamp(values[0], .05f, 30), 30)];
+            else target.SpreadAngle = [Math.Clamp(values[0], 0, 360), Math.Clamp(values[1], 0, 360)];
         }
         else if (property is "Position" or "Rotation" or "Size" or "Velocity")
         {
@@ -1147,19 +1317,50 @@ public partial class MainWindow : Window
             if (property == "Velocity" && SceneNodeTypes.IsBasePart(target)) target.Velocity = values;
         }
         else if (property == "FieldOfView" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fov)) target.FieldOfView = Math.Clamp(fov, 10, 120);
-        else if (property == "Color") target.Color = text;
+        else if (property == "Color" && target.Type is ("ParticleEmitter" or "Trail") && text.Contains(':'))
+        {
+            if (!ParticleSequenceService.TryParseColorText(text, out var points))
+            {
+                SetStatus("Use color keypoints such as 0:#FF0000, 1:#0000FF.");
+                box.Text = ParticleSequenceService.FormatColor(target.ColorSequence, target.Color);
+                return;
+            }
+            target.ColorSequence = points;
+            target.Color = points[0].Value;
+        }
+        else if (property == "Color")
+        {
+            target.Color = text;
+            if (target.Type is "ParticleEmitter" or "Trail") target.ColorSequence = [];
+        }
         else if (property == "SparkleColor" && target.Type == "Sparkles") target.Color = text;
         else if (property == "SecondaryColor" && target.Type == "Fire") target.SecondaryColor = text;
         else if (property == "TimeScale" && SceneNodeTypes.IsParticleEffect(target) && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var timeScale) && float.IsFinite(timeScale)) target.TimeScale = Math.Clamp(timeScale, 0, 1);
         else if (property == "Heat" && target.Type == "Fire" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var heat) && float.IsFinite(heat)) target.Heat = Math.Clamp(heat, -25, 25);
         else if (property == "RiseVelocity" && target.Type == "Smoke" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var riseVelocity) && float.IsFinite(riseVelocity)) target.RiseVelocity = Math.Clamp(riseVelocity, -25, 25);
         else if (property == "Opacity" && target.Type == "Smoke" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var opacity) && float.IsFinite(opacity)) target.Opacity = Math.Clamp(opacity, 0, 1);
+        else if (property == "Rate" && target.Type == "ParticleEmitter" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var rate) && float.IsFinite(rate)) target.Rate = Math.Clamp(rate, 0, 200);
         else if (target.Type == "UIScale" && property == "Scale" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var guiScale) && float.IsFinite(guiScale)) target.Scale = Math.Clamp(guiScale, .01f, 100);
         else if (target.Type == "UIGradient" && property == "StartColor") target.StartColor = text;
         else if (target.Type == "UIGradient" && property == "EndColor") target.EndColor = text;
         else if (property == "FillColor" && target.Type == "Highlight") target.FillColor = text;
         else if (property == "OutlineColor" && target.Type == "Highlight") target.OutlineColor = text;
-        else if (property == "Transparency" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var transparency) && float.IsFinite(transparency)) target.Transparency = Math.Clamp(transparency, 0, 1);
+        else if (property == "Transparency" && target.Type is ("ParticleEmitter" or "Trail") && text.Contains(':'))
+        {
+            if (!ParticleSequenceService.TryParseNumberText(text, 0, 1, out var points))
+            {
+                SetStatus("Use transparency keypoints such as 0:0, 1:1.");
+                box.Text = ParticleSequenceService.FormatNumber(target.TransparencySequence, target.Transparency);
+                return;
+            }
+            target.TransparencySequence = points;
+            target.Transparency = points[0].Value;
+        }
+        else if (property == "Transparency" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var transparency) && float.IsFinite(transparency))
+        {
+            target.Transparency = Math.Clamp(transparency, 0, 1);
+            if (target.Type is "ParticleEmitter" or "Trail") target.TransparencySequence = [];
+        }
         else if (target.Type == "Explosion" && property == "BlastRadius" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var blastRadius) && float.IsFinite(blastRadius)) target.BlastRadius = Math.Clamp(blastRadius, 0, 100);
         else if (target.Type == "Explosion" && property == "BlastPressure" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var blastPressure) && float.IsFinite(blastPressure)) target.BlastPressure = Math.Clamp(blastPressure, 0, 1000000);
         else if (target.Type == "Explosion" && property == "DestroyJointRadiusPercent" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var jointRadiusPercent) && float.IsFinite(jointRadiusPercent)) target.DestroyJointRadiusPercent = Math.Clamp(jointRadiusPercent, 0, 1);
@@ -1179,6 +1380,33 @@ public partial class MainWindow : Window
         {
             if (property == "Width0") target.Width0 = Math.Clamp(beamWidth, 0, 100);
             else target.Width1 = Math.Clamp(beamWidth, 0, 100);
+        }
+        else if (target.Type == "Trail" && property == "WidthScale")
+        {
+            if (text.Contains(':'))
+            {
+                if (!ParticleSequenceService.TryParseNumberText(text, 0, 1, out var points))
+                {
+                    SetStatus("Use width keypoints such as 0:1, 1:0.");
+                    box.Text = ParticleSequenceService.FormatNumber(target.TrailWidthSequence, target.TrailWidth);
+                    return;
+                }
+                target.TrailWidthSequence = points;
+                target.TrailWidth = points[0].Value;
+            }
+            else if (float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var width) && float.IsFinite(width))
+            {
+                target.TrailWidth = Math.Clamp(width, 0, 1);
+                target.TrailWidthSequence = [];
+            }
+            else { SetStatus("Enter a width from 0 to 1."); return; }
+        }
+        else if (target.Type == "Trail" && property is ("Lifetime" or "MinLength" or "MaxLength")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var trailLength) && float.IsFinite(trailLength))
+        {
+            if (property == "Lifetime") target.TrailLifetime = Math.Clamp(trailLength, .01f, 20);
+            else if (property == "MinLength") target.TrailMinLength = Math.Clamp(trailLength, 0, 100);
+            else target.TrailMaxLength = Math.Clamp(trailLength, 0, 10000);
         }
         else if (property == "Gravity" && target.Type == "Workspace" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gravity) && float.IsFinite(gravity)) target.Gravity = Math.Clamp(gravity, 0, 1000);
         else if (target.Type == "Humanoid" && property is ("Health" or "MaxHealth" or "WalkSpeed" or "JumpPower")
@@ -1214,7 +1442,7 @@ public partial class MainWindow : Window
         else if (property == "Asset") target.Asset = text;
         else if (property == "ActionText") target.ActionText = text;
         else if (property == "ObjectText") target.ObjectText = text;
-        else if (property == "Texture" && target.Type == "Part") target.Texture = text;
+        else if (property == "Texture" && target.Type is ("Part" or "ParticleEmitter" or "Trail")) target.Texture = text;
         else if (property == "Text") target.Text = text;
         else if (property == "TextColor") target.TextColor = text;
         else if (property == "StrokeColor") target.StrokeColor = text;
@@ -1267,6 +1495,45 @@ public partial class MainWindow : Window
         if (property == "Name") RefreshEditor();
     }
 
+    private void ApplyAttributeText(SceneNode target, string name, TextBox box)
+    {
+        if (!target.Attributes.TryGetValue(name, out var attribute)) return;
+        var text = box.Text.Trim();
+        switch (attribute.Type)
+        {
+            case "String": attribute.StringValue = box.Text; break;
+            case "Number":
+                if (!double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var number) || !double.IsFinite(number))
+                {
+                    SetStatus("Enter a valid number for this attribute.");
+                    box.Text = attribute.NumberValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    return;
+                }
+                attribute.NumberValue = number;
+                break;
+            case "Vector3":
+                if (ParseVector(text) is not { } vector)
+                {
+                    SetStatus("Enter three comma-separated numbers for this attribute.");
+                    box.Text = VectorText(attribute.Vector3Value);
+                    return;
+                }
+                attribute.Vector3Value = vector;
+                break;
+            case "Color3":
+                if (!Regex.IsMatch(text, "^#[0-9A-Fa-f]{6}$"))
+                {
+                    SetStatus("Enter a color as #RRGGBB for this attribute.");
+                    box.Text = attribute.Color3Value;
+                    return;
+                }
+                attribute.Color3Value = text.ToUpperInvariant();
+                break;
+            default: return;
+        }
+        RecordEdit();
+    }
+
     private static string? NumericPropertyText(SceneNode node, string property)
     {
         var value = property switch
@@ -1287,7 +1554,8 @@ public partial class MainWindow : Window
             "JumpPower" => node.JumpPower,
             "Brightness" => node.Brightness,
             "Range" => node.Range,
-            "Size" => SceneNodeTypes.IsSizedParticleEffect(node) ? node.EffectSize : (float?)null,
+            "Size" => SceneNodeTypes.IsSizedParticleEffect(node) || node.Type == "ParticleEmitter" ? node.EffectSize : (float?)null,
+            "Rate" => node.Type == "ParticleEmitter" ? node.Rate : (float?)null,
             "TimeScale" => SceneNodeTypes.IsParticleEffect(node) ? node.TimeScale : (float?)null,
             "Heat" => node.Type == "Fire" ? node.Heat : (float?)null,
             "RiseVelocity" => node.Type == "Smoke" ? node.RiseVelocity : (float?)null,
@@ -1318,6 +1586,15 @@ public partial class MainWindow : Window
     private void PropertyCheck_Changed(object sender, RoutedEventArgs e)
     {
         if (project is null || sender is not CheckBox box || box.Tag is not string property || box.DataContext is not string targetId || FindSceneNode(targetId) is not { } target) return;
+        if (property.StartsWith("Attribute:", StringComparison.Ordinal))
+        {
+            if (target.Attributes.TryGetValue(property[10..], out var attribute) && attribute.Type == "Boolean")
+            {
+                attribute.BooleanValue = box.IsChecked == true;
+                RecordEdit();
+            }
+            return;
+        }
         if (property == "Anchored") target.Anchored = box.IsChecked == true;
         if (property == "CanCollide") target.CanCollide = box.IsChecked == true;
         if (property == "CanTouch") target.CanTouch = box.IsChecked == true;
@@ -1349,10 +1626,11 @@ public partial class MainWindow : Window
         if (property == "Shape" && target.Type == "Part") target.Shape = value;
         if (property == "Material" && SceneNodeTypes.IsBasePart(target)) target.Material = value;
         if (property == "Face" && target.Type is ("Decal" or "Texture" or "SurfaceLight") && SceneNodeTypes.IsFace(value)) target.Face = value;
+        if (property == "EmissionDirection" && target.Type == "ParticleEmitter" && SceneNodeTypes.IsFace(value)) target.EmissionDirection = value;
         if (property == "LayoutDirection") target.LayoutDirection = value;
         if (property == "FillDirection" && target.Type == "UIGridLayout") target.FillDirection = value;
         if (property == "Mode") renderer?.UpdateCamera(project);
-        if (property is "Shape" or "Material" or "Face") renderer?.UpdateNode(target, project);
+        if (property is "Shape" or "Material" or "Face" or "EmissionDirection") renderer?.UpdateNode(target, project);
         if (IsGuiNode(target)) RefreshGuiPreview();
         RecordEdit();
         RenderProperties();
@@ -1568,6 +1846,8 @@ public partial class MainWindow : Window
         if (type == "Fire") { node.Color = "#FF6A00"; node.EffectSize = 5; }
         if (type == "Smoke") node.Color = "#B0B0B0";
         if (type == "Sparkles") node.Color = "#FFFFFF";
+        if (type == "ParticleEmitter") node.Color = "#FFFFFF";
+        if (type == "Trail") node.Color = "#FFFFFF";
         if (type == "SurfaceLight") node.Angle = 120;
         if (SceneNodeTypes.IsLight(node)) node.Color = "#FFFFFF";
         if (type is "Frame" or "ScrollingFrame") { node.Size = [320, 180, 1]; node.Color = "#303235"; }
@@ -1597,8 +1877,8 @@ public partial class MainWindow : Window
             ? (parent.Type == "Gui"
                 ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") }
                 : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
-            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
-        choices = choices.Concat(new (string Type, string Name)[] { ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky"), ("Fire", "Fire"), ("Smoke", "Smoke"), ("Sparkles", "Sparkles") })
+            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
+        choices = choices.Concat(new (string Type, string Name)[] { ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky"), ("Fire", "Fire"), ("Smoke", "Smoke"), ("Sparkles", "Sparkles"), ("ParticleEmitter", "ParticleEmitter") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
         var search = new TextBox { Width = 190, Margin = new Thickness(5), Padding = new Thickness(5, 3, 5, 3), ToolTip = "Search objects" };
@@ -1888,6 +2168,8 @@ public partial class MainWindow : Window
         var property = selected.Type switch
         {
             "Part" when imageAsset => "Texture",
+            "ParticleEmitter" when imageAsset => "Texture",
+            "Trail" when imageAsset => "Texture",
             "MeshPart" when asset.Type == "obj" => "Asset",
             "ImageLabel" or "ImageButton" or "Decal" or "Texture" when imageAsset => "Asset",
             "Sound" when IsAudioAssetType(asset.Type) => "Asset",
@@ -2317,7 +2599,7 @@ public partial class MainWindow : Window
             var imageAssetContext = Regex.IsMatch(source, @"\b(?:Texture|Skybox(?:Front|Back|Left|Right|Top|Bottom))\s*=\s*(?:GetAssetPath\s*\(\s*)?(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase);
             return GetLuaXAssetPathCompletions(imageAssetContext);
         }
-        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Gui", "Debris"];
+        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Gui", "Debris", "CollectionService", "RunService"];
         if (Regex.IsMatch(source, @"\bInstance\.new\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXCreatableClassNameCompletions;
         if (Regex.IsMatch(source, @"\b(?:Mode|CameraMode)\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject"];
         if (Regex.IsMatch(source, @"\bLayoutDirection\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Vertical", "Horizontal"];
@@ -2661,7 +2943,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Trail", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "CollectionService", "RunService", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -2704,32 +2986,42 @@ public partial class MainWindow : Window
 
     private string[] GetLuaXMembers(string receiver, TextEditor editor)
     {
-        if (receiver == "game") return ["GetService", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Workspace", "Debris"];
+        if (receiver == "game") return ["GetService", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Workspace", "Debris", "CollectionService", "RunService"];
         if (receiver == "game.Debris") return ["Name", "ClassName", "AddItem"];
+        if (receiver == "game.CollectionService") return ["Name", "ClassName", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
+        if (receiver == "game.RunService") return ["Name", "ClassName", "IsRunning", "IsEdit", "IsStudio", "PreSimulation", "Stepped", "PostSimulation", "Heartbeat", "PreRender", "RenderStepped"];
         if (receiver == "Instance") return ["new"];
-        if (receiver == "Enum") return ["CameraMode", "LayoutDirection", "FillDirection", "RaycastFilterType"];
+        if (receiver == "Enum") return ["CameraMode", "LayoutDirection", "FillDirection", "RaycastFilterType", "NormalId"];
+        if (receiver == "Enum.NormalId") return ["Top", "Bottom", "Front", "Back", "Left", "Right"];
         if (receiver == "Enum.CameraMode") return ["Custom", "Subject"];
         if (receiver == "Enum.LayoutDirection") return ["Horizontal", "Vertical"];
         if (receiver == "Enum.FillDirection") return ["Horizontal", "Vertical"];
         if (receiver == "Enum.RaycastFilterType") return ["Exclude", "Include"];
         if (receiver == "RaycastParams") return ["new"];
         if (receiver == "Vector3") return ["new", "one", "zero"];
+        if (receiver is "Vector2" or "NumberRange" or "NumberSequence" or "ColorSequence" or "NumberSequenceKeypoint" or "ColorSequenceKeypoint") return ["new"];
         if (receiver == "Color3") return ["fromHex", "fromHSV", "fromRGB", "new"];
         if (receiver == "UDim") return ["new"];
         if (receiver == "UDim2") return ["fromOffset", "fromScale", "new", "zero"];
         if (LuaXStandardLibraryMembers.TryGetValue(receiver, out var libraryMembers)) return libraryMembers;
-        if (receiver.EndsWith(".Touched", StringComparison.Ordinal) || receiver == "Touched" || receiver.EndsWith(".Triggered", StringComparison.Ordinal) || receiver == "Triggered" || receiver.EndsWith(".MouseClick", StringComparison.Ordinal) || receiver == "MouseClick" || receiver.EndsWith(".Died", StringComparison.Ordinal) || receiver == "Died" || receiver.EndsWith(".Changed", StringComparison.Ordinal) || receiver == "Changed" || receiver.EndsWith(".Hit", StringComparison.Ordinal) || receiver == "Hit") return ["Connect"];
+        if (receiver.EndsWith(".Touched", StringComparison.Ordinal) || receiver == "Touched" || receiver.EndsWith(".Triggered", StringComparison.Ordinal) || receiver == "Triggered" || receiver.EndsWith(".MouseClick", StringComparison.Ordinal) || receiver == "MouseClick" || receiver.EndsWith(".Died", StringComparison.Ordinal) || receiver == "Died" || receiver.EndsWith(".Changed", StringComparison.Ordinal) || receiver == "Changed" || receiver.EndsWith(".AttributeChanged", StringComparison.Ordinal) || receiver == "AttributeChanged" || receiver.EndsWith(".Hit", StringComparison.Ordinal) || receiver == "Hit" || receiver.EndsWith(".PreSimulation", StringComparison.Ordinal) || receiver.EndsWith(".Stepped", StringComparison.Ordinal) || receiver.EndsWith(".PostSimulation", StringComparison.Ordinal) || receiver.EndsWith(".Heartbeat", StringComparison.Ordinal) || receiver.EndsWith(".PreRender", StringComparison.Ordinal) || receiver.EndsWith(".RenderStepped", StringComparison.Ordinal)) return ["Connect"];
         var node = ResolveLuaXNode(receiver);
         if (node is null)
         {
             var inferredType = InferLuaXReceiverType(receiver, editor);
             if (inferredType == "Vector3") return ["Cross", "Dot", "Lerp", "Magnitude", "Unit", "X", "Y", "Z"];
+            if (inferredType == "Vector2") return ["X", "Y"];
+            if (inferredType == "NumberRange") return ["Min", "Max"];
+            if (inferredType is "NumberSequence" or "ColorSequence") return ["Keypoints", "Value"];
+            if (inferredType == "NumberSequenceKeypoint") return ["Time", "Value", "Envelope"];
+            if (inferredType == "ColorSequenceKeypoint") return ["Time", "Value"];
             if (inferredType == "Color3") return ["B", "G", "Lerp", "R", "ToHex", "ToHSV"];
             if (inferredType == "UDim") return ["Offset", "Scale"];
             if (inferredType == "UDim2") return ["X", "Y"];
             if (inferredType == "RaycastParams") return ["FilterDescendantsInstances", "FilterType"];
             if (inferredType == "RaycastResult") return ["Instance", "Position", "Normal", "Distance", "Material"];
             if (inferredType == "RBXScriptSignal") return ["Connect"];
+            if (inferredType == "RunService") return ["Name", "ClassName", "IsRunning", "IsEdit", "IsStudio", "PreSimulation", "Stepped", "PostSimulation", "Heartbeat", "PreRender", "RenderStepped"];
             if (inferredType is "number" or "string" or "boolean" or "table") return [];
             node = ResolveLuaXReceiverNode(receiver, editor);
             if (node is null && inferredType is not null && LuaXInstanceTypes.Contains(inferredType))
@@ -2737,7 +3029,7 @@ public partial class MainWindow : Window
             if (node is null) return LuaXMemberCompletions;
         }
 
-        var members = new List<string> { "Name", "Parent", "Archivable", "ClassName", "Id", "Children", "SetProperty", "GetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy" };
+        var members = new List<string> { "Name", "Parent", "Archivable", "ClassName", "Id", "Children", "SetProperty", "GetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags" };
         if (node.Type == "Model") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "BasePart" || SceneNodeTypes.IsBasePart(node)) members.AddRange(["Position", "Rotation", "Size", "Color", "Material", "Transparency", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Touched", "touched"]);
         if (node.Type == "Part") members.AddRange(["Shape", "Texture"]);
@@ -2748,10 +3040,13 @@ public partial class MainWindow : Window
         if (node.Type == "Explosion") members.AddRange(["Position", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Visible", "Hit"]);
         if (SceneNodeTypes.IsParticleEffect(node)) members.AddRange(["Enabled", "TimeScale"]);
         if (SceneNodeTypes.IsSizedParticleEffect(node)) members.AddRange(["Color", "Size"]);
+        if (node.Type == "ParticleEmitter") members.AddRange(["Color", "Size", "Transparency", "Rate", "Speed", "Lifetime", "SpreadAngle", "EmissionDirection", "Texture", "Emit", "Clear"]);
         if (node.Type == "Sparkles") members.AddRange(["SparkleColor", "Color"]);
         if (node.Type == "Fire") members.AddRange(["Heat", "SecondaryColor"]);
         if (node.Type == "Smoke") members.AddRange(["Opacity", "RiseVelocity"]);
         if (node.Type == "Debris") members.Add("AddItem");
+        if (node.Type == "CollectionService") members.AddRange(["AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"]);
+        if (node.Type == "RunService") members.AddRange(["IsRunning", "IsEdit", "IsStudio", "PreSimulation", "Stepped", "PostSimulation", "Heartbeat", "PreRender", "RenderStepped"]);
         if (SceneNodeTypes.IsValueObject(node) || node.Type == "ValueBase") members.AddRange(["Value", "Changed"]);
         if (node.Type == "BindableEvent") members.AddRange(["Event", "Fire"]);
         if (node.Type == "BindableFunction") members.AddRange(["OnInvoke", "Invoke"]);
@@ -2768,6 +3063,7 @@ public partial class MainWindow : Window
         if (node.Type == "Highlight") members.AddRange(["Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency"]);
         if (node.Type == "WeldConstraint") members.AddRange(["Enabled", "Part0", "Part1"]);
         if (node.Type == "Beam") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Width0", "Width1", "Color", "Transparency"]);
+        if (node.Type == "Trail") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Lifetime", "MinLength", "MaxLength", "WidthScale", "Color", "Transparency", "Texture", "Clear"]);
         if (node.Type == "Attachment") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
         if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "Raycast", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
@@ -2796,22 +3092,31 @@ public partial class MainWindow : Window
     private string[] GetLuaXMethods(string receiver, TextEditor editor)
     {
         if (receiver == "game") return ["GetService"];
+        if (receiver == "game.RunService") return ["IsRunning", "IsEdit", "IsStudio"];
         if (receiver == "workspace" || receiver == "game.Workspace") return ["Raycast", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA"];
         if (receiver.Equals("Touched", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Touched", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".Activated", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".MouseButton1Click", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".TextChanged", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Triggered", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".MouseClick", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Changed", StringComparison.OrdinalIgnoreCase)
-            || receiver.EndsWith(".Hit", StringComparison.OrdinalIgnoreCase)) return ["Connect"];
+            || receiver.EndsWith(".Hit", StringComparison.OrdinalIgnoreCase)
+            || receiver.EndsWith(".PreSimulation", StringComparison.OrdinalIgnoreCase)
+            || receiver.EndsWith(".Stepped", StringComparison.OrdinalIgnoreCase)
+            || receiver.EndsWith(".PostSimulation", StringComparison.OrdinalIgnoreCase)
+            || receiver.EndsWith(".Heartbeat", StringComparison.OrdinalIgnoreCase)
+            || receiver.EndsWith(".PreRender", StringComparison.OrdinalIgnoreCase)
+            || receiver.EndsWith(".RenderStepped", StringComparison.OrdinalIgnoreCase)) return ["Connect"];
         var inferredType = InferLuaXReceiverType(receiver, editor);
-        if (inferredType is "Vector3Constructor" or "Color3Constructor" or "UDimConstructor" or "UDim2Constructor" or "RaycastParamsConstructor" or "RaycastParams" or "RaycastResult" or "UDim" or "UDim2") return [];
+        if (inferredType is "Vector3Constructor" or "Vector2Constructor" or "NumberRangeConstructor" or "NumberSequenceConstructor" or "ColorSequenceConstructor" or "Color3Constructor" or "UDimConstructor" or "UDim2Constructor" or "RaycastParamsConstructor" or "RaycastParams" or "RaycastResult" or "UDim" or "UDim2" or "Vector2" or "NumberRange" or "NumberSequence" or "ColorSequence") return [];
         if (inferredType == "Vector3") return ["Cross", "Dot", "Lerp"];
         if (inferredType == "Color3") return ["Lerp", "ToHex", "ToHSV"];
         if (inferredType == "RBXScriptSignal") return ["Connect"];
+        if (inferredType == "RunService") return ["IsRunning", "IsEdit", "IsStudio"];
         if (inferredType == "Workspace") return ["Raycast", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA"];
         if (inferredType is "number" or "string" or "boolean" or "table") return [];
         var receiverNode = ResolveLuaXNode(receiver) ?? ResolveLuaXReceiverNode(receiver, editor);
         if (inferredType == "Humanoid" || receiverNode?.Type == "Humanoid") return ["TakeDamage", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
         if (inferredType == "Sound" || receiverNode?.Type == "Sound") return ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Play", "Stop"];
+        if (inferredType == "ParticleEmitter" || receiverNode?.Type == "ParticleEmitter") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Emit", "Clear"];
         return LuaXInstanceTypes.Contains(inferredType ?? string.Empty) || receiverNode is not null
             ? ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"]
             : LuaXMethodCompletions;
@@ -2820,12 +3125,24 @@ public partial class MainWindow : Window
     private string? InferLuaXReceiverType(string receiver, TextEditor editor, HashSet<string>? visited = null)
     {
         if (receiver == "Vector3") return "Vector3Constructor";
+        if (receiver == "Vector2") return "Vector2Constructor";
+        if (receiver == "NumberRange") return "NumberRangeConstructor";
+        if (receiver == "NumberSequence") return "NumberSequenceConstructor";
+        if (receiver == "NumberSequenceKeypoint") return "NumberSequenceKeypointConstructor";
+        if (receiver == "ColorSequence") return "ColorSequenceConstructor";
+        if (receiver == "ColorSequenceKeypoint") return "ColorSequenceKeypointConstructor";
         if (receiver == "Color3") return "Color3Constructor";
         if (receiver == "UDim") return "UDimConstructor";
         if (receiver == "UDim2") return "UDim2Constructor";
         if (receiver == "RaycastParams") return "RaycastParamsConstructor";
         var directExpression = StripExpressionParentheses(receiver);
         if (Regex.IsMatch(directExpression, @"^Vector3\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "Vector3";
+        if (Regex.IsMatch(directExpression, @"^Vector2\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "Vector2";
+        if (Regex.IsMatch(directExpression, @"^NumberRange\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "NumberRange";
+        if (Regex.IsMatch(directExpression, @"^NumberSequence\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "NumberSequence";
+        if (Regex.IsMatch(directExpression, @"^NumberSequenceKeypoint\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "NumberSequenceKeypoint";
+        if (Regex.IsMatch(directExpression, @"^ColorSequence\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "ColorSequence";
+        if (Regex.IsMatch(directExpression, @"^ColorSequenceKeypoint\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "ColorSequenceKeypoint";
         if (Regex.IsMatch(directExpression, @"^Color3\s*\.\s*(?:new|fromRGB|fromHSV|fromHex)\s*\(", RegexOptions.CultureInvariant)) return "Color3";
         if (Regex.IsMatch(directExpression, @"^UDim\s*\.\s*new\s*\(", RegexOptions.CultureInvariant)) return "UDim";
         if (Regex.IsMatch(directExpression, @"^UDim2\s*\.\s*(?:new|fromOffset|fromScale)\s*\(", RegexOptions.CultureInvariant)) return "UDim2";
@@ -2854,6 +3171,12 @@ public partial class MainWindow : Window
         if (expression is null) return null;
         expression = StripExpressionParentheses(expression);
         if (expression.StartsWith("Vector3.new", StringComparison.Ordinal)) return "Vector3";
+        if (expression.StartsWith("Vector2.new", StringComparison.Ordinal)) return "Vector2";
+        if (expression.StartsWith("NumberRange.new", StringComparison.Ordinal)) return "NumberRange";
+        if (expression.StartsWith("NumberSequence.new", StringComparison.Ordinal)) return "NumberSequence";
+        if (expression.StartsWith("NumberSequenceKeypoint.new", StringComparison.Ordinal)) return "NumberSequenceKeypoint";
+        if (expression.StartsWith("ColorSequence.new", StringComparison.Ordinal)) return "ColorSequence";
+        if (expression.StartsWith("ColorSequenceKeypoint.new", StringComparison.Ordinal)) return "ColorSequenceKeypoint";
         if (expression.StartsWith("Color3.new", StringComparison.Ordinal) || expression.StartsWith("Color3.fromRGB", StringComparison.Ordinal) || expression.StartsWith("Color3.fromHSV", StringComparison.Ordinal) || expression.StartsWith("Color3.fromHex", StringComparison.Ordinal)) return "Color3";
         if (expression.StartsWith("UDim.new", StringComparison.Ordinal)) return "UDim";
         if (expression.StartsWith("UDim2.new", StringComparison.Ordinal) || expression.StartsWith("UDim2.fromOffset", StringComparison.Ordinal) || expression.StartsWith("UDim2.fromScale", StringComparison.Ordinal)) return "UDim2";
@@ -2960,6 +3283,20 @@ public partial class MainWindow : Window
 
     private string? InferLuaXMemberType(SceneNode? node, string? receiverType, string member)
     {
+        if (node?.Type == "ParticleEmitter")
+        {
+            var emitterType = member.ToLowerInvariant() switch
+            {
+                "color" => "ColorSequence",
+                "size" or "transparency" => "NumberSequence",
+                "speed" or "lifetime" => "NumberRange",
+                "spreadangle" => "Vector2",
+                "rate" or "timescale" => "number",
+                "emissiondirection" or "texture" => "string",
+                _ => null
+            };
+            if (emitterType is not null) return emitterType;
+        }
         if (node is not null)
         {
             var propertyType = member.ToLowerInvariant() switch
@@ -2982,6 +3319,15 @@ public partial class MainWindow : Window
 
         return (receiverType, member.ToLowerInvariant()) switch
         {
+            ("ParticleEmitter", "color") => "ColorSequence",
+            ("ParticleEmitter", "size" or "transparency") => "NumberSequence",
+            ("ParticleEmitter", "speed" or "lifetime") => "NumberRange",
+            ("ParticleEmitter", "spreadangle") => "Vector2",
+            ("ParticleEmitter", "rate" or "timescale") => "number",
+            ("Vector2", "x" or "y") => "number",
+            ("NumberRange", "min" or "max") => "number",
+            ("NumberSequence", "value") => "number",
+            ("ColorSequence", "value") => "Color3",
             ("BasePart", "position" or "rotation" or "size" or "velocity" or "assemblylinearvelocity") => "Vector3",
             ("BasePart", "color") => "Color3",
             ("BasePart", "anchored" or "cancollide" or "cantouch" or "castshadow") => "boolean",
@@ -3071,6 +3417,10 @@ public partial class MainWindow : Window
         if (node is not null) return node;
         if (expression == "game.Debris") return new SceneNode { Type = "Debris", Name = "Debris" };
         if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']Debris[""']\s*\)$")) return new SceneNode { Type = "Debris", Name = "Debris" };
+        if (expression == "game.CollectionService") return new SceneNode { Type = "CollectionService", Name = "CollectionService" };
+        if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']CollectionService[""']\s*\)$")) return new SceneNode { Type = "CollectionService", Name = "CollectionService" };
+        if (expression == "game.RunService") return new SceneNode { Type = "RunService", Name = "RunService" };
+        if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']RunService[""']\s*\)$")) return new SceneNode { Type = "RunService", Name = "RunService" };
         var serviceMatch = Regex.Match(expression, @"^game:GetService\s*\(\s*[""'](?<service>Workspace|Players|Lighting|ReplicatedStorage|ServerScriptService|ServerStorage|Gui)[""']\s*\)$");
         if (serviceMatch.Success) return serviceMatch.Groups["service"].Value switch { "Workspace" => project?.Workspace, "Players" => project?.Players, "Lighting" => project?.Lighting, "ReplicatedStorage" => project?.ReplicatedStorage, "ServerScriptService" => project?.ServerScriptService, "ServerStorage" => project?.ServerStorage, _ => project?.Gui };
         var childMatch = Regex.Match(expression, @"^(?<parent>.+):(?<method>WaitForChild|waitforchild|FindFirstChild)\s*\(\s*[""'](?<name>[^""']+)[""']\s*(?:,\s*(?<recursive>true|false)\s*)?\)$", RegexOptions.IgnoreCase);
@@ -3096,8 +3446,8 @@ public partial class MainWindow : Window
         if (member.Equals("Character", StringComparison.OrdinalIgnoreCase) && instance.Type == "Player") return FindSceneNode(instance.Character);
         if (member.Equals("Part0", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part0);
         if (member.Equals("Part1", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part1);
-        if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type == "Beam") return FindSceneNode(instance.Attachment0);
-        if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type == "Beam") return FindSceneNode(instance.Attachment1);
+        if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail")) return FindSceneNode(instance.Attachment0);
+        if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail")) return FindSceneNode(instance.Attachment1);
         return instance.Children.FirstOrDefault(child => child.Name == member || child.Id == member);
     }
 
@@ -3146,18 +3496,18 @@ public partial class MainWindow : Window
     [
         "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
         "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs", "pcall", "print", "require", "warn", "rawequal", "rawget", "rawlen", "rawset", "select", "setmetatable", "tonumber", "tostring", "type", "typeof", "unpack", "xpcall",
-        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Instance", "Enum", "Vector3", "Color3", "UDim", "UDim2", "RaycastParams",
+        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Instance", "Enum", "Vector3", "Vector2", "NumberRange", "NumberSequence", "NumberSequenceKeypoint", "ColorSequence", "ColorSequenceKeypoint", "Color3", "UDim", "UDim2", "RaycastParams",
         "SetProperty", "GetProperty", "WaitForChild", "GetAssetPath", "ConnectTouched", "LookAtRotation"
     ];
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Raycast", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "TakeDamage", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor"
+        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Raycast", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "TakeDamage", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal", "CollectionService"
     ];
 
-    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Fire", "Invoke", "Disconnect", "TakeDamage", "AddItem"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Fire", "Invoke", "Disconnect", "TakeDamage", "AddItem", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "Trail", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Trail", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -3223,7 +3573,7 @@ public partial class MainWindow : Window
                   <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word><Word>task</Word><Word>wait</Word>
                   <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>Lighting</Word><Word>ReplicatedStorage</Word><Word>ServerScriptService</Word><Word>ServerStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>LookAtRotation</Word><Word>Color3</Word><Word>GetService</Word>
                 </Keywords>
-                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
+                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>NumberRange</Word><Word>NumberSequence</Word><Word>ColorSequence</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ParticleEmitter</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
                 <Rule color="LuauKeyword">(?m)^\s*(?:export\s+)?type\b</Rule>
                 <Rule color="Method">(?&lt;=[:.])[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
                 <Rule color="FunctionName">(?&lt;=function\s+)[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*</Rule>
@@ -3872,7 +4222,7 @@ public partial class MainWindow : Window
             if (removedIds.Contains(weld.Part0)) weld.Part0 = string.Empty;
             if (removedIds.Contains(weld.Part1)) weld.Part1 = string.Empty;
         }
-        foreach (var beam in GameProjectStore.Flatten(project).Where(node => node.Type == "Beam"))
+        foreach (var beam in GameProjectStore.Flatten(project).Where(node => node.Type is "Beam" or "Trail"))
         {
             if (removedIds.Contains(beam.Attachment0)) beam.Attachment0 = string.Empty;
             if (removedIds.Contains(beam.Attachment1)) beam.Attachment1 = string.Empty;
@@ -4065,6 +4415,15 @@ public partial class MainWindow : Window
             if (!float.TryParse(parts[index], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[index]) || !float.IsFinite(result[index])) return null;
         return result;
     }
+    private static float[]? ParsePair(string value)
+    {
+        var parts = value.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 2) return null;
+        var result = new float[2];
+        for (var index = 0; index < 2; index++)
+            if (!float.TryParse(parts[index], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result[index]) || !float.IsFinite(result[index])) return null;
+        return result;
+    }
     private static float[]? ParseGuiUDim2(string value)
     {
         var parts = value.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -4132,8 +4491,30 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["string.format"] = "format(format: string, ...: any): string — Formats values into a string.",
         ["table.insert"] = "insert(list: table, value: any): () — Appends a value to a list.",
         ["coroutine.yield"] = "yield(...: any): (...any) — Suspends the current Lua X script until the runtime resumes it.",
-        ["GetService"] = "GetService(name: string): Instance? — Returns Workspace, Players, Lighting, ReplicatedStorage, ServerScriptService, ServerStorage, Gui, or Debris.",
+        ["GetService"] = "GetService(name: string): Instance? — Returns a built-in service such as Workspace, Players, Debris, CollectionService, or RunService.",
+        ["IsRunning"] = "IsRunning(): boolean — Returns true while the play runtime is active.",
+        ["IsStudio"] = "IsStudio(): boolean — Returns true for an editor playtest and false for a packaged game.",
+        ["IsEdit"] = "IsEdit(): boolean — Returns false in the play runtime.",
+        ["PreSimulation"] = "RBXScriptSignal — Fires with delta time before physics each frame.",
+        ["PostSimulation"] = "RBXScriptSignal — Fires with delta time after physics each frame.",
+        ["Heartbeat"] = "RBXScriptSignal — Fires with delta time near the end of each frame.",
+        ["PreRender"] = "RBXScriptSignal — Fires with delta time before the play view refreshes.",
+        ["RenderStepped"] = "RBXScriptSignal — Legacy pre-render frame signal.",
+        ["Stepped"] = "RBXScriptSignal — Legacy pre-simulation signal with elapsed play time and delta time.",
+        ["AddTag"] = "AddTag(tag: string): () on an Instance, or AddTag(instance: Instance, tag: string): () on CollectionService.",
+        ["RemoveTag"] = "RemoveTag(tag: string): () on an Instance, or RemoveTag(instance: Instance, tag: string): () on CollectionService.",
+        ["HasTag"] = "HasTag(tag: string): boolean on an Instance, or HasTag(instance: Instance, tag: string): boolean on CollectionService.",
+        ["GetTags"] = "GetTags(): {string} on an Instance, or GetTags(instance: Instance): {string} on CollectionService.",
+        ["GetTagged"] = "GetTagged(tag: string): {Instance} — Returns tagged instances currently in the game tree.",
+        ["GetAllTags"] = "GetAllTags(): {string} — Returns tags used by instances in the game tree.",
+        ["GetInstanceAddedSignal"] = "GetInstanceAddedSignal(tag: string): RBXScriptSignal — Fires when a tag is added or a tagged instance enters the game tree.",
+        ["GetInstanceRemovedSignal"] = "GetInstanceRemovedSignal(tag: string): RBXScriptSignal — Fires when a tag is removed or a tagged instance leaves the game tree.",
         ["AddItem"] = "AddItem(item: Instance, lifetime?: number) — Schedules an object for destruction after a lifetime (10 seconds by default).",
+        ["SetAttribute"] = "SetAttribute(name: string, value: string | boolean | number | Vector3 | Color3 | nil) — Stores or deletes custom instance data.",
+        ["GetAttribute"] = "GetAttribute(name: string): any — Returns a custom value, or nil when absent.",
+        ["GetAttributes"] = "GetAttributes(): table — Returns a copy of the instance's custom values.",
+        ["GetAttributeChangedSignal"] = "GetAttributeChangedSignal(name: string): RBXScriptSignal — Fires when one named attribute changes.",
+        ["AttributeChanged"] = "RBXScriptSignal — Fires with the name of any changed attribute.",
         ["Instance.new"] = "Instance.new(className: string, parent: Instance?): Instance? — Creates a supported object during play.",
         ["Raycast"] = "Raycast(origin: Vector3, direction: Vector3, params: RaycastParams?): RaycastResult? — Casts through Workspace parts; direction sets the maximum range.",
         ["RaycastParams"] = "RaycastParams.new(): RaycastParams — FilterDescendantsInstances and FilterType (Enum.RaycastFilterType.Exclude or Include) control hits.",
@@ -4142,6 +4523,14 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Explosion"] = "Explosion — Detonates once in Workspace, applying outward velocity and hitting parts within BlastRadius.",
         ["Smoke"] = "Smoke — Emits a colored smoke effect from a BasePart or Attachment.",
         ["Sparkles"] = "Sparkles — Emits bright glints from a BasePart or Attachment.",
+        ["ParticleEmitter"] = "ParticleEmitter — Emits adjustable particles from a BasePart or Attachment.",
+        ["Rate"] = "number — Automatically emitted particles per second, up to 200.",
+        ["Speed"] = "NumberRange — Emission speed range in studs per second.",
+        ["Lifetime"] = "NumberRange — Particle lifetime range in seconds.",
+        ["SpreadAngle"] = "Vector2 — Horizontal and vertical emission spread in degrees.",
+        ["EmissionDirection"] = "Enum.NormalId — Face from which particles emit.",
+        ["Emit"] = "Emit(count: number): () — Emits a burst of particles, including while disabled.",
+        ["Clear"] = "Clear(): () — Removes active emitted particles.",
         ["SparkleColor"] = "Color3 — Color of the particles emitted by Sparkles.",
         ["SecondaryColor"] = "Color3 — Inner flame color of a Fire effect.",
         ["Heat"] = "number — Fire rise speed, from -25 to 25; negative values move downward.",
@@ -4193,7 +4582,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Rotation"] = "Vector3 — Rotation in degrees; GUI objects use the Z component.",
         ["Size"] = "Vector3 for parts; UDim2 for GUI objects; number for Fire or Smoke.",
         ["Color"] = "Color3 — Object color.",
-        ["Texture"] = "string — Project-relative image path used by a Part, such as blocks/grass.png.",
+        ["Texture"] = "string — Project-relative image path used by a Part or ParticleEmitter, such as blocks/grass.png.",
         ["FillColor"] = "Color3 — Highlight fill color.",
         ["OutlineColor"] = "Color3 — Highlight outline color.",
         ["FillTransparency"] = "number — Highlight fill transparency from 0 to 1.",
