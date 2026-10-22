@@ -543,6 +543,9 @@ var gradientJson = JsonSerializer.Serialize(gradientProject, GameProjectStore.Js
 var restoredGradientProject = JsonSerializer.Deserialize<GameProject>(gradientJson, GameProjectStore.JsonOptions)
     ?? throw new Exception("UIGradient project did not deserialize.");
 GameProjectStore.EnsureProject(restoredGradientProject);
+var gradientAssetRoot = Path.Combine(Path.GetTempPath(), "BullerStudioGradientSmoke_" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(Path.Combine(gradientAssetRoot, "assets"));
+restoredGradientProject.ProjectPath = gradientAssetRoot;
 Exception? gradientRenderError = null;
 var renderThread = new Thread(() =>
 {
@@ -553,8 +556,8 @@ var renderThread = new Thread(() =>
         var content = (System.Windows.Controls.Grid)frameBorder.Child;
         var visual = (System.Windows.Controls.Border)content.Children[0];
         var brush = visual.Background as System.Windows.Media.LinearGradientBrush;
-        if (brush is null || brush.GradientStops[0].Color != System.Windows.Media.Colors.Red
-            || brush.GradientStops[1].Color != System.Windows.Media.Colors.Blue
+        if (brush is null || brush.GradientStops[0].Color != System.Windows.Media.Color.FromRgb(0x22, 0, 0)
+            || brush.GradientStops[1].Color != System.Windows.Media.Color.FromRgb(0, 0, 0x66)
             || Math.Abs(brush.StartPoint.X - .5) > .001 || Math.Abs(brush.StartPoint.Y) > .001)
             throw new Exception("UIGradient did not render the saved colors and rotation.");
         var restoredGradient = restoredGradientProject.Gui.Children.Single(node => node.Type == "ScreenGui")
@@ -566,12 +569,76 @@ var renderThread = new Thread(() =>
         if (plainVisual.Background is not System.Windows.Media.SolidColorBrush plainBrush
             || plainBrush.Color != System.Windows.Media.Color.FromRgb(0x22, 0x44, 0x66))
             throw new Exception("Disabling UIGradient did not restore the frame background.");
+
+        var assets = Path.Combine(gradientAssetRoot, "assets");
+        var pixels = new byte[] { 255, 255, 255, 255, 255, 255, 255, 255 };
+        var source = System.Windows.Media.Imaging.BitmapSource.Create(2, 1, 96, 96,
+            System.Windows.Media.PixelFormats.Bgra32, null, pixels, 8);
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(source));
+        using (var file = File.Create(Path.Combine(assets, "gradient-test.png"))) encoder.Save(file);
+        var screenNode = restoredGradientProject.Gui.Children.Single(node => node.Type == "ScreenGui");
+        static SceneNode Gradient(string start, string end, float rotation = 0) => new()
+            { Type = "UIGradient", StartColor = start, EndColor = end, Rotation = [0, 0, rotation] };
+        var textLabel = new SceneNode { Type = "TextLabel", Name = "GradientText", Text = "Color", TextColor = "#80FFFF", Color = "#FFFFFF" };
+        textLabel.Children.Add(Gradient("#FF0000", "#0000FF", 90));
+        var textButton = new SceneNode { Type = "TextButton", Name = "GradientButton", Text = "Click", TextColor = "#FFFFFF", Color = "#FFFFFF" };
+        textButton.Children.Add(Gradient("#FF0000", "#0000FF"));
+        var imageLabel = new SceneNode { Type = "ImageLabel", Name = "GradientImage", Asset = "assets/gradient-test.png", Color = "#FFFFFF" };
+        var imageGradient = Gradient("#FF0000", "#0000FF");
+        imageLabel.Children.Add(imageGradient);
+        var imageButton = new SceneNode { Type = "ImageButton", Name = "GradientImageButton", Asset = "assets/gradient-test.png", Color = "#FFFFFF" };
+        imageButton.Children.Add(Gradient("#FF0000", "#0000FF"));
+        var unsupportedTextBox = new SceneNode { Type = "TextBox", Name = "GradientTextBox", TextColor = "#FFFFFF" };
+        unsupportedTextBox.Children.Add(Gradient("#FF0000", "#0000FF"));
+        screenNode.Children.Add(textLabel); screenNode.Children.Add(textButton); screenNode.Children.Add(imageLabel);
+        screenNode.Children.Add(imageButton); screenNode.Children.Add(unsupportedTextBox);
+        var gradientCanvas = GuiRenderService.Render(restoredGradientProject, false, 200, 100);
+        static System.Windows.FrameworkElement OwnVisual(System.Windows.Controls.Canvas root, string name)
+        {
+            var border = root.Children.OfType<System.Windows.Controls.Border>()
+                .Single(element => (element.Tag as SceneNode)?.Name == name);
+            return (System.Windows.FrameworkElement)((System.Windows.Controls.Grid)border.Child).Children[0];
+        }
+        var labelVisual = (System.Windows.Controls.TextBlock)OwnVisual(gradientCanvas, "GradientText");
+        if (labelVisual.Foreground is not System.Windows.Media.LinearGradientBrush textBrush
+            || textBrush.GradientStops[0].Color != System.Windows.Media.Color.FromRgb(0x80, 0, 0)
+            || textBrush.GradientStops[1].Color != System.Windows.Media.Color.FromRgb(0, 0, 0xFF))
+            throw new Exception("UIGradient did not tint the TextLabel foreground with TextColor.");
+        var buttonVisual = (System.Windows.Controls.Button)OwnVisual(gradientCanvas, "GradientButton");
+        if (buttonVisual.Foreground is not System.Windows.Media.LinearGradientBrush)
+            throw new Exception("UIGradient did not tint the TextButton foreground.");
+        if (OwnVisual(gradientCanvas, "GradientTextBox") is not System.Windows.Controls.TextBox textBoxVisual
+            || textBoxVisual.Foreground is not System.Windows.Media.SolidColorBrush)
+            throw new Exception("UIGradient unexpectedly tinted an unsupported TextBox.");
+        var imageGrid = (System.Windows.Controls.Grid)OwnVisual(gradientCanvas, "GradientImage");
+        var imageVisual = (System.Windows.Controls.Image)imageGrid.Children[0];
+        var imageBitmap = (System.Windows.Media.Imaging.BitmapSource)imageVisual.Source;
+        var tintedPixels = new byte[8];
+        imageBitmap.CopyPixels(tintedPixels, 8, 0);
+        if (tintedPixels[2] <= tintedPixels[0] || tintedPixels[4] <= tintedPixels[6]
+            || tintedPixels[3] != 255 || tintedPixels[7] != 255)
+            throw new Exception("UIGradient did not tint image pixels across their width.");
+        var imageButtonVisual = (System.Windows.Controls.Button)OwnVisual(gradientCanvas, "GradientImageButton");
+        var buttonImage = (System.Windows.Controls.Image)imageButtonVisual.Content;
+        if (buttonImage.Source is not System.Windows.Media.Imaging.BitmapSource buttonBitmap
+            || buttonBitmap.PixelWidth != 2 || imageButtonVisual.Background is not System.Windows.Media.LinearGradientBrush)
+            throw new Exception("UIGradient did not render on ImageButton image and background.");
+        imageGradient.Enabled = false;
+        var disabledImage = (System.Windows.Controls.Image)((System.Windows.Controls.Grid)OwnVisual(
+            GuiRenderService.Render(restoredGradientProject, false, 200, 100), "GradientImage")).Children[0];
+        var disabledPixels = new byte[8];
+        ((System.Windows.Media.Imaging.BitmapSource)disabledImage.Source).CopyPixels(disabledPixels, 8, 0);
+        if (disabledPixels[0] != 255 || disabledPixels[2] != 255 || disabledPixels[4] != 255 || disabledPixels[6] != 255)
+            throw new Exception("Disabling UIGradient did not restore image pixels.");
     }
     catch (Exception exception) { gradientRenderError = exception; }
 });
 renderThread.SetApartmentState(ApartmentState.STA);
 renderThread.Start();
 renderThread.Join();
+if (Directory.Exists(gradientAssetRoot) && Path.GetFullPath(gradientAssetRoot).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase))
+    Directory.Delete(gradientAssetRoot, true);
 if (gradientRenderError is not null) throw gradientRenderError;
 
 var paddingProject = new GameProject();
@@ -1300,6 +1367,275 @@ emitterProject.Scripts.Add(invalidSequenceScript);
 emitterRuntime.Run(invalidSequenceScript.Id);
 if (!emitterOutput.Contains("invalid-sequence\tnil"))
     throw new Exception("Overflowing NumberSequence values were accepted.");
+
+var trailProject = new GameProject();
+var trailPart = new SceneNode { Type = "Part", Name = "TrailPart" };
+var trailAttachment0 = new SceneNode { Type = "Attachment", Name = "TrailAttachment0", Position = [-.5f, 0, 0] };
+var trailAttachment1 = new SceneNode { Type = "Attachment", Name = "TrailAttachment1", Position = [.5f, 0, 0] };
+trailProject.Workspace.Children.Add(trailPart);
+trailPart.Children.Add(trailAttachment0);
+trailPart.Children.Add(trailAttachment1);
+if (!GameProjectStore.CanParentNode(trailProject, new SceneNode { Type = "Trail" }, trailPart)
+    || GameProjectStore.CanParentNode(trailProject, new SceneNode { Type = "Trail" }, trailProject.Gui))
+    throw new Exception("Trail parent rules failed.");
+var trailOutput = new List<string>();
+var trailRuntime = new LuaXRuntime(trailProject, output: trailOutput.Add);
+var trailScript = new GameScript
+{
+    Source = """
+        local trail = Instance.new('Trail', workspace.TrailPart)
+        trail.Attachment0 = workspace.TrailPart.TrailAttachment0
+        trail.Attachment1 = workspace.TrailPart.TrailAttachment1
+        trail.Color = ColorSequence.new(Color3.fromRGB(255, 0, 0), Color3.fromRGB(0, 0, 255))
+        trail.Transparency = NumberSequence.new(0, 1)
+        trail.WidthScale = NumberSequence.new(1, 0)
+        trail.Lifetime = 1.5
+        trail.MinLength = 0.05
+        trail.MaxLength = 5
+        trail.FaceCamera = true
+        trail.TextureMode = Enum.TextureMode.Wrap
+        trail.TextureLength = 2
+        trail.Texture = 'streak.png'
+        print('trail-types', typeof(trail), typeof(trail.Color), typeof(trail.Transparency),
+            typeof(trail.WidthScale), trail.Attachment0.Name, trail.Attachment1.Name)
+        trail:Clear()
+        """
+};
+trailProject.Scripts.Add(trailScript);
+trailRuntime.Run(trailScript.Id);
+var trailNode = trailPart.Children.Single(node => node.Type == "Trail");
+if (!trailOutput.Contains("trail-types\tTrail\tColorSequence\tNumberSequence\tNumberSequence\tTrailAttachment0\tTrailAttachment1")
+    || trailNode.Attachment0 != trailAttachment0.Id || trailNode.Attachment1 != trailAttachment1.Id
+    || trailNode.TrailLifetime != 1.5f || trailNode.TrailMinLength != .05f || trailNode.TrailMaxLength != 5
+    || trailNode.TrailWidthSequence.Count != 2 || trailNode.TrailWidthSequence[1].Value != 0
+    || trailNode.ColorSequence[1].Value != "#0000FF" || trailNode.TransparencySequence[1].Value != 1
+    || trailNode.Texture != "streak.png" || !trailNode.FaceCamera
+    || trailNode.TextureMode != "Wrap" || trailNode.TextureLength != 2 || trailNode.TrailClearVersion != 1)
+    throw new Exception("Trail Lua X properties or Clear failed: " + string.Join(" | ", trailOutput));
+var trailSamples = new List<TrailSample>();
+var initialTrailSample = new TrailSample(0, new SharpDX.Vector3(-.5f, 0, 0), new SharpDX.Vector3(.5f, 0, 0));
+TrailGeometryService.AdvanceSamples(trailNode, trailSamples, initialTrailSample, 0);
+TrailGeometryService.AdvanceSamples(trailNode, trailSamples,
+    new TrailSample(.1f, new SharpDX.Vector3(-.48f, 0, 0), new SharpDX.Vector3(.52f, 0, 0)), .1f);
+if (trailSamples.Count != 1) throw new Exception("Trail MinLength did not suppress tiny movements.");
+TrailGeometryService.AdvanceSamples(trailNode, trailSamples,
+    new TrailSample(.5f, new SharpDX.Vector3(-.5f, 0, 1), new SharpDX.Vector3(.5f, 0, 1)), .5f);
+if (trailSamples.Count != 2) throw new Exception("Trail did not record attachment movement.");
+var trailGeometry = TrailGeometryService.Build(trailNode, trailSamples, .5f);
+if (trailGeometry.Positions is null || trailGeometry.Positions.Count == 0
+    || trailGeometry.Colors?.Count != trailGeometry.Positions.Count
+    || trailGeometry.TextureCoordinates?.Count != trailGeometry.Positions.Count
+    || trailGeometry.Colors.Select(color => color.Blue).Distinct().Count() < 2
+    || trailGeometry.Colors.Select(color => color.Alpha).Distinct().Count() < 2)
+    throw new Exception("Trail ribbon or sequence colors were not generated.");
+var textureTrail = new SceneNode { Type = "Trail", TrailMinLength = 0, TextureMode = "Stretch", TextureLength = 2 };
+var textureSamples = new List<TrailSample>();
+for (var index = 0; index < 3; index++)
+    TrailGeometryService.AdvanceSamples(textureTrail, textureSamples,
+        new TrailSample(index * .1f, new SharpDX.Vector3(-.5f, 0, index), new SharpDX.Vector3(.5f, 0, index)), index * .1f);
+var stretched = TrailGeometryService.Build(textureTrail, textureSamples, .2f);
+if (Math.Abs(stretched.TextureCoordinates[2].Y - 1) > .001f
+    || Math.Abs(stretched.TextureCoordinates[10].Y - 2) > .001f)
+    throw new Exception("Trail Stretch texture coordinates did not span the full path.");
+textureTrail.TextureMode = "Wrap";
+var wrapped = TrailGeometryService.Build(textureTrail, textureSamples, .2f);
+if (Math.Abs(wrapped.TextureCoordinates[2].Y - .5f) > .001f)
+    throw new Exception("Trail Wrap texture coordinates ignored TextureLength.");
+textureSamples.RemoveAt(0);
+textureTrail.TextureMode = "Static";
+var staticTexture = TrailGeometryService.Build(textureTrail, textureSamples, .2f);
+if (Math.Abs(staticTexture.TextureCoordinates[0].Y - .5f) > .001f)
+    throw new Exception("Trail Static texture coordinates did not stay fixed when the oldest segment left.");
+textureTrail.FaceCamera = true;
+var frontFacing = TrailGeometryService.Build(textureTrail, textureSamples, .2f, new SharpDX.Vector3(0, 4, 0));
+var sideFacing = TrailGeometryService.Build(textureTrail, textureSamples, .2f, new SharpDX.Vector3(4, 0, 0));
+if (SharpDX.Vector3.DistanceSquared(frontFacing.Positions[0], sideFacing.Positions[0]) < .01f)
+    throw new Exception("Trail FaceCamera did not respond to camera position.");
+TrailGeometryService.AdvanceSamples(trailNode, trailSamples, null, 2.1f);
+if (trailSamples.Count != 0) throw new Exception("Trail segments did not expire after Lifetime.");
+var limitedTrail = new SceneNode { Type = "Trail", TrailMinLength = 0, TrailMaxLength = .5f, Enabled = false };
+var limitedSamples = new List<TrailSample>();
+TrailGeometryService.AdvanceSamples(limitedTrail, limitedSamples, initialTrailSample, 0);
+if (limitedSamples.Count != 0) throw new Exception("Disabled Trail recorded segments.");
+limitedTrail.Enabled = true;
+TrailGeometryService.AdvanceSamples(limitedTrail, limitedSamples, initialTrailSample, 0);
+TrailGeometryService.AdvanceSamples(limitedTrail, limitedSamples,
+    new TrailSample(.1f, new SharpDX.Vector3(-.5f, 0, 1), new SharpDX.Vector3(.5f, 0, 1)), .1f);
+if (limitedSamples.Count != 1) throw new Exception("Trail MaxLength did not limit the recorded path.");
+var trailClone = GameProjectStore.CloneSubtree(trailNode, out _)
+    ?? throw new Exception("Trail did not clone.");
+if (trailClone.TrailLifetime != 1.5f || trailClone.ColorSequence.Count != 2 || trailClone.TrailClearVersion != 0
+    || !trailClone.FaceCamera || trailClone.TextureMode != "Wrap" || trailClone.TextureLength != 2)
+    throw new Exception("Trail clone lost settings or copied transient state.");
+var trailJson = JsonSerializer.Serialize(trailProject, GameProjectStore.JsonOptions);
+var restoredTrailProject = JsonSerializer.Deserialize<GameProject>(trailJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("Trail project did not deserialize.");
+GameProjectStore.EnsureProject(restoredTrailProject);
+var restoredTrail = restoredTrailProject.Workspace.Children.Single(node => node.Id == trailPart.Id)
+    .Children.Single(node => node.Type == "Trail");
+if (restoredTrail.Attachment0 != trailAttachment0.Id || restoredTrail.Attachment1 != trailAttachment1.Id
+    || restoredTrail.TrailWidthSequence[1].Value != 0 || restoredTrail.TrailClearVersion != 0
+    || !restoredTrail.FaceCamera || restoredTrail.TextureMode != "Wrap" || restoredTrail.TextureLength != 2)
+    throw new Exception("Trail settings or references did not persist.");
+
+{
+var vectorForceProject = new GameProject();
+vectorForceProject.Workspace.Gravity = 0;
+var forcePart = new SceneNode { Type = "Part", Name = "ForcePart", Position = [0, 4, 0], Anchored = false };
+var forceAttachment = new SceneNode { Type = "Attachment", Name = "ForceAttachment" };
+vectorForceProject.Workspace.Children.Add(forcePart);
+forcePart.Children.Add(forceAttachment);
+if (!GameProjectStore.CanParentNode(vectorForceProject, new SceneNode { Type = "VectorForce" }, forceAttachment)
+    || GameProjectStore.CanParentNode(vectorForceProject, new SceneNode { Type = "VectorForce" }, vectorForceProject.Gui))
+    throw new Exception("VectorForce parent rules failed.");
+var vectorForceOutput = new List<string>();
+var vectorForceRuntime = new LuaXRuntime(vectorForceProject, output: vectorForceOutput.Add);
+var vectorForceScript = new GameScript
+{
+    Source = """
+        local attachment = workspace.ForcePart.ForceAttachment
+        local mover = Instance.new('VectorForce', attachment)
+        print('vector-default', mover.RelativeTo)
+        mover.Force = Vector3.new(80, 0, 0)
+        mover.RelativeTo = Enum.ActuatorRelativeTo.Attachment0
+        print('vector-force', typeof(mover), typeof(mover.Force), mover.Attachment0 == attachment, mover.RelativeTo)
+        mover:SetProperty('RelativeTo', Enum.ActuatorRelativeTo.World)
+        """
+};
+vectorForceProject.Scripts.Add(vectorForceScript);
+vectorForceRuntime.Run(vectorForceScript.Id);
+var forceNode = forceAttachment.Children.Single(node => node.Type == "VectorForce");
+if (!vectorForceOutput.Contains("vector-default\tAttachment0")
+    || !vectorForceOutput.Contains("vector-force\tVectorForce\tVector3\ttrue\tAttachment0")
+    || forceNode.Attachment0 != forceAttachment.Id || forceNode.Force[0] != 80 || forceNode.RelativeTo != "World")
+    throw new Exception("VectorForce Lua X properties failed: " + string.Join(" | ", vectorForceOutput));
+new PhysicsSimulationService(vectorForceProject, _ => { }).Step(.1f);
+if (Math.Abs(forcePart.Velocity[0] - 1) > .001f || forcePart.Position[0] <= 0)
+    throw new Exception($"VectorForce did not accelerate its unanchored part: velocity={forcePart.Velocity[0]}, position={forcePart.Position[0]}, gravity={vectorForceProject.Workspace.Gravity}.");
+forcePart.Position = [0, 4, 0]; forcePart.Velocity = [0, 0, 0]; forcePart.Rotation = [0, 90, 0];
+forceNode.RelativeTo = "Attachment0";
+new PhysicsSimulationService(vectorForceProject, _ => { }).Step(.1f);
+if (Math.Abs(forcePart.Velocity[0]) > .001f || Math.Abs(forcePart.Velocity[2]) < .9f)
+    throw new Exception("VectorForce did not follow Attachment0 orientation.");
+forceNode.Enabled = false;
+forcePart.Velocity = [0, 0, 0];
+new PhysicsSimulationService(vectorForceProject, _ => { }).Step(.1f);
+if (forcePart.Velocity.Any(value => Math.Abs(value) > .001f))
+    throw new Exception("Disabled VectorForce still accelerated its part.");
+forceNode.Enabled = true;
+forceNode.RelativeTo = "World";
+forcePart.Position = [0, 4, 0]; forcePart.Rotation = [0, 0, 0]; forcePart.Velocity = [0, 0, 0];
+var weldedForcePart = new SceneNode { Type = "Part", Name = "WeldedForcePart", Position = [3, 4, 0], Anchored = false };
+vectorForceProject.Workspace.Children.Add(weldedForcePart);
+vectorForceProject.Workspace.Children.Add(new SceneNode { Type = "WeldConstraint", Part0 = forcePart.Id, Part1 = weldedForcePart.Id });
+new PhysicsSimulationService(vectorForceProject, _ => { }).Step(.1f);
+if (Math.Abs(forcePart.Velocity[0] - .5f) > .001f || Math.Abs(weldedForcePart.Velocity[0] - .5f) > .001f
+    || Math.Abs((weldedForcePart.Position[0] - forcePart.Position[0]) - 3) > .001f)
+    throw new Exception("VectorForce did not move the welded assembly using its combined mass.");
+weldedForcePart.Anchored = true;
+new PhysicsSimulationService(vectorForceProject, _ => { }).Step(.1f);
+if (forcePart.Velocity.Any(value => Math.Abs(value) > .001f) || weldedForcePart.Velocity.Any(value => Math.Abs(value) > .001f))
+    throw new Exception("VectorForce moved an assembly with an anchored member.");
+forceNode.RelativeTo = "Attachment0";
+var clonedForcePart = GameProjectStore.CloneSubtree(forcePart, out _) ?? throw new Exception("VectorForce parent did not clone.");
+var clonedAttachment = clonedForcePart.Children.Single(node => node.Type == "Attachment");
+if (clonedAttachment.Children.Single(node => node.Type == "VectorForce").Attachment0 != clonedAttachment.Id)
+    throw new Exception("VectorForce clone did not reconnect Attachment0.");
+var vectorForceJson = JsonSerializer.Serialize(vectorForceProject, GameProjectStore.JsonOptions);
+var restoredVectorForceProject = JsonSerializer.Deserialize<GameProject>(vectorForceJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("VectorForce project did not deserialize.");
+GameProjectStore.EnsureProject(restoredVectorForceProject);
+var restoredForce = restoredVectorForceProject.Workspace.Children.Single(node => node.Id == forcePart.Id)
+    .Children.Single(node => node.Id == forceAttachment.Id).Children.Single(node => node.Type == "VectorForce");
+if (restoredForce.Attachment0 != forceAttachment.Id || restoredForce.Force[0] != 80 || restoredForce.RelativeTo != "Attachment0")
+    throw new Exception("VectorForce settings did not persist.");
+}
+
+{
+var velocityProject = new GameProject();
+velocityProject.Workspace.Gravity = 100;
+var velocityPart = new SceneNode { Type = "Part", Name = "VelocityPart", Position = [0, 50, 0], Anchored = false, CanCollide = false };
+var velocityAttachment = new SceneNode { Type = "Attachment", Name = "VelocityAttachment" };
+velocityProject.Workspace.Children.Add(velocityPart);
+velocityPart.Children.Add(velocityAttachment);
+if (!GameProjectStore.CanParentNode(velocityProject, new SceneNode { Type = "LinearVelocity" }, velocityAttachment)
+    || GameProjectStore.CanParentNode(velocityProject, new SceneNode { Type = "LinearVelocity" }, velocityProject.Gui))
+    throw new Exception("LinearVelocity parent rules failed.");
+var velocityOutput = new List<string>();
+var velocityRuntime = new LuaXRuntime(velocityProject, output: velocityOutput.Add);
+var velocityScript = new GameScript
+{
+    Source = """
+        local attachment = workspace.VelocityPart.VelocityAttachment
+        local mover = Instance.new('LinearVelocity', attachment)
+        mover.VectorVelocity = Vector3.new(6, 0, 0)
+        mover.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+        mover.RelativeTo = Enum.ActuatorRelativeTo.World
+        mover.ForceLimitsEnabled = false
+        print('linear-velocity', typeof(mover), typeof(mover.VectorVelocity), mover.Attachment0 == attachment, mover.VelocityConstraintMode)
+        mover:SetProperty('MaxForce', 80)
+        """
+};
+velocityProject.Scripts.Add(velocityScript);
+velocityRuntime.Run(velocityScript.Id);
+var velocityNode = velocityAttachment.Children.Single(node => node.Type == "LinearVelocity");
+if (!velocityOutput.Contains("linear-velocity\tLinearVelocity\tVector3\ttrue\tVector")
+    || velocityNode.Attachment0 != velocityAttachment.Id || velocityNode.VectorVelocity[0] != 6
+    || velocityNode.MaxForce != 80 || velocityNode.ForceLimitsEnabled)
+    throw new Exception("LinearVelocity Lua X properties failed: " + string.Join(" | ", velocityOutput));
+new PhysicsSimulationService(velocityProject, _ => { }).Step(.1f);
+if (Math.Abs(velocityPart.Velocity[0] - 6) > .001f || Math.Abs(velocityPart.Velocity[1]) > .001f)
+    throw new Exception("LinearVelocity Vector mode did not hold target velocity against gravity.");
+velocityProject.Workspace.Gravity = 0;
+velocityNode.VelocityConstraintMode = "Line";
+velocityNode.LineDirection = [1, 0, 0]; velocityNode.LineVelocity = 4;
+velocityPart.Velocity = [1, 2, 3];
+new PhysicsSimulationService(velocityProject, _ => { }).Step(.1f);
+if (Math.Abs(velocityPart.Velocity[0] - 4) > .001f || Math.Abs(velocityPart.Velocity[1] - 2) > .001f || Math.Abs(velocityPart.Velocity[2] - 3) > .001f)
+    throw new Exception("LinearVelocity Line mode changed an unconstrained axis.");
+velocityNode.VelocityConstraintMode = "Plane";
+velocityNode.PlaneVelocity = [3, 5];
+velocityPart.Velocity = [0, 7, 0];
+new PhysicsSimulationService(velocityProject, _ => { }).Step(.1f);
+if (Math.Abs(velocityPart.Velocity[0] - 3) > .001f || Math.Abs(velocityPart.Velocity[1] - 7) > .001f || Math.Abs(velocityPart.Velocity[2] - 5) > .001f)
+    throw new Exception("LinearVelocity Plane mode did not preserve normal velocity.");
+velocityNode.VelocityConstraintMode = "Vector"; velocityNode.RelativeTo = "Attachment0";
+velocityPart.Rotation = [0, 90, 0]; velocityPart.Velocity = [0, 0, 0];
+new PhysicsSimulationService(velocityProject, _ => { }).Step(.1f);
+if (Math.Abs(velocityPart.Velocity[0]) > .001f || Math.Abs(velocityPart.Velocity[2]) < 5.9f)
+    throw new Exception("LinearVelocity did not follow Attachment0 orientation.");
+velocityNode.RelativeTo = "World"; velocityNode.VectorVelocity = [10, 0, 0]; velocityNode.ForceLimitsEnabled = true;
+velocityPart.Rotation = [0, 0, 0]; velocityPart.Velocity = [0, 0, 0];
+new PhysicsSimulationService(velocityProject, _ => { }).Step(.1f);
+if (Math.Abs(velocityPart.Velocity[0] - 1) > .001f)
+    throw new Exception("LinearVelocity MaxForce did not limit velocity change by part mass.");
+var secondVelocityPart = new SceneNode { Type = "Part", Name = "SecondVelocityPart", Position = [12, 50, 0], Anchored = false, CanCollide = false };
+velocityProject.Workspace.Children.Add(secondVelocityPart);
+velocityProject.Workspace.Children.Add(new SceneNode { Type = "WeldConstraint", Part0 = velocityPart.Id, Part1 = secondVelocityPart.Id });
+velocityPart.Velocity = [0, 0, 0]; secondVelocityPart.Velocity = [0, 0, 0];
+new PhysicsSimulationService(velocityProject, _ => { }).Step(.1f);
+if (Math.Abs(velocityPart.Velocity[0] - .5f) > .001f || Math.Abs(secondVelocityPart.Velocity[0] - .5f) > .001f)
+    throw new Exception("LinearVelocity MaxForce ignored welded assembly mass.");
+velocityNode.Enabled = false;
+velocityPart.Velocity = [0, 0, 0]; secondVelocityPart.Velocity = [0, 0, 0];
+new PhysicsSimulationService(velocityProject, _ => { }).Step(.1f);
+if (velocityPart.Velocity.Any(value => Math.Abs(value) > .001f))
+    throw new Exception("Disabled LinearVelocity still drove its assembly.");
+var clonedVelocityPart = GameProjectStore.CloneSubtree(velocityPart, out _) ?? throw new Exception("LinearVelocity parent did not clone.");
+var clonedVelocityAttachment = clonedVelocityPart.Children.Single(node => node.Type == "Attachment");
+if (clonedVelocityAttachment.Children.Single(node => node.Type == "LinearVelocity").Attachment0 != clonedVelocityAttachment.Id)
+    throw new Exception("LinearVelocity clone did not reconnect Attachment0.");
+var velocityJson = JsonSerializer.Serialize(velocityProject, GameProjectStore.JsonOptions);
+var restoredVelocityProject = JsonSerializer.Deserialize<GameProject>(velocityJson, GameProjectStore.JsonOptions)
+    ?? throw new Exception("LinearVelocity project did not deserialize.");
+GameProjectStore.EnsureProject(restoredVelocityProject);
+var restoredVelocity = restoredVelocityProject.Workspace.Children.Single(node => node.Id == velocityPart.Id)
+    .Children.Single(node => node.Id == velocityAttachment.Id).Children.Single(node => node.Type == "LinearVelocity");
+if (restoredVelocity.Attachment0 != velocityAttachment.Id || restoredVelocity.VectorVelocity[0] != 10
+    || restoredVelocity.PlaneVelocity[0] != 3 || restoredVelocity.LineVelocity != 4
+    || restoredVelocity.MaxForce != 80 || !restoredVelocity.ForceLimitsEnabled)
+    throw new Exception("LinearVelocity settings did not persist.");
+}
 
 var attributeProject = new GameProject();
 var attributedPart = new SceneNode { Type = "Part", Name = "AttributedPart" };

@@ -151,16 +151,23 @@ public static class GuiRenderService
         {
             "Frame" => new Border { Background = background },
             "ScrollingFrame" => new Border { Background = background },
-            "ImageLabel" => new Image { Source = LoadImage(project, node.Asset), Stretch = Stretch.Fill },
-            "ImageButton" => new Button { Content = new Image { Source = LoadImage(project, node.Asset), Stretch = Stretch.Fill }, Background = background, BorderThickness = new Thickness(0), Padding = new Thickness(0) },
-            "TextLabel" => new TextBlock { Text = node.Text, Foreground = BrushFrom(node.TextColor, Brushes.White), Background = background, FontSize = Math.Max(1, node.TextSize), TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap },
-            "TextButton" => new Button { Content = node.Text, Foreground = BrushFrom(node.TextColor, Brushes.White), Background = background, FontSize = Math.Max(1, node.TextSize), Padding = new Thickness(2) },
+            "ImageLabel" => CreateImageLabel(node, project, background),
+            "ImageButton" => new Button { Content = new Image { Source = ImageFor(node, project), Stretch = Stretch.Fill }, Background = background, BorderThickness = new Thickness(0), Padding = new Thickness(0) },
+            "TextLabel" => new TextBlock { Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = Math.Max(1, node.TextSize), TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap },
+            "TextButton" => new Button { Content = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = Math.Max(1, node.TextSize), Padding = new Thickness(2) },
             "TextBox" => new TextBox { Tag = node, Text = node.Text, Foreground = BrushFrom(node.TextColor, Brushes.White), Background = background, FontSize = Math.Max(1, node.TextSize), VerticalContentAlignment = VerticalAlignment.Center },
             _ => null
         };
         if (visual is Button button && activated is not null) button.Click += (_, _) => activated(node);
         if (visual is TextBox textBox && textChanged is not null) textBox.TextChanged += (_, _) => textChanged(node, textBox.Text);
         return visual;
+    }
+
+    private static Grid CreateImageLabel(SceneNode node, GameProject project, Brush background)
+    {
+        var grid = new Grid { Background = background };
+        grid.Children.Add(new Image { Source = ImageFor(node, project), Stretch = Stretch.Fill });
+        return grid;
     }
 
     private static bool IsRenderable(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
@@ -318,10 +325,10 @@ public static class GuiRenderService
         }
     }
 
-    private static Brush GradientBrush(SceneNode gradient)
+    private static Brush GradientBrush(SceneNode gradient, Color baseColor)
     {
-        var start = ColorFrom(gradient.StartColor, Colors.White);
-        var end = ColorFrom(gradient.EndColor, Colors.Gray);
+        var start = Multiply(baseColor, ColorFrom(gradient.StartColor, Colors.White));
+        var end = Multiply(baseColor, ColorFrom(gradient.EndColor, Colors.Gray));
         var angle = gradient.Rotation[2] * Math.PI / 180;
         var dx = Math.Cos(angle) * .5;
         var dy = Math.Sin(angle) * .5;
@@ -332,8 +339,66 @@ public static class GuiRenderService
 
     private static Brush BackgroundFor(SceneNode node)
     {
-        var gradient = node.Children.FirstOrDefault(child => child.Type == "UIGradient" && child.Enabled);
-        return gradient is null ? BrushFrom(node.Color, Brushes.Transparent) : GradientBrush(gradient);
+        var gradient = ActiveGradient(node);
+        return gradient is null ? BrushFrom(node.Color, Brushes.Transparent)
+            : GradientBrush(gradient, ColorFrom(node.Color, Colors.Transparent));
+    }
+
+    private static Brush ForegroundFor(SceneNode node)
+    {
+        var gradient = ActiveGradient(node);
+        return gradient is null ? BrushFrom(node.TextColor, Brushes.White)
+            : GradientBrush(gradient, ColorFrom(node.TextColor, Colors.White));
+    }
+
+    private static SceneNode? ActiveGradient(SceneNode node) =>
+        node.Type is "Frame" or "TextLabel" or "TextButton" or "ImageLabel" or "ImageButton"
+            ? node.Children.FirstOrDefault(child => child.Type == "UIGradient" && child.Enabled)
+            : null;
+
+    private static Color Multiply(Color first, Color second)
+    {
+        static byte Scale(byte a, byte b) => (byte)((a * b + 127) / 255);
+        return Color.FromArgb(Scale(first.A, second.A), Scale(first.R, second.R),
+            Scale(first.G, second.G), Scale(first.B, second.B));
+    }
+
+    private static ImageSource? ImageFor(SceneNode node, GameProject project)
+    {
+        var source = LoadImage(project, node.Asset);
+        if (source is not BitmapSource image) return source;
+        var gradient = ActiveGradient(node);
+        var baseColor = ColorFrom(node.Color, Colors.White);
+        if (gradient is null && baseColor == Colors.White) return source;
+        var width = image.PixelWidth;
+        var height = image.PixelHeight;
+        if (width <= 0 || height <= 0 || (long)width * height * 4 > 256L * 1024 * 1024) return source;
+        var bitmap = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
+        var stride = width * 4;
+        var pixels = new byte[stride * height];
+        bitmap.CopyPixels(pixels, stride, 0);
+        var start = gradient is null ? Colors.White : ColorFrom(gradient.StartColor, Colors.White);
+        var end = gradient is null ? Colors.White : ColorFrom(gradient.EndColor, Colors.Gray);
+        var angle = gradient is null ? 0 : gradient.Rotation[2] * Math.PI / 180;
+        var dx = Math.Cos(angle);
+        var dy = Math.Sin(angle);
+        for (var y = 0; y < height; y++)
+        for (var x = 0; x < width; x++)
+        {
+            var offset = y * stride + x * 4;
+            var u = (x + .5) / width - .5;
+            var v = (y + .5) / height - .5;
+            var t = Math.Clamp(u * dx + v * dy + .5, 0, 1);
+            static byte Tint(byte pixel, byte baseChannel, double gradientChannel) =>
+                (byte)Math.Clamp(Math.Round(pixel * baseChannel * gradientChannel / 65025), 0, 255);
+            pixels[offset] = Tint(pixels[offset], baseColor.B, start.B + (end.B - start.B) * t);
+            pixels[offset + 1] = Tint(pixels[offset + 1], baseColor.G, start.G + (end.G - start.G) * t);
+            pixels[offset + 2] = Tint(pixels[offset + 2], baseColor.R, start.R + (end.R - start.R) * t);
+            pixels[offset + 3] = Tint(pixels[offset + 3], baseColor.A, start.A + (end.A - start.A) * t);
+        }
+        var tinted = BitmapSource.Create(width, height, image.DpiX, image.DpiY, PixelFormats.Bgra32, null, pixels, stride);
+        tinted.Freeze();
+        return tinted;
     }
 
     private static Color ColorFrom(string value, Color fallback)

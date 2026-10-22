@@ -10,6 +10,7 @@ public sealed class PhysicsSimulationService
     private readonly Dictionary<string, float[]> weldedVelocities = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, WeldedTransform>> weldedTransforms = new(StringComparer.Ordinal);
     private sealed record WeldedTransform(float[] Position, float[] Rotation);
+    private sealed record VelocityTarget(SceneNode Constraint, Matrix4x4 Orientation);
 
     public PhysicsSimulationService(GameProject project, Action<SceneNode> moved)
     {
@@ -21,6 +22,8 @@ public sealed class PhysicsSimulationService
     {
         if (!float.IsFinite(elapsedSeconds) || elapsedSeconds <= 0) return;
         var parts = GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
+        var appliedForces = BuildForceMap(parts);
+        var velocityTargets = BuildVelocityMap(parts);
         var weldedGroups = BuildWeldedGroups(parts);
         var activeAssemblies = weldedGroups.Values.Distinct().Select(AssemblyKey).ToHashSet(StringComparer.Ordinal);
         foreach (var key in weldedVelocities.Keys.Where(key => !activeAssemblies.Contains(key)).ToArray()) weldedVelocities.Remove(key);
@@ -29,7 +32,7 @@ public sealed class PhysicsSimulationService
         while (remaining > 0)
         {
             var deltaTime = Math.Min(remaining, .02f);
-            SimulateStep(parts, weldedGroups, deltaTime);
+            SimulateStep(parts, weldedGroups, appliedForces, velocityTargets, deltaTime);
             remaining -= deltaTime;
         }
     }
@@ -77,20 +80,107 @@ public sealed class PhysicsSimulationService
         return result;
     }
 
-    private void SimulateStep(SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups, float deltaTime)
+    private Dictionary<string, Vector3> BuildForceMap(SceneNode[] parts)
+    {
+        var attachmentOwners = parts.SelectMany(part => part.Children.Where(child => child.Type == "Attachment")
+            .Select(attachment => (attachment, part)))
+            .ToDictionary(pair => pair.attachment.Id, pair => pair, StringComparer.Ordinal);
+        var forces = new Dictionary<string, Vector3>(StringComparer.Ordinal);
+        foreach (var constraint in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "VectorForce" && node.Enabled))
+        {
+            if (!attachmentOwners.TryGetValue(constraint.Attachment0, out var owner)) continue;
+            var force = new Vector3(constraint.Force[0], constraint.Force[1], constraint.Force[2]);
+            if (!float.IsFinite(force.X) || !float.IsFinite(force.Y) || !float.IsFinite(force.Z)) continue;
+            if (constraint.RelativeTo == "Attachment0")
+                force = Vector3.TransformNormal(force,
+                    RotationMath.FromDegrees(owner.attachment.Rotation) * RotationMath.FromDegrees(owner.part.Rotation));
+            forces[owner.part.Id] = forces.GetValueOrDefault(owner.part.Id) + force;
+        }
+        return forces;
+    }
+
+    private static float PartMass(SceneNode part) => Math.Max(.1f,
+        Math.Abs(part.Size[0] * part.Size[1] * part.Size[2]));
+
+    private Dictionary<string, List<VelocityTarget>> BuildVelocityMap(SceneNode[] parts)
+    {
+        var attachmentOwners = parts.SelectMany(part => part.Children.Where(child => child.Type == "Attachment")
+            .Select(attachment => (attachment, part)))
+            .ToDictionary(pair => pair.attachment.Id, pair => pair, StringComparer.Ordinal);
+        var targets = new Dictionary<string, List<VelocityTarget>>(StringComparer.Ordinal);
+        foreach (var constraint in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "LinearVelocity" && node.Enabled))
+        {
+            if (!attachmentOwners.TryGetValue(constraint.Attachment0, out var owner)) continue;
+            var orientation = constraint.RelativeTo == "Attachment0"
+                ? RotationMath.FromDegrees(owner.attachment.Rotation) * RotationMath.FromDegrees(owner.part.Rotation)
+                : Matrix4x4.Identity;
+            if (!targets.TryGetValue(owner.part.Id, out var list)) targets[owner.part.Id] = list = [];
+            list.Add(new VelocityTarget(constraint, orientation));
+        }
+        return targets;
+    }
+
+    private static void ApplyVelocityTargets(float[] velocity, IEnumerable<SceneNode> members,
+        Dictionary<string, List<VelocityTarget>> targets, float mass, float deltaTime)
+    {
+        var current = new Vector3(velocity[0], velocity[1], velocity[2]);
+        foreach (var member in members)
+        {
+            if (!targets.TryGetValue(member.Id, out var constraints)) continue;
+            foreach (var target in constraints)
+            {
+                var requested = TargetVelocityDelta(target, current);
+                if (target.Constraint.ForceLimitsEnabled)
+                {
+                    var maximumChange = target.Constraint.MaxForce / mass * deltaTime;
+                    if (requested.LengthSquared() > maximumChange * maximumChange && maximumChange >= 0)
+                        requested = Vector3.Normalize(requested) * maximumChange;
+                }
+                current += requested;
+            }
+        }
+        velocity[0] = current.X; velocity[1] = current.Y; velocity[2] = current.Z;
+    }
+
+    private static Vector3 TargetVelocityDelta(VelocityTarget target, Vector3 current)
+    {
+        var node = target.Constraint;
+        static Vector3 Vector(float[] values) => new(values[0], values[1], values[2]);
+        static Vector3 UnitOr(Vector3 value, Vector3 fallback) => value.LengthSquared() > .000001f ? Vector3.Normalize(value) : fallback;
+        switch (node.VelocityConstraintMode)
+        {
+            case "Line":
+                var line = UnitOr(Vector3.TransformNormal(Vector(node.LineDirection), target.Orientation),
+                    Vector3.TransformNormal(Vector3.UnitX, target.Orientation));
+                return line * (node.LineVelocity - Vector3.Dot(current, line));
+            case "Plane":
+                var primary = UnitOr(Vector3.TransformNormal(Vector(node.PrimaryTangentAxis), target.Orientation), Vector3.UnitX);
+                var secondaryInput = Vector3.TransformNormal(Vector(node.SecondaryTangentAxis), target.Orientation);
+                var secondary = secondaryInput - primary * Vector3.Dot(secondaryInput, primary);
+                secondary = UnitOr(secondary, UnitOr(Vector3.Cross(primary, Vector3.UnitY), Vector3.UnitZ));
+                return primary * (node.PlaneVelocity[0] - Vector3.Dot(current, primary))
+                    + secondary * (node.PlaneVelocity[1] - Vector3.Dot(current, secondary));
+            default:
+                return Vector3.TransformNormal(Vector(node.VectorVelocity), target.Orientation) - current;
+        }
+    }
+
+    private void SimulateStep(SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups,
+        Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets, float deltaTime)
     {
         foreach (var part in parts)
         {
             if (weldedGroups.TryGetValue(part.Id, out var group))
             {
-                if (ReferenceEquals(group[0], part)) SimulateWeldedGroup(group, parts, deltaTime);
+                if (ReferenceEquals(group[0], part)) SimulateWeldedGroup(group, parts, appliedForces, velocityTargets, deltaTime);
                 continue;
             }
-            SimulateSingle(part, parts, deltaTime);
+            SimulateSingle(part, parts, appliedForces, velocityTargets, deltaTime);
         }
     }
 
-    private void SimulateWeldedGroup(SceneNode[] group, SceneNode[] parts, float deltaTime)
+    private void SimulateWeldedGroup(SceneNode[] group, SceneNode[] parts,
+        Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets, float deltaTime)
     {
         var assemblyKey = AssemblyKey(group);
         ReconcileWeldedTransforms(group, assemblyKey);
@@ -113,6 +203,13 @@ public sealed class PhysicsSimulationService
             : group.FirstOrDefault(part => part.Velocity.Any(value => Math.Abs(value) > .000001f)) ?? group[0];
         var velocity = (float[])driver.Velocity.Clone();
         velocity[1] -= Math.Clamp(project.Workspace.Gravity, 0, 1000) * deltaTime;
+        var groupForce = group.Aggregate(Vector3.Zero, (sum, part) => sum + appliedForces.GetValueOrDefault(part.Id));
+        var groupMass = group.Sum(PartMass);
+        var acceleration = Vector3.Clamp(groupForce / groupMass, new Vector3(-10000), new Vector3(10000));
+        velocity[0] += acceleration.X * deltaTime;
+        velocity[1] += acceleration.Y * deltaTime;
+        velocity[2] += acceleration.Z * deltaTime;
+        ApplyVelocityTargets(velocity, group, velocityTargets, groupMass, deltaTime);
         var memberIds = group.Select(part => part.Id).ToHashSet(StringComparer.Ordinal);
         for (var axis = 0; axis < 3; axis++)
         {
@@ -185,12 +282,19 @@ public sealed class PhysicsSimulationService
     private static string AssemblyKey(SceneNode[] group) =>
         string.Join("|", group.Select(part => part.Id).OrderBy(id => id, StringComparer.Ordinal));
 
-    private void SimulateSingle(SceneNode part, SceneNode[] parts, float deltaTime)
+    private void SimulateSingle(SceneNode part, SceneNode[] parts,
+        Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets, float deltaTime)
     {
         if (part.Anchored) return;
         var velocity = part.Velocity;
         var oldVelocity = (float[])velocity.Clone();
         velocity[1] -= Math.Clamp(project.Workspace.Gravity, 0, 1000) * deltaTime;
+        var acceleration = Vector3.Clamp(appliedForces.GetValueOrDefault(part.Id) / PartMass(part),
+            new Vector3(-10000), new Vector3(10000));
+        velocity[0] += acceleration.X * deltaTime;
+        velocity[1] += acceleration.Y * deltaTime;
+        velocity[2] += acceleration.Z * deltaTime;
+        ApplyVelocityTargets(velocity, [part], velocityTargets, PartMass(part), deltaTime);
         var changed = false;
         for (var axis = 0; axis < 3; axis++)
         {

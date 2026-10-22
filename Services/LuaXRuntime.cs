@@ -84,7 +84,7 @@ public sealed class LuaXRuntime
     {
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue",
-        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "VectorForce", "LinearVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam",
         "Sky", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"
     };
@@ -431,6 +431,16 @@ public sealed class LuaXRuntime
         foreach (var face in new[] { "Top", "Bottom", "Front", "Back", "Left", "Right" })
             normalIdEnum.Set(face, DynValue.NewString(face));
         enumTable.Set("NormalId", DynValue.NewTable(normalIdEnum));
+        var textureModeEnum = new Table(script);
+        foreach (var mode in new[] { "Stretch", "Wrap", "Static" }) textureModeEnum.Set(mode, DynValue.NewString(mode));
+        enumTable.Set("TextureMode", DynValue.NewTable(textureModeEnum));
+        var actuatorRelativeToEnum = new Table(script);
+        actuatorRelativeToEnum.Set("World", DynValue.NewString("World"));
+        actuatorRelativeToEnum.Set("Attachment0", DynValue.NewString("Attachment0"));
+        enumTable.Set("ActuatorRelativeTo", DynValue.NewTable(actuatorRelativeToEnum));
+        var velocityConstraintModeEnum = new Table(script);
+        foreach (var mode in new[] { "Vector", "Line", "Plane" }) velocityConstraintModeEnum.Set(mode, DynValue.NewString(mode));
+        enumTable.Set("VelocityConstraintMode", DynValue.NewTable(velocityConstraintModeEnum));
         script.Globals.Set("Enum", DynValue.NewTable(enumTable));
         var raycastParams = new Table(script);
         raycastParams.Set("new", DynValue.NewCallback((_, _) =>
@@ -1025,6 +1035,9 @@ public sealed class LuaXRuntime
         {
             instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
             instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("FaceCamera", DynValue.NewBoolean(node.FaceCamera));
+            instance.Set("TextureMode", DynValue.NewString(node.TextureMode));
+            instance.Set("TextureLength", DynValue.NewNumber(node.TextureLength));
             instance.Set("Lifetime", DynValue.NewNumber(node.TrailLifetime));
             instance.Set("MinLength", DynValue.NewNumber(node.TrailMinLength));
             instance.Set("MaxLength", DynValue.NewNumber(node.TrailMaxLength));
@@ -1037,6 +1050,26 @@ public sealed class LuaXRuntime
                 propertyChanged?.Invoke(node, "Clear", DynValue.Nil);
                 return DynValue.Nil;
             }));
+        }
+        if (node.Type == "VectorForce")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Force", VectorValue(node.Force));
+            instance.Set("RelativeTo", DynValue.NewString(node.RelativeTo));
+        }
+        if (node.Type == "LinearVelocity")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("RelativeTo", DynValue.NewString(node.RelativeTo));
+            instance.Set("VelocityConstraintMode", DynValue.NewString(node.VelocityConstraintMode));
+            instance.Set("VectorVelocity", VectorValue(node.VectorVelocity));
+            instance.Set("LineDirection", VectorValue(node.LineDirection));
+            instance.Set("LineVelocity", DynValue.NewNumber(node.LineVelocity));
+            instance.Set("PlaneVelocity", Vector2Value(node.PlaneVelocity));
+            instance.Set("PrimaryTangentAxis", VectorValue(node.PrimaryTangentAxis));
+            instance.Set("SecondaryTangentAxis", VectorValue(node.SecondaryTangentAxis));
+            instance.Set("ForceLimitsEnabled", DynValue.NewBoolean(node.ForceLimitsEnabled));
+            instance.Set("MaxForce", DynValue.NewNumber(node.MaxForce));
         }
         instance.Set("SetProperty", DynValue.NewCallback((_, args) =>
         {
@@ -1874,7 +1907,11 @@ public sealed class LuaXRuntime
         if (className == "Fire") { node.Color = "#FF6A00"; node.EffectSize = 5; }
         if (className == "Smoke") node.Color = "#B0B0B0";
         if (className == "Sparkles") node.Color = "#FFFFFF";
-        if (className == "ParticleEmitter") node.Color = "#FFFFFF";
+        if (className is "ParticleEmitter" or "Trail") node.Color = "#FFFFFF";
+        if (className == "VectorForce") node.RelativeTo = "Attachment0";
+        if (className is "VectorForce" or "LinearVelocity" && args.Count > 1 && ReadNodeArgument(args[1]) is { } forceParent)
+            node.Attachment0 = forceParent.Type == "Attachment" ? forceParent.Id
+                : IsBasePart(forceParent) ? forceParent.Children.FirstOrDefault(child => child.Type == "Attachment")?.Id ?? string.Empty : string.Empty;
         createdNodes[node.Id] = node;
         var instance = CreateInstance(node);
         instances[node.Id] = instance;
@@ -1910,10 +1947,10 @@ public sealed class LuaXRuntime
                 instances[node.Id].Set("Part0", GetPartReferenceValue(node.Part0));
                 instances[node.Id].Set("Part1", GetPartReferenceValue(node.Part1));
             }
-            if (node.Type is "Beam" or "Trail")
+            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity")
             {
                 instances[node.Id].Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
-                instances[node.Id].Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+                if (node.Type is "Beam" or "Trail") instances[node.Id].Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
             }
         }
         foreach (var node in clonedNodes.Where(node => node.Type == "ObjectValue"))
@@ -2210,10 +2247,10 @@ public sealed class LuaXRuntime
                 instance.Set("Part0", GetPartReferenceValue(node.Part0));
                 instance.Set("Part1", GetPartReferenceValue(node.Part1));
             }
-            if (node.Type is "Beam" or "Trail")
+            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity")
             {
                 instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
-                instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+                if (node.Type is "Beam" or "Trail") instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
             }
         }
         foreach (var node in nodes)
@@ -2340,6 +2377,17 @@ public sealed class LuaXRuntime
             "part1" => "Part1",
             "attachment0" => "Attachment0",
             "attachment1" => "Attachment1",
+            "force" => "Force",
+            "relativeto" => "RelativeTo",
+            "vectorvelocity" => "VectorVelocity",
+            "linedirection" => "LineDirection",
+            "linevelocity" => "LineVelocity",
+            "planevelocity" => "PlaneVelocity",
+            "primarytangentaxis" => "PrimaryTangentAxis",
+            "secondarytangentaxis" => "SecondaryTangentAxis",
+            "velocityconstraintmode" => "VelocityConstraintMode",
+            "forcelimitsenabled" => "ForceLimitsEnabled",
+            "maxforce" => "MaxForce",
             "width0" => "Width0",
             "width1" => "Width1",
             "fieldofview" => "FieldOfView",
@@ -2385,7 +2433,47 @@ public sealed class LuaXRuntime
     private DynValue SetPropertyValue(SceneNode node, string property, DynValue value)
     {
         var normalized = property.ToLowerInvariant();
-        if (node.Type == "Trail" && normalized is ("color" or "transparency" or "widthscale" or "lifetime" or "minlength" or "maxlength"))
+        if (node.Type == "VectorForce" && normalized is ("force" or "relativeto"))
+        {
+            if (normalized == "force")
+            {
+                var force = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+                if (value.Type != DataType.Table || !force.All(float.IsFinite)) return DynValue.Nil;
+                node.Force = force.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+            }
+            else
+            {
+                if (value.Type != DataType.String || value.String is not ("World" or "Attachment0")) return DynValue.Nil;
+                node.RelativeTo = value.String;
+            }
+            var canonical = normalized == "force" ? "Force" : "RelativeTo";
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var forceInstance)) forceInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "LinearVelocity" && normalized is ("vectorvelocity" or "linedirection" or "linevelocity" or "planevelocity" or "primarytangentaxis" or "secondarytangentaxis" or "velocityconstraintmode" or "forcelimitsenabled" or "maxforce" or "relativeto"))
+        {
+            if (!TrySetLinearVelocityProperty(node, normalized, value)) return DynValue.Nil;
+            var canonical = normalized switch
+            {
+                "vectorvelocity" => "VectorVelocity",
+                "linedirection" => "LineDirection",
+                "linevelocity" => "LineVelocity",
+                "planevelocity" => "PlaneVelocity",
+                "primarytangentaxis" => "PrimaryTangentAxis",
+                "secondarytangentaxis" => "SecondaryTangentAxis",
+                "velocityconstraintmode" => "VelocityConstraintMode",
+                "forcelimitsenabled" => "ForceLimitsEnabled",
+                "maxforce" => "MaxForce",
+                _ => "RelativeTo"
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var velocityInstance)) velocityInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "Trail" && normalized is ("color" or "transparency" or "widthscale" or "lifetime" or "minlength" or "maxlength" or "facecamera" or "texturemode" or "texturelength"))
         {
             if (!TrySetTrailProperty(node, normalized, value)) return DynValue.Nil;
             var canonical = normalized switch
@@ -2393,6 +2481,9 @@ public sealed class LuaXRuntime
                 "widthscale" => "WidthScale",
                 "minlength" => "MinLength",
                 "maxlength" => "MaxLength",
+                "facecamera" => "FaceCamera",
+                "texturemode" => "TextureMode",
+                "texturelength" => "TextureLength",
                 _ => char.ToUpperInvariant(normalized[0]) + normalized[1..]
             };
             var current = GetPropertyValue(node, canonical);
@@ -2665,11 +2756,11 @@ public sealed class LuaXRuntime
                     break;
                 case "attachment0":
                 case "attachment1":
-                    if (node.Type is not ("Beam" or "Trail")) return DynValue.Nil;
+                    if (node.Type is not ("Beam" or "Trail" or "VectorForce" or "LinearVelocity") || normalized == "attachment1" && node.Type is ("VectorForce" or "LinearVelocity")) return DynValue.Nil;
                     var attachment = value.Type == DataType.Nil ? null : ReadNodeArgument(value);
                     if (value.Type != DataType.Nil && attachment?.Type != "Attachment") return DynValue.Nil;
                     var attachmentId = attachment?.Id ?? string.Empty;
-                    if (attachmentId.Length > 0 && attachmentId == (normalized == "attachment0" ? node.Attachment1 : node.Attachment0)) return DynValue.Nil;
+                    if (node.Type is "Beam" or "Trail" && attachmentId.Length > 0 && attachmentId == (normalized == "attachment0" ? node.Attachment1 : node.Attachment0)) return DynValue.Nil;
                     if (normalized == "attachment0") node.Attachment0 = attachmentId;
                     else node.Attachment1 = attachmentId;
                     break;
@@ -2816,6 +2907,44 @@ public sealed class LuaXRuntime
         && instances.TryGetValue(humanoid.Id, out var instance)
             ? DynValue.NewTable(instance) : DynValue.Nil;
 
+    private bool TrySetLinearVelocityProperty(SceneNode node, string property, DynValue value)
+    {
+        if (property is "vectorvelocity" or "linedirection" or "primarytangentaxis" or "secondarytangentaxis")
+        {
+            var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+            if (value.Type != DataType.Table || !vector.All(float.IsFinite)) return false;
+            vector = vector.Select(component => Math.Clamp(component, -10000, 10000)).ToArray();
+            if (property == "vectorvelocity") node.VectorVelocity = vector;
+            if (property == "linedirection") node.LineDirection = vector;
+            if (property == "primarytangentaxis") node.PrimaryTangentAxis = vector;
+            if (property == "secondarytangentaxis") node.SecondaryTangentAxis = vector;
+            return true;
+        }
+        switch (property)
+        {
+            case "planevelocity" when TryReadVector2(value, out var plane):
+                node.PlaneVelocity = plane.Select(component => Math.Clamp(component, -10000, 10000)).ToArray();
+                return true;
+            case "linevelocity" when value.Type == DataType.Number && double.IsFinite(value.Number):
+                node.LineVelocity = (float)Math.Clamp(value.Number, -10000, 10000);
+                return true;
+            case "maxforce" when value.Type == DataType.Number && double.IsFinite(value.Number):
+                node.MaxForce = (float)Math.Clamp(value.Number, 0, 1000000);
+                return true;
+            case "forcelimitsenabled" when value.Type == DataType.Boolean:
+                node.ForceLimitsEnabled = value.Boolean;
+                return true;
+            case "velocityconstraintmode" when value.Type == DataType.String && value.String is "Vector" or "Line" or "Plane":
+                node.VelocityConstraintMode = value.String;
+                return true;
+            case "relativeto" when value.Type == DataType.String && value.String is "World" or "Attachment0":
+                node.RelativeTo = value.String;
+                return true;
+            default:
+                return false;
+        }
+    }
+
     private bool TrySetTrailProperty(SceneNode node, string property, DynValue value)
     {
         switch (property)
@@ -2840,6 +2969,15 @@ public sealed class LuaXRuntime
                 return true;
             case "maxlength" when value.Type == DataType.Number && float.IsFinite((float)value.Number):
                 node.TrailMaxLength = (float)Math.Clamp(value.Number, 0, 10000);
+                return true;
+            case "facecamera" when value.Type == DataType.Boolean:
+                node.FaceCamera = value.Boolean;
+                return true;
+            case "texturemode" when value.Type == DataType.String && value.String is "Stretch" or "Wrap" or "Static":
+                node.TextureMode = value.String;
+                return true;
+            case "texturelength" when value.Type == DataType.Number && float.IsFinite((float)value.Number):
+                node.TextureLength = (float)Math.Clamp(value.Number, .01, 1000);
                 return true;
             default:
                 return false;
@@ -2896,9 +3034,40 @@ public sealed class LuaXRuntime
                 "lifetime" => DynValue.NewNumber(node.TrailLifetime),
                 "minlength" => DynValue.NewNumber(node.TrailMinLength),
                 "maxlength" => DynValue.NewNumber(node.TrailMaxLength),
+                "facecamera" => DynValue.NewBoolean(node.FaceCamera),
+                "texturemode" => DynValue.NewString(node.TextureMode),
+                "texturelength" => DynValue.NewNumber(node.TextureLength),
                 _ => DynValue.Nil
             };
             if (trailValue.Type != DataType.Nil) return trailValue;
+        }
+        if (node.Type == "VectorForce")
+        {
+            var forceValue = property.ToLowerInvariant() switch
+            {
+                "force" => VectorValue(node.Force),
+                "relativeto" => DynValue.NewString(node.RelativeTo),
+                _ => DynValue.Nil
+            };
+            if (forceValue.Type != DataType.Nil) return forceValue;
+        }
+        if (node.Type == "LinearVelocity")
+        {
+            var velocityValue = property.ToLowerInvariant() switch
+            {
+                "vectorvelocity" => VectorValue(node.VectorVelocity),
+                "linedirection" => VectorValue(node.LineDirection),
+                "linevelocity" => DynValue.NewNumber(node.LineVelocity),
+                "planevelocity" => Vector2Value(node.PlaneVelocity),
+                "primarytangentaxis" => VectorValue(node.PrimaryTangentAxis),
+                "secondarytangentaxis" => VectorValue(node.SecondaryTangentAxis),
+                "velocityconstraintmode" => DynValue.NewString(node.VelocityConstraintMode),
+                "forcelimitsenabled" => DynValue.NewBoolean(node.ForceLimitsEnabled),
+                "maxforce" => DynValue.NewNumber(node.MaxForce),
+                "relativeto" => DynValue.NewString(node.RelativeTo),
+                _ => DynValue.Nil
+            };
+            if (velocityValue.Type != DataType.Nil) return velocityValue;
         }
         if (node.Type == "ParticleEmitter")
         {
@@ -3520,25 +3689,76 @@ public sealed class LuaXRuntime
                     Assign(node, "Part1", node.Part1, requestedPart1.Id, value => node.Part1 = value);
                 else if (part1Value.Type == DataType.Nil) Assign(node, "Part1", node.Part1, string.Empty, value => node.Part1 = value);
             }
-            if (node.Type is "Beam" or "Trail")
+            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity")
             {
                 var attachment0Value = instance.Get("Attachment0");
                 var requestedAttachment0 = ReadNodeArgument(attachment0Value);
-                if (requestedAttachment0 is { Type: "Attachment" } && requestedAttachment0.Id != node.Attachment1)
+                if (requestedAttachment0 is { Type: "Attachment" } && (node.Type is "VectorForce" or "LinearVelocity" || requestedAttachment0.Id != node.Attachment1))
                     Assign(node, "Attachment0", node.Attachment0, requestedAttachment0.Id, value => node.Attachment0 = value);
                 else if (attachment0Value.Type == DataType.Nil) Assign(node, "Attachment0", node.Attachment0, string.Empty, value => node.Attachment0 = value);
-                var attachment1Value = instance.Get("Attachment1");
-                var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
-                    Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
-                else if (attachment1Value.Type == DataType.Nil) Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
-                if (instance.Get("Width0").Type == DataType.Number && double.IsFinite(instance.Get("Width0").Number))
-                    Assign(node, "Width0", node.Width0, (float)Math.Clamp(instance.Get("Width0").Number, 0, 100), value => node.Width0 = value);
-                if (instance.Get("Width1").Type == DataType.Number && double.IsFinite(instance.Get("Width1").Number))
-                    Assign(node, "Width1", node.Width1, (float)Math.Clamp(instance.Get("Width1").Number, 0, 100), value => node.Width1 = value);
+                if (node.Type == "VectorForce")
+                {
+                    var force = ReadVector(instance.Get("Force"), [float.NaN, float.NaN, float.NaN]);
+                    if (force.All(float.IsFinite))
+                    {
+                        var requestedForce = force.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+                        if (!node.Force.SequenceEqual(requestedForce)) { node.Force = requestedForce; MarkChanged(node, "Force"); }
+                    }
+                    if (instance.Get("RelativeTo").Type == DataType.String && instance.Get("RelativeTo").String is "World" or "Attachment0")
+                        Assign(node, "RelativeTo", node.RelativeTo, instance.Get("RelativeTo").String, value => node.RelativeTo = value);
+                }
+                else if (node.Type == "LinearVelocity")
+                {
+                    void SyncVector(string property, float[] current, Action<float[]> assign)
+                    {
+                        var requested = ReadVector(instance.Get(property), [float.NaN, float.NaN, float.NaN]);
+                        if (!requested.All(float.IsFinite)) return;
+                        requested = requested.Select(component => Math.Clamp(component, -10000, 10000)).ToArray();
+                        if (current.SequenceEqual(requested)) return;
+                        assign(requested);
+                        MarkChanged(node, property);
+                    }
+                    SyncVector("VectorVelocity", node.VectorVelocity, value => node.VectorVelocity = value);
+                    SyncVector("LineDirection", node.LineDirection, value => node.LineDirection = value);
+                    SyncVector("PrimaryTangentAxis", node.PrimaryTangentAxis, value => node.PrimaryTangentAxis = value);
+                    SyncVector("SecondaryTangentAxis", node.SecondaryTangentAxis, value => node.SecondaryTangentAxis = value);
+                    if (TryReadVector2(instance.Get("PlaneVelocity"), out var plane))
+                    {
+                        var requested = plane.Select(component => Math.Clamp(component, -10000, 10000)).ToArray();
+                        if (!node.PlaneVelocity.SequenceEqual(requested)) { node.PlaneVelocity = requested; MarkChanged(node, "PlaneVelocity"); }
+                    }
+                    if (instance.Get("LineVelocity").Type == DataType.Number && double.IsFinite(instance.Get("LineVelocity").Number))
+                        Assign(node, "LineVelocity", node.LineVelocity, (float)Math.Clamp(instance.Get("LineVelocity").Number, -10000, 10000), value => node.LineVelocity = value);
+                    if (instance.Get("MaxForce").Type == DataType.Number && double.IsFinite(instance.Get("MaxForce").Number))
+                        Assign(node, "MaxForce", node.MaxForce, (float)Math.Clamp(instance.Get("MaxForce").Number, 0, 1000000), value => node.MaxForce = value);
+                    if (instance.Get("ForceLimitsEnabled").Type == DataType.Boolean)
+                        Assign(node, "ForceLimitsEnabled", node.ForceLimitsEnabled, instance.Get("ForceLimitsEnabled").Boolean, value => node.ForceLimitsEnabled = value);
+                    if (instance.Get("VelocityConstraintMode").Type == DataType.String && instance.Get("VelocityConstraintMode").String is "Vector" or "Line" or "Plane")
+                        Assign(node, "VelocityConstraintMode", node.VelocityConstraintMode, instance.Get("VelocityConstraintMode").String, value => node.VelocityConstraintMode = value);
+                    if (instance.Get("RelativeTo").Type == DataType.String && instance.Get("RelativeTo").String is "World" or "Attachment0")
+                        Assign(node, "RelativeTo", node.RelativeTo, instance.Get("RelativeTo").String, value => node.RelativeTo = value);
+                }
+                else
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil) Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    if (instance.Get("Width0").Type == DataType.Number && double.IsFinite(instance.Get("Width0").Number))
+                        Assign(node, "Width0", node.Width0, (float)Math.Clamp(instance.Get("Width0").Number, 0, 100), value => node.Width0 = value);
+                    if (instance.Get("Width1").Type == DataType.Number && double.IsFinite(instance.Get("Width1").Number))
+                        Assign(node, "Width1", node.Width1, (float)Math.Clamp(instance.Get("Width1").Number, 0, 100), value => node.Width1 = value);
+                }
             }
             if (node.Type == "Trail")
             {
+                if (instance.Get("FaceCamera").Type == DataType.Boolean)
+                    Assign(node, "FaceCamera", node.FaceCamera, instance.Get("FaceCamera").Boolean, value => node.FaceCamera = value);
+                if (instance.Get("TextureMode").Type == DataType.String && instance.Get("TextureMode").String is "Stretch" or "Wrap" or "Static")
+                    Assign(node, "TextureMode", node.TextureMode, instance.Get("TextureMode").String, value => node.TextureMode = value);
+                if (instance.Get("TextureLength").Type == DataType.Number && float.IsFinite((float)instance.Get("TextureLength").Number))
+                    Assign(node, "TextureLength", node.TextureLength, (float)Math.Clamp(instance.Get("TextureLength").Number, .01, 1000), value => node.TextureLength = value);
                 if (TryReadNumberSequence(instance.Get("WidthScale"), out var requestedWidth))
                 {
                     var normalizedWidth = ParticleSequenceService.NormalizeNumber(requestedWidth, 0, 1);

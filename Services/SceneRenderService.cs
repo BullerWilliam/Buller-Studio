@@ -34,6 +34,7 @@ public sealed class SceneRenderService
     private readonly Dictionary<string, float> trailTimes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> trailClearVersions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, bool> trailWasEnabled = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string Attachment0, string Attachment1)> trailReferences = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SceneNode> highlightSources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> renderedAssetSources = new(StringComparer.Ordinal);
     private readonly List<Light3D> objectLights = [];
@@ -110,6 +111,7 @@ public sealed class SceneRenderService
             trailTimes.Clear();
             trailClearVersions.Clear();
             trailWasEnabled.Clear();
+            trailReferences.Clear();
         }
         activeProject = project;
         var currentCamera = project.Workspace.Children.First(node => node.Type == "Camera");
@@ -332,6 +334,7 @@ public sealed class SceneRenderService
                 camera.UpDirection = new Vector3D(0, 1, 0);
                 UpdateSkybox(camera.Position);
                 if (activeProject is not null && hasParticleEffects) RefreshParticleEffects(activeProject);
+                if (activeProject is not null && hasTrailNodes) RefreshTrails(activeProject);
             }
             return;
         }
@@ -343,6 +346,7 @@ public sealed class SceneRenderService
         camera.UpDirection = new Vector3D(0, 1, 0);
         UpdateSkybox(camera.Position);
         if (activeProject is not null && hasParticleEffects) RefreshParticleEffects(activeProject);
+        if (activeProject is not null && hasTrailNodes) RefreshTrails(activeProject);
     }
 
     private MeshGeometryModel3D CreateVisual(SceneNode node, GameProject project)
@@ -492,31 +496,28 @@ public sealed class SceneRenderService
                 samples.Clear();
                 trailClearVersions[trail.Id] = trail.TrailClearVersion;
             }
+            var references = (trail.Attachment0, trail.Attachment1);
+            if (trailReferences.TryGetValue(trail.Id, out var oldReferences) && oldReferences != references) samples.Clear();
+            trailReferences[trail.Id] = references;
             if (trailWasEnabled.TryGetValue(trail.Id, out var wasEnabled) && !wasEnabled && trail.Enabled) samples.Clear();
             trailWasEnabled[trail.Id] = trail.Enabled;
-            samples.RemoveAll(sample => now - sample.Time >= trail.TrailLifetime);
             if (!trail.Enabled || !attachments.TryGetValue(trail.Attachment0, out var first)
-                || !attachments.TryGetValue(trail.Attachment1, out var second) || ReferenceEquals(first, second)) continue;
+                || !attachments.TryGetValue(trail.Attachment1, out var second) || ReferenceEquals(first, second))
+            {
+                TrailGeometryService.AdvanceSamples(trail, samples, null, now);
+                continue;
+            }
             var firstPart = parts.FirstOrDefault(part => part.Children.Contains(first));
             var secondPart = parts.FirstOrDefault(part => part.Children.Contains(second));
-            if (firstPart is null || secondPart is null) continue;
+            if (firstPart is null || secondPart is null)
+            {
+                TrailGeometryService.AdvanceSamples(trail, samples, null, now);
+                continue;
+            }
             var point0 = ToVector(TransformFor(firstPart, false).Transform(new Point3D(first.Position[0], first.Position[1], first.Position[2])));
             var point1 = ToVector(TransformFor(secondPart, false).Transform(new Point3D(second.Position[0], second.Position[1], second.Position[2])));
-            var current = new TrailSample(now, point0, point1);
-            if (samples.Count == 0 || Math.Max(Vector3.Distance(samples[^1].Point0, point0), Vector3.Distance(samples[^1].Point1, point1)) >= trail.TrailMinLength)
-                samples.Add(current);
-            if (trail.TrailMaxLength > 0)
-                while (samples.Count > 1 && TrailPathLength(samples) > trail.TrailMaxLength) samples.RemoveAt(0);
+            TrailGeometryService.AdvanceSamples(trail, samples, new TrailSample(now, point0, point1), now);
         }
-    }
-
-    private static float TrailPathLength(IReadOnlyList<TrailSample> samples)
-    {
-        var length = 0f;
-        for (var index = 1; index < samples.Count; index++)
-            length += Vector3.Distance((samples[index - 1].Point0 + samples[index - 1].Point1) * .5f,
-                (samples[index].Point0 + samples[index].Point1) * .5f);
-        return length;
     }
 
     private void RefreshTrails(GameProject project)
@@ -527,7 +528,8 @@ public sealed class SceneRenderService
         foreach (var trail in trails)
         {
             if (!trailSamples.TryGetValue(trail.Id, out var samples) || samples.Count < 2) continue;
-            var geometry = TrailGeometryService.Build(trail, samples, trailTimes.GetValueOrDefault(trail.Id));
+            var geometry = TrailGeometryService.Build(trail, samples, trailTimes.GetValueOrDefault(trail.Id),
+                viewport.Camera is HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera ? ToVector(camera.Position) : null);
             if (geometry.Positions is null || geometry.Positions.Count == 0) continue;
             activeIds.Add(trail.Id);
             if (!trailVisuals.TryGetValue(trail.Id, out var visual))
@@ -552,6 +554,7 @@ public sealed class SceneRenderService
         foreach (var id in trailTimes.Keys.Where(id => !currentIds.Contains(id)).ToArray()) trailTimes.Remove(id);
         foreach (var id in trailClearVersions.Keys.Where(id => !currentIds.Contains(id)).ToArray()) trailClearVersions.Remove(id);
         foreach (var id in trailWasEnabled.Keys.Where(id => !currentIds.Contains(id)).ToArray()) trailWasEnabled.Remove(id);
+        foreach (var id in trailReferences.Keys.Where(id => !currentIds.Contains(id)).ToArray()) trailReferences.Remove(id);
     }
 
     public void UpdateParticleEffects(float elapsedSeconds)

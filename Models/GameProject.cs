@@ -98,6 +98,17 @@ public sealed class SceneNode
     public string Part1 { get; set; } = string.Empty;
     public string Attachment0 { get; set; } = string.Empty;
     public string Attachment1 { get; set; } = string.Empty;
+    public float[] Force { get; set; } = [0, 0, 0];
+    public string RelativeTo { get; set; } = "World";
+    public float[] VectorVelocity { get; set; } = [0, 0, 0];
+    public float[] LineDirection { get; set; } = [1, 0, 0];
+    public float LineVelocity { get; set; }
+    public float[] PlaneVelocity { get; set; } = [0, 0];
+    public float[] PrimaryTangentAxis { get; set; } = [1, 0, 0];
+    public float[] SecondaryTangentAxis { get; set; } = [0, 0, 1];
+    public string VelocityConstraintMode { get; set; } = "Vector";
+    public bool ForceLimitsEnabled { get; set; }
+    public float MaxForce { get; set; } = 1000;
     public float Width0 { get; set; } = .2f;
     public float Width1 { get; set; } = .2f;
     public float TrailLifetime { get; set; } = 2;
@@ -105,6 +116,9 @@ public sealed class SceneNode
     public float TrailMaxLength { get; set; }
     public float TrailWidth { get; set; } = 1;
     public List<ParticleNumberKeypoint> TrailWidthSequence { get; set; } = [];
+    public bool FaceCamera { get; set; }
+    public string TextureMode { get; set; } = "Stretch";
+    public float TextureLength { get; set; } = 1;
     [JsonIgnore] public int TrailClearVersion { get; set; }
     public string Text { get; set; } = "Text";
     public string TextColor { get; set; } = "#FFFFFF";

@@ -755,6 +755,7 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("Trail");
             AddCheckField("Enabled", selected.Enabled);
+            AddCheckField("FaceCamera", selected.FaceCamera);
             AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } trailAttachment0 ? trailAttachment0 : null);
             AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } trailAttachment1 ? trailAttachment1 : null);
             AddTextField("Lifetime", selected.TrailLifetime.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -764,7 +765,40 @@ public partial class MainWindow : Window
             AddTextField("Color", ParticleSequenceService.FormatColor(selected.ColorSequence, selected.Color));
             AddTextField("Transparency", ParticleSequenceService.FormatNumber(selected.TransparencySequence, selected.Transparency));
             AddTextField("Texture", selected.Texture);
+            AddComboField("TextureMode", ["Stretch", "Wrap", "Static"], selected.TextureMode);
+            AddTextField("TextureLength", selected.TextureLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddLabel("Moves between two Attachments. Keypoints use time:value from 0 to 1.", "WidthScale");
+        }
+        if (selected.Type == "VectorForce")
+        {
+            propertyTarget = AddPropertySection("VectorForce");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } forceAttachment ? forceAttachment : null);
+            AddTextField("Force", VectorText(selected.Force));
+            AddComboField("RelativeTo", ["World", "Attachment0"], selected.RelativeTo);
+            AddLabel("Applies translational force to Attachment0's part during play.", "Force");
+        }
+        if (selected.Type == "LinearVelocity")
+        {
+            propertyTarget = AddPropertySection("LinearVelocity");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } velocityAttachment ? velocityAttachment : null);
+            AddComboField("RelativeTo", ["World", "Attachment0"], selected.RelativeTo);
+            AddComboField("VelocityConstraintMode", ["Vector", "Line", "Plane"], selected.VelocityConstraintMode);
+            if (selected.VelocityConstraintMode == "Vector") AddTextField("VectorVelocity", VectorText(selected.VectorVelocity));
+            if (selected.VelocityConstraintMode == "Line")
+            {
+                AddTextField("LineDirection", VectorText(selected.LineDirection));
+                AddTextField("LineVelocity", selected.LineVelocity.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            if (selected.VelocityConstraintMode == "Plane")
+            {
+                AddTextField("PrimaryTangentAxis", VectorText(selected.PrimaryTangentAxis));
+                AddTextField("SecondaryTangentAxis", VectorText(selected.SecondaryTangentAxis));
+                AddTextField("PlaneVelocity", VectorText(selected.PlaneVelocity));
+            }
+            AddCheckField("ForceLimitsEnabled", selected.ForceLimitsEnabled);
+            if (selected.ForceLimitsEnabled) AddTextField("MaxForce", selected.MaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         if (selected.Type == "Humanoid")
         {
@@ -1307,14 +1341,29 @@ public partial class MainWindow : Window
             else if (property == "Lifetime") target.LifetimeRange = [Math.Clamp(values[0], .05f, 30), Math.Clamp(values[1], Math.Clamp(values[0], .05f, 30), 30)];
             else target.SpreadAngle = [Math.Clamp(values[0], 0, 360), Math.Clamp(values[1], 0, 360)];
         }
-        else if (property is "Position" or "Rotation" or "Size" or "Velocity")
+        else if (target.Type == "LinearVelocity" && property == "PlaneVelocity")
+        {
+            var values = ParsePair(text);
+            if (values is null) { SetStatus("Enter two comma-separated numbers."); box.Text = VectorText(target.PlaneVelocity); return; }
+            target.PlaneVelocity = values.Select(value => Math.Clamp(value, -10000, 10000)).ToArray();
+        }
+        else if (property is "Position" or "Rotation" or "Size" or "Velocity" or "Force" or "VectorVelocity" or "LineDirection" or "PrimaryTangentAxis" or "SecondaryTangentAxis")
         {
             var values = ParseVector(text);
-            if (values is null) { SetStatus("Enter three comma-separated numbers."); box.Text = property switch { "Position" => VectorText(target.Position), "Rotation" => VectorText(target.Rotation), "Velocity" => VectorText(target.Velocity), _ => VectorText(target.Size) }; return; }
+            if (values is null) { SetStatus("Enter three comma-separated numbers."); box.Text = property switch { "Position" => VectorText(target.Position), "Rotation" => VectorText(target.Rotation), "Velocity" => VectorText(target.Velocity), "Force" => VectorText(target.Force), "VectorVelocity" => VectorText(target.VectorVelocity), "LineDirection" => VectorText(target.LineDirection), "PrimaryTangentAxis" => VectorText(target.PrimaryTangentAxis), "SecondaryTangentAxis" => VectorText(target.SecondaryTangentAxis), _ => VectorText(target.Size) }; return; }
             if (property == "Position") target.Position = values;
             if (property == "Rotation") target.Rotation = values;
             if (property == "Size") target.Size = values.Select(value => Math.Max(.01f, Math.Abs(value))).ToArray();
             if (property == "Velocity" && SceneNodeTypes.IsBasePart(target)) target.Velocity = values;
+            if (property == "Force" && target.Type == "VectorForce") target.Force = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
+            if (target.Type == "LinearVelocity")
+            {
+                var normalized = values.Select(value => Math.Clamp(value, -10000, 10000)).ToArray();
+                if (property == "VectorVelocity") target.VectorVelocity = normalized;
+                if (property == "LineDirection") target.LineDirection = normalized;
+                if (property == "PrimaryTangentAxis") target.PrimaryTangentAxis = normalized;
+                if (property == "SecondaryTangentAxis") target.SecondaryTangentAxis = normalized;
+            }
         }
         else if (property == "FieldOfView" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fov)) target.FieldOfView = Math.Clamp(fov, 10, 120);
         else if (property == "Color" && target.Type is ("ParticleEmitter" or "Trail") && text.Contains(':'))
@@ -1401,12 +1450,19 @@ public partial class MainWindow : Window
             }
             else { SetStatus("Enter a width from 0 to 1."); return; }
         }
-        else if (target.Type == "Trail" && property is ("Lifetime" or "MinLength" or "MaxLength")
+        else if (target.Type == "Trail" && property is ("Lifetime" or "MinLength" or "MaxLength" or "TextureLength")
             && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var trailLength) && float.IsFinite(trailLength))
         {
             if (property == "Lifetime") target.TrailLifetime = Math.Clamp(trailLength, .01f, 20);
             else if (property == "MinLength") target.TrailMinLength = Math.Clamp(trailLength, 0, 100);
-            else target.TrailMaxLength = Math.Clamp(trailLength, 0, 10000);
+            else if (property == "MaxLength") target.TrailMaxLength = Math.Clamp(trailLength, 0, 10000);
+            else target.TextureLength = Math.Clamp(trailLength, .01f, 1000);
+        }
+        else if (target.Type == "LinearVelocity" && property is ("LineVelocity" or "MaxForce")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var velocityNumber) && float.IsFinite(velocityNumber))
+        {
+            if (property == "LineVelocity") target.LineVelocity = Math.Clamp(velocityNumber, -10000, 10000);
+            else target.MaxForce = Math.Clamp(velocityNumber, 0, 1000000);
         }
         else if (property == "Gravity" && target.Type == "Workspace" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gravity) && float.IsFinite(gravity)) target.Gravity = Math.Clamp(gravity, 0, 1000);
         else if (target.Type == "Humanoid" && property is ("Health" or "MaxHealth" or "WalkSpeed" or "JumpPower")
@@ -1556,6 +1612,9 @@ public partial class MainWindow : Window
             "Range" => node.Range,
             "Size" => SceneNodeTypes.IsSizedParticleEffect(node) || node.Type == "ParticleEmitter" ? node.EffectSize : (float?)null,
             "Rate" => node.Type == "ParticleEmitter" ? node.Rate : (float?)null,
+            "TextureLength" => node.Type == "Trail" ? node.TextureLength : (float?)null,
+            "LineVelocity" => node.Type == "LinearVelocity" ? node.LineVelocity : (float?)null,
+            "MaxForce" => node.Type == "LinearVelocity" ? node.MaxForce : (float?)null,
             "TimeScale" => SceneNodeTypes.IsParticleEffect(node) ? node.TimeScale : (float?)null,
             "Heat" => node.Type == "Fire" ? node.Heat : (float?)null,
             "RiseVelocity" => node.Type == "Smoke" ? node.RiseVelocity : (float?)null,
@@ -1602,6 +1661,8 @@ public partial class MainWindow : Window
         if (property == "CastShadow") target.CastShadow = box.IsChecked == true;
         if (property == "Visible") target.Visible = box.IsChecked == true;
         if (property == "Enabled") target.Enabled = box.IsChecked == true;
+        if (property == "FaceCamera" && target.Type == "Trail") target.FaceCamera = box.IsChecked == true;
+        if (property == "ForceLimitsEnabled" && target.Type == "LinearVelocity") target.ForceLimitsEnabled = box.IsChecked == true;
         if (property == "Looped") target.Looped = box.IsChecked == true;
         if (property == "Playing") target.Playing = box.IsChecked == true;
         if (property == "AutoManageCharacter" && target.Type == "Workspace") target.AutoManageCharacter = box.IsChecked == true;
@@ -1611,6 +1672,7 @@ public partial class MainWindow : Window
         if (IsGuiNode(target)) RefreshGuiPreview();
         renderer?.UpdateNode(target, project);
         RecordEdit();
+        if (property == "ForceLimitsEnabled") RenderProperties();
     }
 
     private void PropertyCombo_Changed(object sender, SelectionChangedEventArgs e)
@@ -1627,10 +1689,13 @@ public partial class MainWindow : Window
         if (property == "Material" && SceneNodeTypes.IsBasePart(target)) target.Material = value;
         if (property == "Face" && target.Type is ("Decal" or "Texture" or "SurfaceLight") && SceneNodeTypes.IsFace(value)) target.Face = value;
         if (property == "EmissionDirection" && target.Type == "ParticleEmitter" && SceneNodeTypes.IsFace(value)) target.EmissionDirection = value;
+        if (property == "TextureMode" && target.Type == "Trail" && value is ("Stretch" or "Wrap" or "Static")) target.TextureMode = value;
+        if (property == "RelativeTo" && target.Type is ("VectorForce" or "LinearVelocity") && value is ("World" or "Attachment0")) target.RelativeTo = value;
+        if (property == "VelocityConstraintMode" && target.Type == "LinearVelocity" && value is ("Vector" or "Line" or "Plane")) target.VelocityConstraintMode = value;
         if (property == "LayoutDirection") target.LayoutDirection = value;
         if (property == "FillDirection" && target.Type == "UIGridLayout") target.FillDirection = value;
         if (property == "Mode") renderer?.UpdateCamera(project);
-        if (property is "Shape" or "Material" or "Face" or "EmissionDirection") renderer?.UpdateNode(target, project);
+        if (property is "Shape" or "Material" or "Face" or "EmissionDirection" or "TextureMode") renderer?.UpdateNode(target, project);
         if (IsGuiNode(target)) RefreshGuiPreview();
         RecordEdit();
         RenderProperties();
@@ -1708,7 +1773,7 @@ public partial class MainWindow : Window
         {
             if (value.Type != "Attachment" || value.Id == (property == "Attachment0" ? target.Attachment1 : target.Attachment0))
             {
-                SetStatus("Choose a different Attachment for each beam endpoint.");
+                SetStatus("Choose a different Attachment for each endpoint.");
                 return true;
             }
             propertyPickerTargetId = null;
@@ -1838,6 +1903,9 @@ public partial class MainWindow : Window
         var node = new SceneNode { Type = type is "Ball" or "Cylinder" ? "Part" : type, Name = name };
         if (type is "Ball" or "Cylinder") node.Shape = type;
         if (type == "WeldConstraint" && SceneNodeTypes.IsBasePart(parent)) node.Part0 = parent.Id;
+        if (type == "VectorForce") node.RelativeTo = "Attachment0";
+        if (type is "VectorForce" or "LinearVelocity") node.Attachment0 = parent.Type == "Attachment" ? parent.Id
+            : SceneNodeTypes.IsBasePart(parent) ? parent.Children.FirstOrDefault(child => child.Type == "Attachment")?.Id ?? string.Empty : string.Empty;
         if (SceneNodeTypes.IsBasePart(node)) node.Position = [0, 1, 0];
         if (type == "SpawnLocation") { node.Size = [6, 1, 6]; node.Position = [0, .5f, 0]; node.Color = "#72BF9D"; node.Material = "Metal"; }
         if (type == "Seat") { node.Size = [2, 1, 2]; node.Position = [0, .5f, 0]; node.Color = "#596B89"; node.Material = "Metal"; }
@@ -1877,7 +1945,7 @@ public partial class MainWindow : Window
             ? (parent.Type == "Gui"
                 ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") }
                 : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
-            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
+            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("VectorForce", "VectorForce"), ("LinearVelocity", "LinearVelocity"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
         choices = choices.Concat(new (string Type, string Name)[] { ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky"), ("Fire", "Fire"), ("Smoke", "Smoke"), ("Sparkles", "Sparkles"), ("ParticleEmitter", "ParticleEmitter") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
@@ -2943,7 +3011,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Trail", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "CollectionService", "RunService", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "CollectionService", "RunService", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -3063,7 +3131,9 @@ public partial class MainWindow : Window
         if (node.Type == "Highlight") members.AddRange(["Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency"]);
         if (node.Type == "WeldConstraint") members.AddRange(["Enabled", "Part0", "Part1"]);
         if (node.Type == "Beam") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Width0", "Width1", "Color", "Transparency"]);
-        if (node.Type == "Trail") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Lifetime", "MinLength", "MaxLength", "WidthScale", "Color", "Transparency", "Texture", "Clear"]);
+        if (node.Type == "Trail") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Lifetime", "MinLength", "MaxLength", "WidthScale", "Color", "Transparency", "Texture", "FaceCamera", "TextureMode", "TextureLength", "Clear"]);
+        if (node.Type == "VectorForce") members.AddRange(["Enabled", "Attachment0", "Force", "RelativeTo"]);
+        if (node.Type == "LinearVelocity") members.AddRange(["Enabled", "Attachment0", "RelativeTo", "VelocityConstraintMode", "VectorVelocity", "LineDirection", "LineVelocity", "PlaneVelocity", "PrimaryTangentAxis", "SecondaryTangentAxis", "ForceLimitsEnabled", "MaxForce"]);
         if (node.Type == "Attachment") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
         if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "Raycast", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
@@ -3117,6 +3187,7 @@ public partial class MainWindow : Window
         if (inferredType == "Humanoid" || receiverNode?.Type == "Humanoid") return ["TakeDamage", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
         if (inferredType == "Sound" || receiverNode?.Type == "Sound") return ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Play", "Stop"];
         if (inferredType == "ParticleEmitter" || receiverNode?.Type == "ParticleEmitter") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Emit", "Clear"];
+        if (inferredType == "Trail" || receiverNode?.Type == "Trail") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Clear"];
         return LuaXInstanceTypes.Contains(inferredType ?? string.Empty) || receiverNode is not null
             ? ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"]
             : LuaXMethodCompletions;
@@ -3297,6 +3368,46 @@ public partial class MainWindow : Window
             };
             if (emitterType is not null) return emitterType;
         }
+        if (node?.Type == "Trail")
+        {
+            var trailType = member.ToLowerInvariant() switch
+            {
+                "color" => "ColorSequence",
+                "transparency" or "widthscale" => "NumberSequence",
+                "attachment0" or "attachment1" => "Attachment",
+                "lifetime" or "minlength" or "maxlength" or "texturelength" => "number",
+                "enabled" or "facecamera" => "boolean",
+                "texture" or "texturemode" => "string",
+                _ => null
+            };
+            if (trailType is not null) return trailType;
+        }
+        if (node?.Type == "VectorForce")
+        {
+            var forceType = member.ToLowerInvariant() switch
+            {
+                "attachment0" => "Attachment",
+                "force" => "Vector3",
+                "relativeto" => "string",
+                "enabled" => "boolean",
+                _ => null
+            };
+            if (forceType is not null) return forceType;
+        }
+        if (node?.Type == "LinearVelocity")
+        {
+            var velocityType = member.ToLowerInvariant() switch
+            {
+                "attachment0" => "Attachment",
+                "vectorvelocity" or "linedirection" or "primarytangentaxis" or "secondarytangentaxis" => "Vector3",
+                "planevelocity" => "Vector2",
+                "linevelocity" or "maxforce" => "number",
+                "forcelimitsenabled" or "enabled" => "boolean",
+                "relativeto" or "velocityconstraintmode" => "string",
+                _ => null
+            };
+            if (velocityType is not null) return velocityType;
+        }
         if (node is not null)
         {
             var propertyType = member.ToLowerInvariant() switch
@@ -3324,6 +3435,21 @@ public partial class MainWindow : Window
             ("ParticleEmitter", "speed" or "lifetime") => "NumberRange",
             ("ParticleEmitter", "spreadangle") => "Vector2",
             ("ParticleEmitter", "rate" or "timescale") => "number",
+            ("Trail", "color") => "ColorSequence",
+            ("Trail", "transparency" or "widthscale") => "NumberSequence",
+            ("Trail", "attachment0" or "attachment1") => "Attachment",
+            ("Trail", "lifetime" or "minlength" or "maxlength" or "texturelength") => "number",
+            ("Trail", "facecamera") => "boolean",
+            ("Trail", "texturemode") => "string",
+            ("VectorForce", "attachment0") => "Attachment",
+            ("VectorForce", "force") => "Vector3",
+            ("VectorForce", "relativeto") => "string",
+            ("LinearVelocity", "attachment0") => "Attachment",
+            ("LinearVelocity", "vectorvelocity" or "linedirection" or "primarytangentaxis" or "secondarytangentaxis") => "Vector3",
+            ("LinearVelocity", "planevelocity") => "Vector2",
+            ("LinearVelocity", "linevelocity" or "maxforce") => "number",
+            ("LinearVelocity", "forcelimitsenabled") => "boolean",
+            ("LinearVelocity", "relativeto" or "velocityconstraintmode") => "string",
             ("Vector2", "x" or "y") => "number",
             ("NumberRange", "min" or "max") => "number",
             ("NumberSequence", "value") => "number",
@@ -3446,7 +3572,7 @@ public partial class MainWindow : Window
         if (member.Equals("Character", StringComparison.OrdinalIgnoreCase) && instance.Type == "Player") return FindSceneNode(instance.Character);
         if (member.Equals("Part0", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part0);
         if (member.Equals("Part1", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part1);
-        if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail")) return FindSceneNode(instance.Attachment0);
+        if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "VectorForce" or "LinearVelocity")) return FindSceneNode(instance.Attachment0);
         if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail")) return FindSceneNode(instance.Attachment1);
         return instance.Children.FirstOrDefault(child => child.Name == member || child.Id == member);
     }
@@ -3506,8 +3632,8 @@ public partial class MainWindow : Window
     ];
 
     private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Fire", "Invoke", "Disconnect", "TakeDamage", "AddItem", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "Trail", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Trail", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -3573,7 +3699,7 @@ public partial class MainWindow : Window
                   <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word><Word>task</Word><Word>wait</Word>
                   <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>Lighting</Word><Word>ReplicatedStorage</Word><Word>ServerScriptService</Word><Word>ServerStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>LookAtRotation</Word><Word>Color3</Word><Word>GetService</Word>
                 </Keywords>
-                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>NumberRange</Word><Word>NumberSequence</Word><Word>ColorSequence</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ParticleEmitter</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
+                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>NumberRange</Word><Word>NumberSequence</Word><Word>NumberSequenceKeypoint</Word><Word>ColorSequence</Word><Word>ColorSequenceKeypoint</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ParticleEmitter</Word><Word>Trail</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
                 <Rule color="LuauKeyword">(?m)^\s*(?:export\s+)?type\b</Rule>
                 <Rule color="Method">(?&lt;=[:.])[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
                 <Rule color="FunctionName">(?&lt;=function\s+)[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*</Rule>
@@ -4222,7 +4348,7 @@ public partial class MainWindow : Window
             if (removedIds.Contains(weld.Part0)) weld.Part0 = string.Empty;
             if (removedIds.Contains(weld.Part1)) weld.Part1 = string.Empty;
         }
-        foreach (var beam in GameProjectStore.Flatten(project).Where(node => node.Type is "Beam" or "Trail"))
+        foreach (var beam in GameProjectStore.Flatten(project).Where(node => node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity"))
         {
             if (removedIds.Contains(beam.Attachment0)) beam.Attachment0 = string.Empty;
             if (removedIds.Contains(beam.Attachment1)) beam.Attachment1 = string.Empty;
@@ -4524,6 +4650,9 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Smoke"] = "Smoke — Emits a colored smoke effect from a BasePart or Attachment.",
         ["Sparkles"] = "Sparkles — Emits bright glints from a BasePart or Attachment.",
         ["ParticleEmitter"] = "ParticleEmitter — Emits adjustable particles from a BasePart or Attachment.",
+        ["Trail"] = "Trail — Draws a fading ribbon between two moving Attachments.",
+        ["VectorForce"] = "VectorForce — Applies a world or attachment-relative force to a part during play.",
+        ["LinearVelocity"] = "LinearVelocity — Maintains a target velocity along a vector, line, or plane during play.",
         ["Rate"] = "number — Automatically emitted particles per second, up to 200.",
         ["Speed"] = "NumberRange — Emission speed range in studs per second.",
         ["Lifetime"] = "NumberRange — Particle lifetime range in seconds.",
@@ -4582,7 +4711,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Rotation"] = "Vector3 — Rotation in degrees; GUI objects use the Z component.",
         ["Size"] = "Vector3 for parts; UDim2 for GUI objects; number for Fire or Smoke.",
         ["Color"] = "Color3 — Object color.",
-        ["Texture"] = "string — Project-relative image path used by a Part or ParticleEmitter, such as blocks/grass.png.",
+        ["Texture"] = "string — Project-relative image path used by a Part, ParticleEmitter, or Trail, such as blocks/grass.png.",
         ["FillColor"] = "Color3 — Highlight fill color.",
         ["OutlineColor"] = "Color3 — Highlight outline color.",
         ["FillTransparency"] = "number — Highlight fill transparency from 0 to 1.",

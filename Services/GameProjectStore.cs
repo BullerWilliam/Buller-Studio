@@ -363,11 +363,27 @@ public static class GameProjectStore
             node.ObjectValueId ??= string.Empty;
             node.Width0 = float.IsFinite(node.Width0) ? Math.Clamp(node.Width0, 0, 100) : .2f;
             node.Width1 = float.IsFinite(node.Width1) ? Math.Clamp(node.Width1, 0, 100) : .2f;
+            node.Force = EnsureVector(node.Force, [0, 0, 0]);
+            for (var axis = 0; axis < 3; axis++) node.Force[axis] = float.IsFinite(node.Force[axis]) ? Math.Clamp(node.Force[axis], -1000000, 1000000) : 0;
+            if (node.RelativeTo is not ("World" or "Attachment0")) node.RelativeTo = node.Type == "VectorForce" ? "Attachment0" : "World";
+            node.VectorVelocity = EnsureVector(node.VectorVelocity, [0, 0, 0]);
+            node.LineDirection = EnsureVector(node.LineDirection, [1, 0, 0]);
+            node.PrimaryTangentAxis = EnsureVector(node.PrimaryTangentAxis, [1, 0, 0]);
+            node.SecondaryTangentAxis = EnsureVector(node.SecondaryTangentAxis, [0, 0, 1]);
+            foreach (var vector in new[] { node.VectorVelocity, node.LineDirection, node.PrimaryTangentAxis, node.SecondaryTangentAxis })
+                for (var axis = 0; axis < 3; axis++) vector[axis] = Math.Clamp(vector[axis], -10000, 10000);
+            node.PlaneVelocity = EnsurePair(node.PlaneVelocity);
+            for (var axis = 0; axis < 2; axis++) node.PlaneVelocity[axis] = float.IsFinite(node.PlaneVelocity[axis]) ? Math.Clamp(node.PlaneVelocity[axis], -10000, 10000) : 0;
+            node.LineVelocity = float.IsFinite(node.LineVelocity) ? Math.Clamp(node.LineVelocity, -10000, 10000) : 0;
+            node.MaxForce = float.IsFinite(node.MaxForce) ? Math.Clamp(node.MaxForce, 0, 1000000) : 1000;
+            if (node.VelocityConstraintMode is not ("Vector" or "Line" or "Plane")) node.VelocityConstraintMode = "Vector";
             node.TrailLifetime = float.IsFinite(node.TrailLifetime) ? Math.Clamp(node.TrailLifetime, .01f, 20) : 2;
             node.TrailMinLength = float.IsFinite(node.TrailMinLength) ? Math.Clamp(node.TrailMinLength, 0, 100) : .1f;
             node.TrailMaxLength = float.IsFinite(node.TrailMaxLength) ? Math.Clamp(node.TrailMaxLength, 0, 10000) : 0;
             node.TrailWidth = float.IsFinite(node.TrailWidth) ? Math.Clamp(node.TrailWidth, 0, 1) : 1;
             node.TrailWidthSequence = ParticleSequenceService.NormalizeNumber(node.TrailWidthSequence, 0, 1);
+            if (node.TextureMode is not ("Stretch" or "Wrap" or "Static")) node.TextureMode = "Stretch";
+            node.TextureLength = float.IsFinite(node.TextureLength) ? Math.Clamp(node.TextureLength, .01f, 1000) : 1;
         }
         foreach (var node in Flatten(project))
         {
@@ -626,7 +642,7 @@ public static class GameProjectStore
         if (node.Type == "Attachment")
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
-        if (node.Type is "Beam" or "Trail")
+        if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node))
