@@ -319,8 +319,20 @@ public static class GameProjectStore
             node.BackgroundTransparency = float.IsFinite(node.BackgroundTransparency) ? Math.Clamp(node.BackgroundTransparency, 0, 1) : 0;
             node.TextTransparency = float.IsFinite(node.TextTransparency) ? Math.Clamp(node.TextTransparency, 0, 1) : 0;
             node.ImageTransparency = float.IsFinite(node.ImageTransparency) ? Math.Clamp(node.ImageTransparency, 0, 1) : 0;
+            node.TextSize = float.IsFinite(node.TextSize) ? Math.Clamp(node.TextSize, 1, 200) : 18;
+            node.LayoutSpacing = float.IsFinite(node.LayoutSpacing) ? Math.Clamp(node.LayoutSpacing, 0, 1000000) : 0;
             node.MinTextSize = float.IsFinite(node.MinTextSize) ? Math.Clamp(node.MinTextSize, 1, 1000) : 1;
             node.MaxTextSize = float.IsFinite(node.MaxTextSize) ? Math.Clamp(node.MaxTextSize, node.MinTextSize, 1000) : 1000;
+            node.AspectRatio = float.IsFinite(node.AspectRatio) ? Math.Clamp(node.AspectRatio, .001f, 1000) : 1;
+            if (node.AspectType is not ("FitWithinMaxSize" or "ScaleWithParentSize")) node.AspectType = "FitWithinMaxSize";
+            if (node.DominantAxis is not ("Width" or "Height")) node.DominantAxis = "Width";
+            if (node.HorizontalAlignment is not ("Left" or "Center" or "Right")) node.HorizontalAlignment = "Left";
+            if (node.VerticalAlignment is not ("Top" or "Center" or "Bottom")) node.VerticalAlignment = "Top";
+            if (node.SortOrder is not ("LayoutOrder" or "Name")) node.SortOrder = "LayoutOrder";
+            if (node.FlexMode is not ("None" or "Grow" or "Shrink" or "Fill" or "Custom")) node.FlexMode = "None";
+            node.GrowRatio = float.IsFinite(node.GrowRatio) ? Math.Clamp(node.GrowRatio, 0, 1000) : 0;
+            node.ShrinkRatio = float.IsFinite(node.ShrinkRatio) ? Math.Clamp(node.ShrinkRatio, 0, 1000) : 0;
+            if (node.ItemLineAlignment is not ("Automatic" or "Start" or "Center" or "End" or "Stretch")) node.ItemLineAlignment = "Automatic";
             node.FillColor ??= "#00BFFF";
             node.OutlineColor ??= "#FFFFFF";
             node.StartColor ??= "#FFFFFF";
@@ -388,6 +400,9 @@ public static class GameProjectStore
             for (var axis = 0; axis < 2; axis++) node.PlaneVelocity[axis] = float.IsFinite(node.PlaneVelocity[axis]) ? Math.Clamp(node.PlaneVelocity[axis], -10000, 10000) : 0;
             node.LineVelocity = float.IsFinite(node.LineVelocity) ? Math.Clamp(node.LineVelocity, -10000, 10000) : 0;
             node.MaxForce = float.IsFinite(node.MaxForce) ? Math.Clamp(node.MaxForce, 0, 1000000) : 1000;
+            if (node.AlignmentMode is not ("OneAttachment" or "TwoAttachment")) node.AlignmentMode = "TwoAttachment";
+            node.Responsiveness = float.IsFinite(node.Responsiveness) ? Math.Clamp(node.Responsiveness, 0, 200) : 10;
+            node.MaxVelocity = float.IsFinite(node.MaxVelocity) ? Math.Clamp(node.MaxVelocity, 0, 10000) : 100;
             if (node.VelocityConstraintMode is not ("Vector" or "Line" or "Plane")) node.VelocityConstraintMode = "Vector";
             node.TrailLifetime = float.IsFinite(node.TrailLifetime) ? Math.Clamp(node.TrailLifetime, .01f, 20) : 2;
             node.TrailMinLength = float.IsFinite(node.TrailMinLength) ? Math.Clamp(node.TrailMinLength, 0, 100) : .1f;
@@ -635,7 +650,7 @@ public static class GameProjectStore
 
     private static bool IsGuiObject(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
 
-    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UISizeConstraint" or "UITextSizeConstraint";
+    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UIAspectRatioConstraint" or "UISizeConstraint" or "UITextSizeConstraint" or "UIFlexItem";
 
     private static bool IsGuiSubtreeCompatible(SceneNode node, bool isGuiServiceChild, string? destinationType = null)
     {
@@ -655,7 +670,7 @@ public static class GameProjectStore
         if (node.Type == "Attachment")
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
-        if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity")
+        if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node))
@@ -675,7 +690,7 @@ public static class GameProjectStore
             return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Model") && node.Children.Count == 0;
         if (node.Type == "Explosion")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
-        if (node.Type == "WeldConstraint")
+        if (node.Type is "WeldConstraint" or "NoCollisionConstraint")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
         if (SceneNodeTypes.IsLight(node))
             return SceneNodeTypes.IsBasePartType(parentType)

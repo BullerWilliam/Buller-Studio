@@ -723,15 +723,15 @@ public partial class MainWindow : Window
             }
             AddLabel("Emits a visual effect from the parent part or Attachment.", "Enabled");
         }
-        if (selected.Type == "WeldConstraint")
+        if (selected.Type is "WeldConstraint" or "NoCollisionConstraint")
         {
-            propertyTarget = AddPropertySection("Weld Constraint");
+            propertyTarget = AddPropertySection(selected.Type == "WeldConstraint" ? "Weld Constraint" : "No Collision Constraint");
             AddCheckField("Enabled", selected.Enabled);
             var part0 = FindSceneNode(selected.Part0);
             var part1 = FindSceneNode(selected.Part1);
             AddObjectReferenceField("Part0", selected, SceneNodeTypes.IsBasePart(part0) ? part0 : null);
             AddObjectReferenceField("Part1", selected, SceneNodeTypes.IsBasePart(part1) ? part1 : null);
-            AddLabel("Joined parts move as one assembly during play.", "Part0");
+            AddLabel(selected.Type == "WeldConstraint" ? "Joined parts move as one assembly during play." : "The linked parts pass through each other during play.", "Part0");
         }
         if (selected.Type == "Attachment")
         {
@@ -799,6 +799,21 @@ public partial class MainWindow : Window
             }
             AddCheckField("ForceLimitsEnabled", selected.ForceLimitsEnabled);
             if (selected.ForceLimitsEnabled) AddTextField("MaxForce", selected.MaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (selected.Type == "AlignPosition")
+        {
+            propertyTarget = AddPropertySection("AlignPosition");
+            AddCheckField("Enabled", selected.Enabled);
+            AddComboField("Mode", ["OneAttachment", "TwoAttachment"], selected.AlignmentMode);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } alignAttachment0 ? alignAttachment0 : null);
+            if (selected.AlignmentMode == "TwoAttachment")
+                AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } alignAttachment1 ? alignAttachment1 : null);
+            else AddTextField("Position", VectorText(selected.Position));
+            AddTextField("Responsiveness", selected.Responsiveness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("MaxVelocity", selected.MaxVelocity.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("MaxForce", selected.MaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("RigidityEnabled", selected.RigidityEnabled);
+            AddCheckField("ReactionForceEnabled", selected.ReactionForceEnabled);
         }
         if (selected.Type == "Humanoid")
         {
@@ -1002,7 +1017,18 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("Layout");
             AddComboField("LayoutDirection", ["Vertical", "Horizontal"], node.LayoutDirection);
+            AddComboField("HorizontalAlignment", ["Left", "Center", "Right"], node.HorizontalAlignment);
+            AddComboField("VerticalAlignment", ["Top", "Center", "Bottom"], node.VerticalAlignment);
+            AddComboField("SortOrder", ["LayoutOrder", "Name"], node.SortOrder);
             AddTextField("LayoutSpacing", node.LayoutSpacing.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (node.Type == "UIFlexItem")
+        {
+            propertyTarget = AddPropertySection("Flex");
+            AddComboField("FlexMode", ["None", "Grow", "Shrink", "Fill", "Custom"], node.FlexMode);
+            AddTextField("GrowRatio", node.GrowRatio.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("ShrinkRatio", node.ShrinkRatio.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddComboField("ItemLineAlignment", ["Automatic", "Start", "Center", "End", "Stretch"], node.ItemLineAlignment);
         }
         if (node.Type == "UIGridLayout")
         {
@@ -1018,10 +1044,15 @@ public partial class MainWindow : Window
             AddTextField("TableColumns", node.TableColumns.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("LayoutSpacing", node.LayoutSpacing.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
-        if (node.Type == "UIAspectRatio")
+        if (node.Type is "UIAspectRatio" or "UIAspectRatioConstraint")
         {
             propertyTarget = AddPropertySection("Layout");
             AddTextField("AspectRatio", node.AspectRatio.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (node.Type == "UIAspectRatioConstraint")
+            {
+                AddComboField("AspectType", ["FitWithinMaxSize", "ScaleWithParentSize"], node.AspectType);
+                AddComboField("DominantAxis", ["Width", "Height"], node.DominantAxis);
+            }
         }
         if (node.Type == "UISizeConstraint")
         {
@@ -1511,6 +1542,13 @@ public partial class MainWindow : Window
             if (property == "LineVelocity") target.LineVelocity = Math.Clamp(velocityNumber, -10000, 10000);
             else target.MaxForce = Math.Clamp(velocityNumber, 0, 1000000);
         }
+        else if (target.Type == "AlignPosition" && property is ("Responsiveness" or "MaxVelocity" or "MaxForce")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var alignmentNumber) && float.IsFinite(alignmentNumber))
+        {
+            if (property == "Responsiveness") target.Responsiveness = Math.Clamp(alignmentNumber, 0, 200);
+            else if (property == "MaxVelocity") target.MaxVelocity = Math.Clamp(alignmentNumber, 0, 10000);
+            else target.MaxForce = Math.Clamp(alignmentNumber, 0, 1000000);
+        }
         else if (property == "Gravity" && target.Type == "Workspace" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gravity) && float.IsFinite(gravity)) target.Gravity = Math.Clamp(gravity, 0, 1000);
         else if (target.Type == "Humanoid" && property is ("Health" or "MaxHealth" or "WalkSpeed" or "JumpPower")
             && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var humanoidValue) && float.IsFinite(humanoidValue))
@@ -1549,15 +1587,17 @@ public partial class MainWindow : Window
         else if (property == "Text") target.Text = text;
         else if (property == "TextColor") target.TextColor = text;
         else if (property == "StrokeColor") target.StrokeColor = text;
-        else if (property == "LayoutSpacing" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var spacing)) target.LayoutSpacing = Math.Max(0, spacing);
+        else if (property == "LayoutSpacing" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var spacing) && float.IsFinite(spacing)) target.LayoutSpacing = Math.Clamp(spacing, 0, 1000000);
+        else if (property == "GrowRatio" && target.Type == "UIFlexItem" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var growRatio) && float.IsFinite(growRatio)) target.GrowRatio = Math.Clamp(growRatio, 0, 1000);
+        else if (property == "ShrinkRatio" && target.Type == "UIFlexItem" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var shrinkRatio) && float.IsFinite(shrinkRatio)) target.ShrinkRatio = Math.Clamp(shrinkRatio, 0, 1000);
         else if (property == "TableColumns" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var tableColumns)) target.TableColumns = Math.Clamp(tableColumns, 1, 24);
         else if (property == "FillDirectionMaxCells" && target.Type == "UIGridLayout" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var maxCells)) target.FillDirectionMaxCells = Math.Clamp(maxCells, 0, 1000);
         else if (property == "ZIndex" && IsGuiNode(target) && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var zIndex)) target.ZIndex = zIndex;
         else if (property == "LayoutOrder" && IsGuiNode(target) && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var layoutOrder)) target.LayoutOrder = layoutOrder;
-        else if (property == "AspectRatio" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var aspect)) target.AspectRatio = Math.Max(.001f, aspect);
+        else if (property == "AspectRatio" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var aspect) && float.IsFinite(aspect)) target.AspectRatio = Math.Clamp(aspect, .001f, 1000);
         else if (property == "CornerRadius" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var cornerRadius)) target.CornerRadius = Math.Max(0, cornerRadius);
         else if (property == "StrokeThickness" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var strokeThickness)) target.StrokeThickness = Math.Max(0, strokeThickness);
-        else if (property == "TextSize" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var textSize)) target.TextSize = Math.Clamp(textSize, 1, 200);
+        else if (property == "TextSize" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var textSize) && float.IsFinite(textSize)) target.TextSize = Math.Clamp(textSize, 1, 200);
         else if (property.StartsWith("Skybox", StringComparison.Ordinal) && target.Type is "Workspace" or "Sky")
         {
             switch (property)
@@ -1666,7 +1706,9 @@ public partial class MainWindow : Window
             "Rate" => node.Type == "ParticleEmitter" ? node.Rate : (float?)null,
             "TextureLength" => node.Type == "Trail" ? node.TextureLength : (float?)null,
             "LineVelocity" => node.Type == "LinearVelocity" ? node.LineVelocity : (float?)null,
-            "MaxForce" => node.Type == "LinearVelocity" ? node.MaxForce : (float?)null,
+            "MaxForce" => node.Type is "LinearVelocity" or "AlignPosition" ? node.MaxForce : (float?)null,
+            "MaxVelocity" => node.Type == "AlignPosition" ? node.MaxVelocity : (float?)null,
+            "Responsiveness" => node.Type == "AlignPosition" ? node.Responsiveness : (float?)null,
             "TimeScale" => SceneNodeTypes.IsParticleEffect(node) ? node.TimeScale : (float?)null,
             "Heat" => node.Type == "Fire" ? node.Heat : (float?)null,
             "RiseVelocity" => node.Type == "Smoke" ? node.RiseVelocity : (float?)null,
@@ -1716,6 +1758,8 @@ public partial class MainWindow : Window
         if (property == "Enabled") target.Enabled = box.IsChecked == true;
         if (property == "FaceCamera" && target.Type == "Trail") target.FaceCamera = box.IsChecked == true;
         if (property == "ForceLimitsEnabled" && target.Type == "LinearVelocity") target.ForceLimitsEnabled = box.IsChecked == true;
+        if (property == "RigidityEnabled" && target.Type == "AlignPosition") target.RigidityEnabled = box.IsChecked == true;
+        if (property == "ReactionForceEnabled" && target.Type == "AlignPosition") target.ReactionForceEnabled = box.IsChecked == true;
         if (property == "Looped") target.Looped = box.IsChecked == true;
         if (property == "Playing") target.Playing = box.IsChecked == true;
         if (property == "AutoManageCharacter" && target.Type == "Workspace") target.AutoManageCharacter = box.IsChecked == true;
@@ -1731,13 +1775,14 @@ public partial class MainWindow : Window
     private void PropertyCombo_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (project is null || sender is not ComboBox combo || combo.Tag is not string property || combo.DataContext is not string targetId || FindSceneNode(targetId) is not { } target || combo.SelectedItem is not string value) return;
-        if (property == "Mode" && value == "Subject" && !SceneNodeTypes.IsBasePart(FindSceneNode(target.Subject)))
+        if (property == "Mode" && target.Type == "Camera" && value == "Subject" && !SceneNodeTypes.IsBasePart(FindSceneNode(target.Subject)))
         {
             SetStatus("Select a BasePart for the camera subject first.");
             RenderProperties();
             return;
         }
-        if (property == "Mode") target.CameraMode = value;
+        if (property == "Mode" && target.Type == "Camera") target.CameraMode = value;
+        if (property == "Mode" && target.Type == "AlignPosition" && value is ("OneAttachment" or "TwoAttachment")) target.AlignmentMode = value;
         if (property == "Shape" && target.Type == "Part") target.Shape = value;
         if (property == "Material" && SceneNodeTypes.IsBasePart(target)) target.Material = value;
         if (property == "Face" && target.Type is ("Decal" or "Texture" or "SurfaceLight") && SceneNodeTypes.IsFace(value)) target.Face = value;
@@ -1746,8 +1791,15 @@ public partial class MainWindow : Window
         if (property == "RelativeTo" && target.Type is ("VectorForce" or "LinearVelocity") && value is ("World" or "Attachment0")) target.RelativeTo = value;
         if (property == "VelocityConstraintMode" && target.Type == "LinearVelocity" && value is ("Vector" or "Line" or "Plane")) target.VelocityConstraintMode = value;
         if (property == "LayoutDirection") target.LayoutDirection = value;
+        if (property == "HorizontalAlignment" && target.Type == "UIListLayout" && value is ("Left" or "Center" or "Right")) target.HorizontalAlignment = value;
+        if (property == "VerticalAlignment" && target.Type == "UIListLayout" && value is ("Top" or "Center" or "Bottom")) target.VerticalAlignment = value;
+        if (property == "SortOrder" && target.Type == "UIListLayout" && value is ("LayoutOrder" or "Name")) target.SortOrder = value;
+        if (property == "FlexMode" && target.Type == "UIFlexItem" && value is ("None" or "Grow" or "Shrink" or "Fill" or "Custom")) target.FlexMode = value;
+        if (property == "ItemLineAlignment" && target.Type == "UIFlexItem" && value is ("Automatic" or "Start" or "Center" or "End" or "Stretch")) target.ItemLineAlignment = value;
         if (property == "FillDirection" && target.Type == "UIGridLayout") target.FillDirection = value;
-        if (property == "Mode") renderer?.UpdateCamera(project);
+        if (property == "AspectType" && target.Type == "UIAspectRatioConstraint" && value is ("FitWithinMaxSize" or "ScaleWithParentSize")) target.AspectType = value;
+        if (property == "DominantAxis" && target.Type == "UIAspectRatioConstraint" && value is ("Width" or "Height")) target.DominantAxis = value;
+        if (property == "Mode" && target.Type == "Camera") renderer?.UpdateCamera(project);
         if (property is "Shape" or "Material" or "Face" or "EmissionDirection" or "TextureMode") renderer?.UpdateNode(target, project);
         if (IsGuiNode(target)) RefreshGuiPreview();
         RecordEdit();
@@ -1813,7 +1865,7 @@ public partial class MainWindow : Window
         {
             if (!SceneNodeTypes.IsBasePart(value) || value.Id == (property == "Part0" ? target.Part1 : target.Part0))
             {
-                SetStatus("Choose a different BasePart for each weld endpoint.");
+                SetStatus("Choose a different BasePart for each constraint endpoint.");
                 return true;
             }
             propertyPickerTargetId = null;
@@ -1955,9 +2007,9 @@ public partial class MainWindow : Window
         }
         var node = new SceneNode { Type = type is "Ball" or "Cylinder" ? "Part" : type, Name = name };
         if (type is "Ball" or "Cylinder") node.Shape = type;
-        if (type == "WeldConstraint" && SceneNodeTypes.IsBasePart(parent)) node.Part0 = parent.Id;
+        if (type is "WeldConstraint" or "NoCollisionConstraint" && SceneNodeTypes.IsBasePart(parent)) node.Part0 = parent.Id;
         if (type == "VectorForce") node.RelativeTo = "Attachment0";
-        if (type is "VectorForce" or "LinearVelocity") node.Attachment0 = parent.Type == "Attachment" ? parent.Id
+        if (type is "VectorForce" or "LinearVelocity" or "AlignPosition") node.Attachment0 = parent.Type == "Attachment" ? parent.Id
             : SceneNodeTypes.IsBasePart(parent) ? parent.Children.FirstOrDefault(child => child.Type == "Attachment")?.Id ?? string.Empty : string.Empty;
         if (SceneNodeTypes.IsBasePart(node)) node.Position = [0, 1, 0];
         if (type == "SpawnLocation") { node.Size = [6, 1, 6]; node.Position = [0, .5f, 0]; node.Color = "#72BF9D"; node.Material = "Metal"; }
@@ -1997,8 +2049,8 @@ public partial class MainWindow : Window
         var choices = IsGuiNode(parent)
             ? (parent.Type == "Gui"
                 ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") }
-                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatio", "UIAspectRatio"), ("UISizeConstraint", "UISizeConstraint"), ("UITextSizeConstraint", "UITextSizeConstraint"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
-            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("VectorForce", "VectorForce"), ("LinearVelocity", "LinearVelocity"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
+                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatioConstraint", "UIAspectRatioConstraint"), ("UISizeConstraint", "UISizeConstraint"), ("UITextSizeConstraint", "UITextSizeConstraint"), ("UIFlexItem", "UIFlexItem"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
+            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("VectorForce", "VectorForce"), ("LinearVelocity", "LinearVelocity"), ("AlignPosition", "AlignPosition"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("NoCollisionConstraint", "NoCollisionConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
         choices = choices.Concat(new (string Type, string Name)[] { ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky"), ("Fire", "Fire"), ("Smoke", "Smoke"), ("Sparkles", "Sparkles"), ("ParticleEmitter", "ParticleEmitter") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
@@ -2722,8 +2774,14 @@ public partial class MainWindow : Window
         }
         if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "Lighting", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Gui", "Debris", "CollectionService", "RunService"];
         if (Regex.IsMatch(source, @"\bInstance\.new\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXCreatableClassNameCompletions;
-        if (Regex.IsMatch(source, @"\b(?:Mode|CameraMode)\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject"];
+        if (Regex.IsMatch(source, @"\bCameraMode\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject"];
+        if (Regex.IsMatch(source, @"\bMode\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject", "OneAttachment", "TwoAttachment"];
         if (Regex.IsMatch(source, @"\bLayoutDirection\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Vertical", "Horizontal"];
+        if (Regex.IsMatch(source, @"\bHorizontalAlignment\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Left", "Center", "Right"];
+        if (Regex.IsMatch(source, @"\bVerticalAlignment\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Top", "Center", "Bottom"];
+        if (Regex.IsMatch(source, @"\bSortOrder\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["LayoutOrder", "Name"];
+        if (Regex.IsMatch(source, @"\bFlexMode\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["None", "Grow", "Shrink", "Fill", "Custom"];
+        if (Regex.IsMatch(source, @"\bItemLineAlignment\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Automatic", "Start", "Center", "End", "Stretch"];
         if (Regex.IsMatch(source, @"\bFillDirection\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Horizontal", "Vertical"];
         if (Regex.IsMatch(source, @"\bIsA\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXClassNameCompletions;
         var propertyMatch = Regex.Match(source, @"(?:SetProperty|GetProperty)\s*\(\s*['""][^'""\r\n]*$", RegexOptions.IgnoreCase);
@@ -3064,7 +3122,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "CollectionService", "RunService", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UISizeConstraint", "UITextSizeConstraint"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "CollectionService", "RunService", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -3112,10 +3170,11 @@ public partial class MainWindow : Window
         if (receiver == "game.CollectionService") return ["Name", "ClassName", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
         if (receiver == "game.RunService") return ["Name", "ClassName", "IsRunning", "IsEdit", "IsStudio", "PreSimulation", "Stepped", "PostSimulation", "Heartbeat", "PreRender", "RenderStepped"];
         if (receiver == "Instance") return ["new"];
-        if (receiver == "Enum") return ["CameraMode", "LayoutDirection", "FillDirection", "RaycastFilterType", "NormalId"];
+        if (receiver == "Enum") return ["CameraMode", "LayoutDirection", "FillDirection", "PositionAlignmentMode", "RaycastFilterType", "NormalId"];
         if (receiver == "Enum.NormalId") return ["Top", "Bottom", "Front", "Back", "Left", "Right"];
         if (receiver == "Enum.CameraMode") return ["Custom", "Subject"];
         if (receiver == "Enum.LayoutDirection") return ["Horizontal", "Vertical"];
+        if (receiver == "Enum.PositionAlignmentMode") return ["OneAttachment", "TwoAttachment"];
         if (receiver == "Enum.FillDirection") return ["Horizontal", "Vertical"];
         if (receiver == "Enum.RaycastFilterType") return ["Exclude", "Include"];
         if (receiver == "RaycastParams") return ["new"];
@@ -3182,11 +3241,12 @@ public partial class MainWindow : Window
         if (node.Type == "ProximityPrompt") members.AddRange(["Enabled", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered"]);
         if (node.Type == "ClickDetector") members.AddRange(["Enabled", "MaxActivationDistance", "MouseClick"]);
         if (node.Type == "Highlight") members.AddRange(["Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency"]);
-        if (node.Type == "WeldConstraint") members.AddRange(["Enabled", "Part0", "Part1"]);
+        if (node.Type is "WeldConstraint" or "NoCollisionConstraint") members.AddRange(["Enabled", "Part0", "Part1"]);
         if (node.Type == "Beam") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Width0", "Width1", "Color", "Transparency"]);
         if (node.Type == "Trail") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Lifetime", "MinLength", "MaxLength", "WidthScale", "Color", "Transparency", "Texture", "FaceCamera", "TextureMode", "TextureLength", "Clear"]);
         if (node.Type == "VectorForce") members.AddRange(["Enabled", "Attachment0", "Force", "RelativeTo"]);
         if (node.Type == "LinearVelocity") members.AddRange(["Enabled", "Attachment0", "RelativeTo", "VelocityConstraintMode", "VectorVelocity", "LineDirection", "LineVelocity", "PlaneVelocity", "PrimaryTangentAxis", "SecondaryTangentAxis", "ForceLimitsEnabled", "MaxForce"]);
+        if (node.Type == "AlignPosition") members.AddRange(["Enabled", "Mode", "Attachment0", "Attachment1", "Position", "Responsiveness", "MaxVelocity", "MaxForce", "RigidityEnabled", "ReactionForceEnabled"]);
         if (node.Type == "Attachment") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
         if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "Raycast", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
@@ -3205,10 +3265,12 @@ public partial class MainWindow : Window
         if (node.Type == "UIGradient") members.AddRange(["Enabled", "StartColor", "EndColor", "Rotation"]);
         if (node.Type == "UIPadding") members.AddRange(["PaddingLeft", "PaddingTop", "PaddingRight", "PaddingBottom"]);
         if (node.Type == "UIScale") members.Add("Scale");
-        if (node.Type == "UIListLayout") members.AddRange(["LayoutDirection", "LayoutSpacing"]);
+        if (node.Type == "UIListLayout") members.AddRange(["LayoutDirection", "LayoutSpacing", "HorizontalAlignment", "VerticalAlignment", "SortOrder"]);
+        if (node.Type == "UIFlexItem") members.AddRange(["FlexMode", "GrowRatio", "ShrinkRatio", "ItemLineAlignment"]);
         if (node.Type == "UIGridLayout") members.AddRange(["CellSize", "CellPadding", "FillDirection", "FillDirectionMaxCells"]);
         if (node.Type == "UITableLayout") members.AddRange(["LayoutSpacing", "TableColumns"]);
-        if (node.Type == "UIAspectRatio") members.Add("AspectRatio");
+        if (node.Type is "UIAspectRatio" or "UIAspectRatioConstraint") members.Add("AspectRatio");
+        if (node.Type == "UIAspectRatioConstraint") members.AddRange(["AspectType", "DominantAxis"]);
         if (node.Type == "UISizeConstraint") members.AddRange(["MinSize", "MaxSize"]);
         if (node.Type == "UITextSizeConstraint") members.AddRange(["MinTextSize", "MaxTextSize"]);
         return members.Concat(node.Children.Select(child => child.Name)).Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -3476,9 +3538,9 @@ public partial class MainWindow : Window
                 "parent" or "subject" => "Instance",
                 "part0" or "part1" => "BasePart",
                 "touched" or "activated" or "mousebutton1click" or "textchanged" or "triggered" or "mouseclick" or "hit" => "RBXScriptSignal",
-                "fieldofview" or "textsize" or "mintextsize" or "maxtextsize" or "strokethickness" or "cornerradius" or "layoutspacing" or "tablecolumns" or "aspectratio" or "transparency" or "backgroundtransparency" or "texttransparency" or "imagetransparency" or "filltransparency" or "outlinetransparency" or "brightness" or "range" or "angle" or "maxactivationdistance" or "blastradius" or "blastpressure" or "destroyjointradiuspercent" => "number",
+                "fieldofview" or "textsize" or "mintextsize" or "maxtextsize" or "strokethickness" or "cornerradius" or "layoutspacing" or "growratio" or "shrinkratio" or "tablecolumns" or "aspectratio" or "transparency" or "backgroundtransparency" or "texttransparency" or "imagetransparency" or "filltransparency" or "outlinetransparency" or "brightness" or "range" or "angle" or "maxactivationdistance" or "blastradius" or "blastpressure" or "destroyjointradiuspercent" => "number",
                 "anchored" or "cancollide" or "cantouch" or "castshadow" or "visible" or "enabled" or "textscaled" => "boolean",
-                "name" or "id" or "classname" or "type" or "texture" or "asset" or "face" or "text" or "textcolor" or "strokecolor" or "layoutdirection" or "cameramode" or "mode" or "skyboxfront" or "skyboxback" or "skyboxleft" or "skyboxright" or "skyboxtop" or "skyboxbottom" or "actiontext" or "objecttext" => "string",
+                "name" or "id" or "classname" or "type" or "texture" or "asset" or "face" or "text" or "textcolor" or "strokecolor" or "layoutdirection" or "horizontalalignment" or "verticalalignment" or "sortorder" or "flexmode" or "itemlinealignment" or "aspecttype" or "dominantaxis" or "cameramode" or "mode" or "skyboxfront" or "skyboxback" or "skyboxleft" or "skyboxright" or "skyboxtop" or "skyboxbottom" or "actiontext" or "objecttext" => "string",
                 _ => null
             };
             if (propertyType is not null) return propertyType;
@@ -3506,6 +3568,11 @@ public partial class MainWindow : Window
             ("LinearVelocity", "linevelocity" or "maxforce") => "number",
             ("LinearVelocity", "forcelimitsenabled") => "boolean",
             ("LinearVelocity", "relativeto" or "velocityconstraintmode") => "string",
+            ("AlignPosition", "attachment0" or "attachment1") => "Attachment",
+            ("AlignPosition", "position") => "Vector3",
+            ("AlignPosition", "responsiveness" or "maxvelocity" or "maxforce") => "number",
+            ("AlignPosition", "rigidityenabled" or "reactionforceenabled") => "boolean",
+            ("AlignPosition", "mode") => "string",
             ("Vector2", "x" or "y") => "number",
             ("NumberRange", "min" or "max") => "number",
             ("NumberSequence", "value") => "number",
@@ -3628,7 +3695,8 @@ public partial class MainWindow : Window
         if (member.Equals("Character", StringComparison.OrdinalIgnoreCase) && instance.Type == "Player") return FindSceneNode(instance.Character);
         if (member.Equals("Part0", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part0);
         if (member.Equals("Part1", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part1);
-        if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "VectorForce" or "LinearVelocity")) return FindSceneNode(instance.Attachment0);
+        if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition")) return FindSceneNode(instance.Attachment0);
+        if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "AlignPosition")) return FindSceneNode(instance.Attachment1);
         if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail")) return FindSceneNode(instance.Attachment1);
         return instance.Children.FirstOrDefault(child => child.Name == member || child.Id == member);
     }
@@ -3684,12 +3752,12 @@ public partial class MainWindow : Window
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "BackgroundTransparency", "TextTransparency", "ImageTransparency", "MinSize", "MaxSize", "MinTextSize", "MaxTextSize", "TextScaled", "TextSize", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Raycast", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "TakeDamage", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal", "CollectionService"
+        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "BackgroundTransparency", "TextTransparency", "ImageTransparency", "MinSize", "MaxSize", "AspectType", "DominantAxis", "MinTextSize", "MaxTextSize", "TextScaled", "TextSize", "Texture", "Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Raycast", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "TakeDamage", "Enabled", "Part0", "Part1", "Attachment0", "Attachment1", "Width0", "Width1", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal", "CollectionService"
     ];
 
     private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Fire", "Invoke", "Disconnect", "TakeDamage", "AddItem", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UISizeConstraint", "UITextSizeConstraint"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UISizeConstraint", "UITextSizeConstraint"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -3755,7 +3823,7 @@ public partial class MainWindow : Window
                   <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word><Word>task</Word><Word>wait</Word>
                   <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>Lighting</Word><Word>ReplicatedStorage</Word><Word>ServerScriptService</Word><Word>ServerStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>LookAtRotation</Word><Word>Color3</Word><Word>GetService</Word>
                 </Keywords>
-                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>NumberRange</Word><Word>NumberSequence</Word><Word>NumberSequenceKeypoint</Word><Word>ColorSequence</Word><Word>ColorSequenceKeypoint</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ParticleEmitter</Word><Word>Trail</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>UISizeConstraint</Word><Word>UITextSizeConstraint</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
+                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>NumberRange</Word><Word>NumberSequence</Word><Word>NumberSequenceKeypoint</Word><Word>ColorSequence</Word><Word>ColorSequenceKeypoint</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Lighting</Word><Word>Sky</Word><Word>Camera</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ParticleEmitter</Word><Word>Trail</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>UIAspectRatioConstraint</Word><Word>UISizeConstraint</Word><Word>UITextSizeConstraint</Word><Word>UIFlexItem</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
                 <Rule color="LuauKeyword">(?m)^\s*(?:export\s+)?type\b</Rule>
                 <Rule color="Method">(?&lt;=[:.])[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
                 <Rule color="FunctionName">(?&lt;=function\s+)[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*</Rule>
@@ -4399,12 +4467,12 @@ public partial class MainWindow : Window
             .ToArray();
         if (removedNodes.Length == 0) return;
         var removedIds = removedNodes.Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
-        foreach (var weld in GameProjectStore.Flatten(project).Where(node => node.Type == "WeldConstraint"))
+        foreach (var weld in GameProjectStore.Flatten(project).Where(node => node.Type is "WeldConstraint" or "NoCollisionConstraint"))
         {
             if (removedIds.Contains(weld.Part0)) weld.Part0 = string.Empty;
             if (removedIds.Contains(weld.Part1)) weld.Part1 = string.Empty;
         }
-        foreach (var beam in GameProjectStore.Flatten(project).Where(node => node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity"))
+        foreach (var beam in GameProjectStore.Flatten(project).Where(node => node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition"))
         {
             if (removedIds.Contains(beam.Attachment0)) beam.Attachment0 = string.Empty;
             if (removedIds.Contains(beam.Attachment1)) beam.Attachment1 = string.Empty;
@@ -4433,7 +4501,7 @@ public partial class MainWindow : Window
     private void UngroupSelected_Click(object sender, RoutedEventArgs e) => UngroupSelected();
 
     private bool CanGroupSelected() => project is not null && selected is not null
-        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "WeldConstraint" or "Humanoid")
+        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "WeldConstraint" or "NoCollisionConstraint" or "Humanoid")
         && !SceneNodeTypes.IsLight(selected)
         && FindParentNode(selected) is not null;
 
@@ -4709,6 +4777,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Trail"] = "Trail — Draws a fading ribbon between two moving Attachments.",
         ["VectorForce"] = "VectorForce — Applies a world or attachment-relative force to a part during play.",
         ["LinearVelocity"] = "LinearVelocity — Maintains a target velocity along a vector, line, or plane during play.",
+        ["AlignPosition"] = "AlignPosition — Moves Attachment0 toward a world position or Attachment1 during play.",
         ["Rate"] = "number — Automatically emitted particles per second, up to 200.",
         ["Speed"] = "NumberRange — Emission speed range in studs per second.",
         ["Lifetime"] = "NumberRange — Particle lifetime range in seconds.",
@@ -4807,13 +4876,22 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["StrokeColor"] = "string — UIOutline or UIStroke hex color.",
         ["StrokeThickness"] = "number — UIOutline or UIStroke width in pixels.",
         ["LayoutDirection"] = "string — UIListLayout direction: Vertical or Horizontal.",
+        ["HorizontalAlignment"] = "string — align UIListLayout items and the list horizontally.",
+        ["VerticalAlignment"] = "string — align UIListLayout items and the list vertically.",
+        ["SortOrder"] = "string — arrange UIListLayout items by LayoutOrder or Name.",
+        ["FlexMode"] = "string — grow, shrink, fill, or customize a GUI item in a UIListLayout.",
+        ["GrowRatio"] = "number — relative growth weight when UIFlexItem FlexMode is Custom.",
+        ["ShrinkRatio"] = "number — relative shrink weight when UIFlexItem FlexMode is Custom.",
+        ["ItemLineAlignment"] = "string — align this UIFlexItem across the list line.",
         ["LayoutSpacing"] = "number — Pixel spacing used by a UI layout.",
         ["TableColumns"] = "number — UITableLayout column count.",
         ["CellSize"] = "UDim2 — Width and height of UIGridLayout cells.",
         ["CellPadding"] = "UDim2 — Horizontal and vertical gap between UIGridLayout cells.",
         ["FillDirection"] = "string — Fill UIGridLayout horizontally or vertically.",
         ["FillDirectionMaxCells"] = "integer — Maximum grid cells per row or column; zero uses available space.",
-        ["AspectRatio"] = "number — UIAspectRatio width-to-height ratio.",
+        ["AspectRatio"] = "number — width-to-height ratio for UIAspectRatioConstraint.",
+        ["AspectType"] = "string — fit within the object's size or scale with its parent.",
+        ["DominantAxis"] = "string — width or height axis used by UIAspectRatioConstraint.",
         ["MinSize"] = "Vector2 — minimum GUI size in pixels for UISizeConstraint.",
         ["MaxSize"] = "Vector2 — maximum GUI size in pixels for UISizeConstraint.",
         ["TextScaled"] = "boolean — fit GUI text to its container.",

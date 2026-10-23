@@ -24,6 +24,7 @@ public sealed class PhysicsSimulationService
         var parts = GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
         var appliedForces = BuildForceMap(parts);
         var velocityTargets = BuildVelocityMap(parts);
+        var ignoredPairs = BuildIgnoredCollisionPairs(parts);
         var weldedGroups = BuildWeldedGroups(parts);
         var activeAssemblies = weldedGroups.Values.Distinct().Select(AssemblyKey).ToHashSet(StringComparer.Ordinal);
         foreach (var key in weldedVelocities.Keys.Where(key => !activeAssemblies.Contains(key)).ToArray()) weldedVelocities.Remove(key);
@@ -32,7 +33,10 @@ public sealed class PhysicsSimulationService
         while (remaining > 0)
         {
             var deltaTime = Math.Min(remaining, .02f);
-            SimulateStep(parts, weldedGroups, appliedForces, velocityTargets, deltaTime);
+            var stepForces = new Dictionary<string, Vector3>(appliedForces, StringComparer.Ordinal);
+            foreach (var (partId, force) in BuildAlignmentForceMap(parts))
+                stepForces[partId] = stepForces.GetValueOrDefault(partId) + force;
+            SimulateStep(parts, weldedGroups, stepForces, velocityTargets, ignoredPairs, deltaTime);
             remaining -= deltaTime;
         }
     }
@@ -40,13 +44,32 @@ public sealed class PhysicsSimulationService
     public bool IsGrounded(SceneNode part)
     {
         if (part.Anchored || !part.CanCollide || part.Velocity[1] > .01f) return false;
-        foreach (var other in GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart))
+        var parts = GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
+        var ignoredPairs = BuildIgnoredCollisionPairs(parts);
+        foreach (var other in parts)
         {
             if (ReferenceEquals(other, part) || !other.CanCollide) continue;
+            if (ignoredPairs.Contains(CollisionPair(part.Id, other.Id))) continue;
             if (CollisionGeometry.SweepFraction(part, other, 1, -.08f) < 1) return true;
         }
         return false;
     }
+
+    private HashSet<(string, string)> BuildIgnoredCollisionPairs(SceneNode[] parts)
+    {
+        var partIds = parts.Select(part => part.Id).ToHashSet(StringComparer.Ordinal);
+        var result = new HashSet<(string, string)>();
+        foreach (var constraint in GameProjectStore.Flatten(project.Workspace.Children)
+                     .Where(node => node.Type == "NoCollisionConstraint" && node.Enabled))
+        {
+            if (constraint.Part0 == constraint.Part1 || !partIds.Contains(constraint.Part0) || !partIds.Contains(constraint.Part1)) continue;
+            result.Add(CollisionPair(constraint.Part0, constraint.Part1));
+        }
+        return result;
+    }
+
+    private static (string, string) CollisionPair(string first, string second) =>
+        string.CompareOrdinal(first, second) <= 0 ? (first, second) : (second, first);
 
     private Dictionary<string, SceneNode[]> BuildWeldedGroups(SceneNode[] parts)
     {
@@ -95,6 +118,48 @@ public sealed class PhysicsSimulationService
                 force = Vector3.TransformNormal(force,
                     RotationMath.FromDegrees(owner.attachment.Rotation) * RotationMath.FromDegrees(owner.part.Rotation));
             forces[owner.part.Id] = forces.GetValueOrDefault(owner.part.Id) + force;
+        }
+        return forces;
+    }
+
+    private Dictionary<string, Vector3> BuildAlignmentForceMap(SceneNode[] parts)
+    {
+        var owners = parts.SelectMany(part => part.Children.Where(child => child.Type == "Attachment")
+            .Select(attachment => (attachment, part)))
+            .ToDictionary(pair => pair.attachment.Id, pair => pair, StringComparer.Ordinal);
+        var forces = new Dictionary<string, Vector3>(StringComparer.Ordinal);
+        static Vector3 Vector(float[] values) => new(values[0], values[1], values[2]);
+        static Vector3 WorldPosition(SceneNode attachment, SceneNode part) =>
+            Vector(part.Position) + Vector3.Transform(Vector(attachment.Position), RotationMath.FromDegrees(part.Rotation));
+        foreach (var constraint in GameProjectStore.Flatten(project.Workspace.Children)
+                     .Where(node => node.Type == "AlignPosition" && node.Enabled))
+        {
+            if (!owners.TryGetValue(constraint.Attachment0, out var first)) continue;
+            var target = Vector(constraint.Position);
+            var targetVelocity = Vector3.Zero;
+            SceneNode? reactionPart = null;
+            if (constraint.AlignmentMode == "TwoAttachment")
+            {
+                if (!owners.TryGetValue(constraint.Attachment1, out var second)) continue;
+                if (second.part.Id == first.part.Id) continue;
+                target = WorldPosition(second.attachment, second.part);
+                targetVelocity = Vector(second.part.Velocity);
+                reactionPart = second.part;
+            }
+            var error = target - WorldPosition(first.attachment, first.part);
+            var response = constraint.RigidityEnabled ? 50 : Math.Clamp(constraint.Responsiveness, 0, 200);
+            var desiredVelocity = error * response;
+            var maxVelocity = constraint.RigidityEnabled ? 10000 : Math.Clamp(constraint.MaxVelocity, 0, 10000);
+            if (desiredVelocity.Length() > maxVelocity && desiredVelocity.Length() > 0)
+                desiredVelocity *= maxVelocity / desiredVelocity.Length();
+            var force = (desiredVelocity + targetVelocity - Vector(first.part.Velocity)) * response * PartMass(first.part);
+            var maxForce = constraint.RigidityEnabled ? 1000000 : Math.Clamp(constraint.MaxForce, 0, 1000000);
+            var magnitude = force.Length();
+            if (!float.IsFinite(magnitude) || magnitude <= 0 || maxForce <= 0) continue;
+            if (magnitude > maxForce) force *= maxForce / magnitude;
+            forces[first.part.Id] = forces.GetValueOrDefault(first.part.Id) + force;
+            if (reactionPart is not null && constraint.ReactionForceEnabled && reactionPart.Id != first.part.Id)
+                forces[reactionPart.Id] = forces.GetValueOrDefault(reactionPart.Id) - force;
         }
         return forces;
     }
@@ -166,21 +231,23 @@ public sealed class PhysicsSimulationService
     }
 
     private void SimulateStep(SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups,
-        Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets, float deltaTime)
+        Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets,
+        HashSet<(string, string)> ignoredPairs, float deltaTime)
     {
         foreach (var part in parts)
         {
             if (weldedGroups.TryGetValue(part.Id, out var group))
             {
-                if (ReferenceEquals(group[0], part)) SimulateWeldedGroup(group, parts, appliedForces, velocityTargets, deltaTime);
+                if (ReferenceEquals(group[0], part)) SimulateWeldedGroup(group, parts, appliedForces, velocityTargets, ignoredPairs, deltaTime);
                 continue;
             }
-            SimulateSingle(part, parts, appliedForces, velocityTargets, deltaTime);
+            SimulateSingle(part, parts, appliedForces, velocityTargets, ignoredPairs, deltaTime);
         }
     }
 
     private void SimulateWeldedGroup(SceneNode[] group, SceneNode[] parts,
-        Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets, float deltaTime)
+        Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets,
+        HashSet<(string, string)> ignoredPairs, float deltaTime)
     {
         var assemblyKey = AssemblyKey(group);
         ReconcileWeldedTransforms(group, assemblyKey);
@@ -220,6 +287,7 @@ public sealed class PhysicsSimulationService
             foreach (var other in parts)
             {
                 if (memberIds.Contains(other.Id) || !other.CanCollide) continue;
+                if (ignoredPairs.Contains(CollisionPair(member.Id, other.Id))) continue;
                 var fraction = CollisionGeometry.SweepFraction(member, other, axis, desiredMotion);
                 if (desiredMotion > 0) allowedMotion = Math.Min(allowedMotion, desiredMotion * fraction);
                 else allowedMotion = Math.Max(allowedMotion, desiredMotion * fraction);
@@ -283,7 +351,8 @@ public sealed class PhysicsSimulationService
         string.Join("|", group.Select(part => part.Id).OrderBy(id => id, StringComparer.Ordinal));
 
     private void SimulateSingle(SceneNode part, SceneNode[] parts,
-        Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets, float deltaTime)
+        Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets,
+        HashSet<(string, string)> ignoredPairs, float deltaTime)
     {
         if (part.Anchored) return;
         var velocity = part.Velocity;
@@ -307,6 +376,7 @@ public sealed class PhysicsSimulationService
                 foreach (var other in parts)
                 {
                     if (ReferenceEquals(part, other) || !other.CanCollide) continue;
+                    if (ignoredPairs.Contains(CollisionPair(part.Id, other.Id))) continue;
                     var fraction = CollisionGeometry.SweepFraction(part, other, axis, motion);
                     if (motion > 0) allowedMotion = Math.Min(allowedMotion, motion * fraction);
                     else allowedMotion = Math.Max(allowedMotion, motion * fraction);

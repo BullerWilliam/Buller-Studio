@@ -9,7 +9,7 @@ namespace BullerStudio.Services;
 
 public static class GuiRenderService
 {
-    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UISizeConstraint", "UITextSizeConstraint"];
+    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
 
     public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null)
     {
@@ -39,18 +39,30 @@ public static class GuiRenderService
         var gridLayout = parent.Children.FirstOrDefault(node => node.Type == "UIGridLayout");
         var tableLayout = parent.Children.FirstOrDefault(node => node.Type == "UITableLayout");
         var children = GetRenderableChildren(parent).ToArray();
-        if (listLayout is not null || gridLayout is not null || tableLayout is not null)
+        if (listLayout is not null && listLayout.SortOrder == "Name")
+            children = children.OrderBy(node => node.Name, StringComparer.Ordinal).ToArray();
+        else if (listLayout is not null || gridLayout is not null || tableLayout is not null)
             children = children.OrderBy(node => node.LayoutOrder).ToArray();
         var grid = gridLayout is null ? default : GetGridMetrics(gridLayout, innerWidth, innerHeight, children.Length);
+        var listSizes = listLayout is null ? [] : GetListSizes(children, listLayout, innerWidth, innerHeight);
+        var listCrossSize = listLayout is null || listSizes.Length == 0 ? 0 :
+            children.Select((node, index) => (listLayout.LayoutDirection == "Horizontal" ? listSizes[index].Height : listSizes[index].Width) * GetScale(node)).Max();
         var cursorX = padding.Left;
         var cursorY = padding.Top;
+        if (listLayout is not null && children.Length > 0)
+        {
+            if (listLayout.LayoutDirection == "Horizontal")
+                cursorX += AlignmentOffset(innerWidth, children.Select((node, index) => listSizes[index].Width * GetScale(node)).Sum() + listLayout.LayoutSpacing * (children.Length - 1), listLayout.HorizontalAlignment);
+            else
+                cursorY += AlignmentOffset(innerHeight, children.Select((node, index) => listSizes[index].Height * GetScale(node)).Sum() + listLayout.LayoutSpacing * (children.Length - 1), listLayout.VerticalAlignment);
+        }
         var tableColumns = tableLayout is null ? 1 : Math.Clamp(tableLayout.TableColumns, 1, 24);
         var cellWidth = children.Length == 0 ? 0 : Math.Max(1, innerWidth / tableColumns);
         var rowHeight = children.Length == 0 ? 0 : children.Max(node => GetElementSize(node, innerWidth, innerHeight, tableLayout is null ? null : cellWidth).Height * GetScale(node));
         for (var index = 0; index < children.Length; index++)
         {
             var node = children[index];
-            var elementSize = GetElementSize(node, innerWidth, innerHeight);
+            var elementSize = listLayout is null ? GetElementSize(node, innerWidth, innerHeight) : listSizes[index];
             double width = elementSize.Width;
             double height = elementSize.Height;
             var visualScale = GetScale(node);
@@ -71,13 +83,11 @@ public static class GuiRenderService
                 {
                     left = cursorX;
                     top = padding.Top;
-                    cursorX += width * visualScale + listLayout.LayoutSpacing;
                 }
                 else
                 {
                     left = padding.Left;
                     top = cursorY;
-                    cursorY += height * visualScale + listLayout.LayoutSpacing;
                 }
             }
             else if (tableLayout is not null)
@@ -85,12 +95,29 @@ public static class GuiRenderService
                 left = padding.Left + index % tableColumns * cellWidth;
                 top = padding.Top + index / tableColumns * (rowHeight + tableLayout.LayoutSpacing);
                 width = cellWidth;
-                var aspect = node.Children.FirstOrDefault(child => child.Type == "UIAspectRatio");
+                var aspect = node.Children.FirstOrDefault(child => child.Type is "UIAspectRatio" or "UIAspectRatioConstraint");
                 height = aspect is not null && aspect.AspectRatio > 0 ? width / aspect.AspectRatio : rowHeight;
             }
-            var constrained = ApplyLayoutConstraints(node, width, height);
+            var constrained = listLayout is not null && gridLayout is null ? new Size(width, height) : ApplyLayoutConstraints(node, width, height, innerWidth, innerHeight);
             width = constrained.Width;
             height = constrained.Height;
+            if (listLayout is not null && gridLayout is null)
+            {
+                if (listLayout.LayoutDirection == "Horizontal")
+                {
+                    var itemAlignment = GetItemLineAlignment(node, listLayout.VerticalAlignment);
+                    top += AlignmentOffset(innerHeight, listCrossSize, listLayout.VerticalAlignment)
+                        + AlignmentOffset(listCrossSize, height * visualScale, itemAlignment);
+                    cursorX += width * visualScale + listLayout.LayoutSpacing;
+                }
+                else
+                {
+                    var itemAlignment = GetItemLineAlignment(node, listLayout.HorizontalAlignment);
+                    left += AlignmentOffset(innerWidth, listCrossSize, listLayout.HorizontalAlignment)
+                        + AlignmentOffset(listCrossSize, width * visualScale, itemAlignment);
+                    cursorY += height * visualScale + listLayout.LayoutSpacing;
+                }
+            }
             var visual = CreateNode(node, project, width, height, selectedId, activated, textChanged);
             if (visual is null) continue;
             Canvas.SetLeft(visual, left);
@@ -219,13 +246,19 @@ public static class GuiRenderService
         var innerHeight = Math.Max(0, availableHeight - padding.Top - padding.Bottom);
         var children = GetRenderableChildren(parent).ToArray();
         if (children.Length == 0) return new Size(0, 0);
-        var elementSizes = children.Select(node =>
-        {
-            var size = GetElementSize(node, innerWidth, innerHeight);
-            var scale = GetScale(node);
-            return new Size(size.Width * scale, size.Height * scale);
-        }).ToArray();
         var listLayout = parent.Children.FirstOrDefault(node => node.Type == "UIListLayout");
+        if (listLayout is not null)
+            children = listLayout.SortOrder == "Name"
+                ? children.OrderBy(node => node.Name, StringComparer.Ordinal).ToArray()
+                : children.OrderBy(node => node.LayoutOrder).ToArray();
+        var logicalSizes = listLayout is null
+            ? children.Select(node => GetElementSize(node, innerWidth, innerHeight)).ToArray()
+            : GetListSizes(children, listLayout, innerWidth, innerHeight);
+        var elementSizes = children.Select((node, index) =>
+        {
+            var scale = GetScale(node);
+            return new Size(logicalSizes[index].Width * scale, logicalSizes[index].Height * scale);
+        }).ToArray();
         var gridLayout = parent.Children.FirstOrDefault(node => node.Type == "UIGridLayout");
         var tableLayout = parent.Children.FirstOrDefault(node => node.Type == "UITableLayout");
         if (gridLayout is not null)
@@ -244,7 +277,7 @@ public static class GuiRenderService
             {
                 var column = gridLayout.FillDirection == "Vertical" ? index / grid.Capacity : index % grid.Capacity;
                 var row = gridLayout.FillDirection == "Vertical" ? index % grid.Capacity : index / grid.Capacity;
-                var constrained = ApplyLayoutConstraints(ordered[index], grid.CellWidth, grid.CellHeight);
+                var constrained = ApplyLayoutConstraints(ordered[index], grid.CellWidth, grid.CellHeight, innerWidth, innerHeight);
                 contentWidth = Math.Max(contentWidth, column * (grid.CellWidth + grid.GapX) + constrained.Width);
                 contentHeight = Math.Max(contentHeight, row * (grid.CellHeight + grid.GapY) + constrained.Height);
             }
@@ -321,14 +354,128 @@ public static class GuiRenderService
     {
         var width = Math.Max(1, widthOverride ?? node.SizeScale[0] * availableWidth + node.Size[0]);
         double height = Math.Max(1, node.SizeScale[1] * availableHeight + node.Size[1]);
-        return ApplyLayoutConstraints(node, width, height);
+        return ApplyLayoutConstraints(node, width, height, availableWidth, availableHeight);
     }
 
-    private static Size ApplyLayoutConstraints(SceneNode node, double width, double height)
+    private static Size ApplyLayoutConstraints(SceneNode node, double width, double height, double parentWidth, double parentHeight)
     {
-        var aspect = node.Children.FirstOrDefault(child => child.Type == "UIAspectRatio");
-        if (aspect is not null && aspect.AspectRatio > 0) height = width / aspect.AspectRatio;
+        var aspect = node.Children.FirstOrDefault(child => child.Type is "UIAspectRatio" or "UIAspectRatioConstraint");
+        if (aspect is not null && aspect.AspectRatio > 0)
+        {
+            if (aspect.Type == "UIAspectRatioConstraint")
+            {
+                var maxWidth = Math.Max(1, aspect.AspectType == "ScaleWithParentSize" ? parentWidth : width);
+                var maxHeight = Math.Max(1, aspect.AspectType == "ScaleWithParentSize" ? parentHeight : height);
+                if (aspect.DominantAxis == "Height")
+                {
+                    height = maxHeight;
+                    width = height * aspect.AspectRatio;
+                    if (width > maxWidth) { width = maxWidth; height = width / aspect.AspectRatio; }
+                }
+                else
+                {
+                    width = maxWidth;
+                    height = width / aspect.AspectRatio;
+                    if (height > maxHeight) { height = maxHeight; width = height * aspect.AspectRatio; }
+                }
+            }
+            else height = width / aspect.AspectRatio;
+        }
         return ApplySizeConstraint(node, width, height);
+    }
+
+    private static double AlignmentOffset(double available, double occupied, string alignment) => alignment switch
+    {
+        "Center" => Math.Max(0, available - occupied) / 2,
+        "Right" or "Bottom" or "End" => Math.Max(0, available - occupied),
+        _ => 0
+    };
+
+    private static string GetItemLineAlignment(SceneNode node, string layoutAlignment)
+    {
+        var item = node.Children.FirstOrDefault(child => child.Type == "UIFlexItem");
+        return item?.ItemLineAlignment is { } alignment && alignment != "Automatic" ? alignment : layoutAlignment;
+    }
+
+    private static Size[] GetListSizes(SceneNode[] children, SceneNode layout, double availableWidth, double availableHeight)
+    {
+        var sizes = children.Select(node => GetElementSize(node, availableWidth, availableHeight)).ToArray();
+        if (sizes.Length == 0) return sizes;
+        var horizontal = layout.LayoutDirection == "Horizontal";
+        var capacity = horizontal ? availableWidth : availableHeight;
+        var occupied = children.Select((node, index) => (horizontal ? sizes[index].Width : sizes[index].Height) * GetScale(node)).Sum()
+            + layout.LayoutSpacing * (sizes.Length - 1);
+        var free = capacity - occupied;
+        if (Math.Abs(free) > .001)
+        {
+            var weights = children.Select(node =>
+            {
+                var flex = node.Children.FirstOrDefault(child => child.Type == "UIFlexItem");
+                if (flex is null) return 0d;
+                return flex.FlexMode switch
+                {
+                    "Fill" => 1d,
+                    "Grow" when free > 0 => 1d,
+                    "Shrink" when free < 0 => 1d,
+                    "Custom" when free > 0 && float.IsFinite(flex.GrowRatio) => Math.Max(0, flex.GrowRatio),
+                    "Custom" when free < 0 && float.IsFinite(flex.ShrinkRatio) => Math.Max(0, flex.ShrinkRatio),
+                    _ => 0d
+                };
+            }).ToArray();
+            var totalWeight = weights.Sum();
+            if (totalWeight > 0)
+            {
+                var adjustments = new double[sizes.Length];
+                if (free < 0)
+                {
+                    var remaining = -free;
+                    var capacities = children.Select((node, index) =>
+                    {
+                        var minimum = node.Children.FirstOrDefault(child => child.Type == "UISizeConstraint")?.MinSize;
+                        var limit = minimum is { Length: >= 2 } ? minimum[horizontal ? 0 : 1] : 1;
+                        if (!double.IsFinite(limit)) limit = 1;
+                        return Math.Max(0, ((horizontal ? sizes[index].Width : sizes[index].Height) - Math.Max(1, limit)) * GetScale(node));
+                    }).ToArray();
+                    for (var round = 0; round < sizes.Length && remaining > .001; round++)
+                    {
+                        var active = Enumerable.Range(0, sizes.Length)
+                            .Where(index => weights[index] > 0 && adjustments[index] < capacities[index] - .001).ToArray();
+                        var activeWeight = active.Sum(index => weights[index]);
+                        if (activeWeight <= 0) break;
+                        var consumed = 0d;
+                        foreach (var index in active)
+                        {
+                            var shrink = Math.Min(remaining * weights[index] / activeWeight, capacities[index] - adjustments[index]);
+                            adjustments[index] += shrink;
+                            consumed += shrink;
+                        }
+                        if (consumed <= .001) break;
+                        remaining -= consumed;
+                    }
+                }
+                for (var index = 0; index < sizes.Length; index++)
+                {
+                    if (weights[index] <= 0) continue;
+                    var scale = GetScale(children[index]);
+                    var basis = horizontal ? sizes[index].Width : sizes[index].Height;
+                    var deltaPixels = free < 0 ? -adjustments[index] : free * weights[index] / totalWeight;
+                    var next = Math.Max(1, basis + deltaPixels / scale);
+                    sizes[index] = horizontal
+                        ? ApplyLayoutConstraints(children[index], next, sizes[index].Height, availableWidth, availableHeight)
+                        : ApplyLayoutConstraints(children[index], sizes[index].Width, next, availableWidth, availableHeight);
+                }
+            }
+        }
+        var lineCross = children.Select((node, index) => (horizontal ? sizes[index].Height : sizes[index].Width) * GetScale(node)).Max();
+        for (var index = 0; index < sizes.Length; index++)
+        {
+            if (GetItemLineAlignment(children[index], horizontal ? layout.VerticalAlignment : layout.HorizontalAlignment) != "Stretch") continue;
+            var stretched = Math.Max(1, lineCross / GetScale(children[index]));
+            sizes[index] = horizontal
+                ? ApplyLayoutConstraints(children[index], sizes[index].Width, stretched, availableWidth, availableHeight)
+                : ApplyLayoutConstraints(children[index], stretched, sizes[index].Height, availableWidth, availableHeight);
+        }
+        return sizes;
     }
 
     private static Size ApplySizeConstraint(SceneNode node, double width, double height)

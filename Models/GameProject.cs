@@ -112,6 +112,11 @@ public sealed class SceneNode
     public string VelocityConstraintMode { get; set; } = "Vector";
     public bool ForceLimitsEnabled { get; set; }
     public float MaxForce { get; set; } = 1000;
+    public string AlignmentMode { get; set; } = "TwoAttachment";
+    public float Responsiveness { get; set; } = 10;
+    public float MaxVelocity { get; set; } = 100;
+    public bool RigidityEnabled { get; set; }
+    public bool ReactionForceEnabled { get; set; }
     public float Width0 { get; set; } = .2f;
     public float Width1 { get; set; } = .2f;
     public float TrailLifetime { get; set; } = 2;
@@ -141,9 +146,18 @@ public sealed class SceneNode
     public int FillDirectionMaxCells { get; set; }
     public int TableColumns { get; set; } = 2;
     public float AspectRatio { get; set; } = 1;
+    public string AspectType { get; set; } = "FitWithinMaxSize";
+    public string DominantAxis { get; set; } = "Width";
     public float[] MinSize { get; set; } = [0, 0];
     public float[] MaxSize { get; set; } = [1000000, 1000000];
     public string LayoutDirection { get; set; } = "Vertical";
+    public string HorizontalAlignment { get; set; } = "Left";
+    public string VerticalAlignment { get; set; } = "Top";
+    public string SortOrder { get; set; } = "LayoutOrder";
+    public string FlexMode { get; set; } = "None";
+    public float GrowRatio { get; set; }
+    public float ShrinkRatio { get; set; }
+    public string ItemLineAlignment { get; set; } = "Automatic";
     public bool Visible { get; set; } = true;
     public string SkyboxFront { get; set; } = string.Empty;
     public string SkyboxBack { get; set; } = string.Empty;

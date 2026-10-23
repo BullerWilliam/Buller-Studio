@@ -523,6 +523,11 @@ if (tiltedSpawnCharacter.Root.Position[1] < 2.37f || tiltedSpawnCharacter.Root.P
 
 var gradientProject = new GameProject();
 var gradientScreen = gradientProject.Gui.Children.Single(node => node.Type == "ScreenGui");
+var malformedText = new SceneNode { Type = "TextLabel", TextSize = float.NaN };
+gradientScreen.Children.Add(malformedText);
+GameProjectStore.EnsureProject(gradientProject);
+if (malformedText.TextSize != 18) throw new Exception("Malformed saved TextSize was not normalized.");
+gradientScreen.Children.Remove(malformedText);
 var gradientFrame = new SceneNode { Type = "Frame", Name = "GradientFrame", Size = [100, 40, 2], Color = "#224466" };
 gradientScreen.Children.Add(gradientFrame);
 if (!GameProjectStore.CanParentNode(gradientProject, new SceneNode { Type = "UIGradient" }, gradientFrame)
@@ -547,7 +552,15 @@ var gradientScript = new GameScript
         local textLimit = Instance.new('UITextSizeConstraint', label)
         textLimit.MinTextSize = 12
         textLimit.MaxTextSize = 60
+        textLimit:SetProperty('MinTextSize', 80)
+        print('raised-text-limit', textLimit.MaxTextSize)
+        textLimit.MinTextSize = 12
+        textLimit.MaxTextSize = 60
         local sizeLimit = Instance.new('UISizeConstraint', frame)
+        sizeLimit.MinSize = Vector2.new(20, 20)
+        sizeLimit.MaxSize = Vector2.new(200, 200)
+        sizeLimit:SetProperty('MinSize', Vector2.new(300, 300))
+        print('raised-size-limit', sizeLimit.MaxSize.X)
         sizeLimit.MinSize = Vector2.new(20, 20)
         sizeLimit.MaxSize = Vector2.new(200, 200)
         print('gradient-values', g.StartColor:ToHex(), g.EndColor:ToHex(), g.Rotation.Z)
@@ -564,7 +577,9 @@ if (gradientNode is null || gradientNode.StartColor != "#FF0000" || gradientNode
     || !gradientOutput.Any(line => line.Contains("gradient-values\tFF0000\t0000FF\t90", StringComparison.Ordinal))
     || !gradientOutput.Any(line => line.Contains("gui-alpha\t0.5\t0.25\t0.75", StringComparison.Ordinal))
     || !gradientOutput.Any(line => line.Contains("size-limit\ttrue\t20\t200", StringComparison.Ordinal))
-    || !gradientOutput.Any(line => line.Contains("text-limit\ttrue\ttrue\t12\t60", StringComparison.Ordinal)))
+    || !gradientOutput.Any(line => line.Contains("text-limit\ttrue\ttrue\t12\t60", StringComparison.Ordinal))
+    || !gradientOutput.Any(line => line.Contains("raised-text-limit\t80", StringComparison.Ordinal))
+    || !gradientOutput.Any(line => line.Contains("raised-size-limit\t300", StringComparison.Ordinal)))
     throw new Exception("UIGradient Lua X properties failed: " + string.Join(" | ", gradientOutput));
 var gradientJson = JsonSerializer.Serialize(gradientProject, GameProjectStore.JsonOptions);
 var restoredGradientProject = JsonSerializer.Deserialize<GameProject>(gradientJson, GameProjectStore.JsonOptions)
@@ -736,6 +751,197 @@ renderThread.Join();
 if (Directory.Exists(gradientAssetRoot) && Path.GetFullPath(gradientAssetRoot).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase))
     Directory.Delete(gradientAssetRoot, true);
 if (gradientRenderError is not null) throw gradientRenderError;
+
+var aspectProject = new GameProject();
+var aspectScreen = aspectProject.Gui.Children.Single(node => node.Type == "ScreenGui");
+var aspectFrame = new SceneNode { Type = "Frame", Name = "AspectFrame", Size = [100, 20, 2] };
+aspectScreen.Children.Add(aspectFrame);
+if (!GameProjectStore.CanParentNode(aspectProject, new SceneNode { Type = "UIAspectRatioConstraint" }, aspectFrame)
+    || GameProjectStore.CanParentNode(aspectProject, new SceneNode { Type = "UIAspectRatioConstraint" }, aspectScreen))
+    throw new Exception("UIAspectRatioConstraint parenting rules are wrong.");
+var aspectOutput = new List<string>();
+var aspectRuntime = new LuaXRuntime(aspectProject, output: aspectOutput.Add);
+var aspectScript = new GameScript
+{
+    Source = "local a = Instance.new('UIAspectRatioConstraint', game.Gui.ScreenGui.AspectFrame); a.AspectRatio = 2; a.AspectType = 'FitWithinMaxSize'; a.DominantAxis = 'Height'; print('aspect-values', a:IsA('UIComponent'), a.AspectRatio, a.AspectType, a.DominantAxis)"
+};
+aspectProject.Scripts.Add(aspectScript);
+aspectRuntime.Run(aspectScript.Id);
+if (!aspectOutput.Any(line => line.Contains("aspect-values\ttrue\t2\tFitWithinMaxSize\tHeight", StringComparison.Ordinal)))
+    throw new Exception("UIAspectRatioConstraint Lua X properties failed: " + string.Join(" | ", aspectOutput));
+var restoredAspectProject = JsonSerializer.Deserialize<GameProject>(
+    JsonSerializer.Serialize(aspectProject, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions)
+    ?? throw new Exception("UIAspectRatioConstraint project did not deserialize.");
+GameProjectStore.EnsureProject(restoredAspectProject);
+var restoredAspectScreen = restoredAspectProject.Gui.Children.Single(node => node.Type == "ScreenGui");
+var restoredAspectFrame = restoredAspectScreen.Children.Single(node => node.Name == "AspectFrame");
+var restoredAspect = restoredAspectFrame.Children.Single(node => node.Type == "UIAspectRatioConstraint");
+if (restoredAspect.AspectRatio != 2 || restoredAspect.AspectType != "FitWithinMaxSize" || restoredAspect.DominantAxis != "Height")
+    throw new Exception("UIAspectRatioConstraint did not survive project serialization.");
+var legacyAspectFrame = new SceneNode { Type = "Frame", Name = "LegacyAspectFrame", Size = [100, 20, 2] };
+legacyAspectFrame.Children.Add(new SceneNode { Type = "UIAspectRatio", AspectRatio = 2 });
+restoredAspectScreen.Children.Add(legacyAspectFrame);
+Exception? aspectRenderError = null;
+var aspectRenderThread = new Thread(() =>
+{
+    try
+    {
+        static System.Windows.Controls.Border FindFrame(System.Windows.Controls.Canvas canvas, string name) =>
+            canvas.Children.OfType<System.Windows.Controls.Border>()
+                .Single(element => (element.Tag as SceneNode)?.Name == name);
+        var canvas = GuiRenderService.Render(restoredAspectProject, false, 200, 100);
+        var fitted = FindFrame(canvas, "AspectFrame");
+        var legacy = FindFrame(canvas, "LegacyAspectFrame");
+        if (fitted.Width != 40 || fitted.Height != 20 || legacy.Width != 100 || legacy.Height != 50)
+            throw new Exception("Aspect constraints did not preserve new fit and legacy sizing behavior.");
+        restoredAspect.AspectType = "ScaleWithParentSize";
+        var parentScaled = FindFrame(GuiRenderService.Render(restoredAspectProject, false, 200, 100), "AspectFrame");
+        if (parentScaled.Width != 200 || parentScaled.Height != 100)
+            throw new Exception("UIAspectRatioConstraint did not scale with parent size.");
+        restoredAspect.AspectType = "FitWithinMaxSize";
+        restoredAspectScreen.Children.Remove(legacyAspectFrame);
+        restoredAspectScreen.Children.Add(new SceneNode { Type = "Frame", Name = "FollowingAspect", Size = [20, 20, 2] });
+        restoredAspectScreen.Children.Add(new SceneNode { Type = "UIListLayout", LayoutDirection = "Horizontal", LayoutSpacing = 5 });
+        var listCanvas = GuiRenderService.Render(restoredAspectProject, false, 200, 100);
+        var nextFrame = FindFrame(listCanvas, "FollowingAspect");
+        if (Math.Abs(System.Windows.Controls.Canvas.GetLeft(nextFrame) - 45) > .001)
+            throw new Exception("UIListLayout did not use the aspect-constrained size to place the next item.");
+    }
+    catch (Exception exception) { aspectRenderError = exception; }
+});
+aspectRenderThread.SetApartmentState(ApartmentState.STA);
+aspectRenderThread.Start();
+aspectRenderThread.Join();
+if (aspectRenderError is not null) throw aspectRenderError;
+
+var alignedListProject = new GameProject();
+var alignedListScreen = alignedListProject.Gui.Children.Single(node => node.Type == "ScreenGui");
+alignedListScreen.Children.Add(new SceneNode { Type = "Frame", Name = "B", Size = [50, 20, 2], LayoutOrder = 0 });
+alignedListScreen.Children.Add(new SceneNode { Type = "Frame", Name = "A", Size = [30, 30, 2], LayoutOrder = 1 });
+var alignedList = new SceneNode { Type = "UIListLayout", Name = "Layout", LayoutDirection = "Horizontal", LayoutSpacing = 10 };
+alignedListScreen.Children.Add(alignedList);
+var alignedListOutput = new List<string>();
+var alignedListRuntime = new LuaXRuntime(alignedListProject, output: alignedListOutput.Add);
+var alignedListScript = new GameScript
+{
+    Source = "local l = game.Gui.ScreenGui.Layout; l.SortOrder = 'Name'; l.HorizontalAlignment = 'Center'; l.VerticalAlignment = 'Bottom'; print('list-values', l.SortOrder, l.HorizontalAlignment, l.VerticalAlignment)"
+};
+alignedListProject.Scripts.Add(alignedListScript);
+alignedListRuntime.Run(alignedListScript.Id);
+if (alignedList.SortOrder != "Name" || alignedList.HorizontalAlignment != "Center" || alignedList.VerticalAlignment != "Bottom"
+    || !alignedListOutput.Any(line => line.Contains("list-values\tName\tCenter\tBottom", StringComparison.Ordinal)))
+    throw new Exception("UIListLayout Lua X alignment and sorting failed: " + string.Join(" | ", alignedListOutput));
+var restoredAlignedListProject = JsonSerializer.Deserialize<GameProject>(
+    JsonSerializer.Serialize(alignedListProject, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions)
+    ?? throw new Exception("Aligned UIListLayout project did not deserialize.");
+GameProjectStore.EnsureProject(restoredAlignedListProject);
+Exception? alignedListRenderError = null;
+var alignedListRenderThread = new Thread(() =>
+{
+    try
+    {
+        var canvas = GuiRenderService.Render(restoredAlignedListProject, false, 300, 100);
+        var frames = canvas.Children.OfType<System.Windows.Controls.Border>().ToDictionary(border => ((SceneNode)border.Tag).Name);
+        if (Math.Abs(System.Windows.Controls.Canvas.GetLeft(frames["A"]) - 105) > .001
+            || Math.Abs(System.Windows.Controls.Canvas.GetTop(frames["A"]) - 70) > .001
+            || Math.Abs(System.Windows.Controls.Canvas.GetLeft(frames["B"]) - 145) > .001
+            || Math.Abs(System.Windows.Controls.Canvas.GetTop(frames["B"]) - 80) > .001)
+            throw new Exception("UIListLayout alignment or name sorting rendered incorrectly.");
+    }
+    catch (Exception exception) { alignedListRenderError = exception; }
+});
+alignedListRenderThread.SetApartmentState(ApartmentState.STA);
+alignedListRenderThread.Start();
+alignedListRenderThread.Join();
+if (alignedListRenderError is not null) throw alignedListRenderError;
+var restoredAlignedList = restoredAlignedListProject.Gui.Children.Single(node => node.Type == "ScreenGui")
+    .Children.Single(node => node.Type == "UIListLayout");
+restoredAlignedList.LayoutSpacing = float.NaN;
+GameProjectStore.EnsureProject(restoredAlignedListProject);
+if (restoredAlignedList.LayoutSpacing != 0)
+    throw new Exception("Invalid UIListLayout spacing was not normalized.");
+
+var flexProject = new GameProject();
+var flexScreen = flexProject.Gui.Children.Single(node => node.Type == "ScreenGui");
+var flexFirst = new SceneNode { Type = "Frame", Name = "FlexFirst", Size = [50, 20, 2] };
+var flexSecond = new SceneNode { Type = "Frame", Name = "FlexSecond", Size = [50, 40, 2] };
+var flexThird = new SceneNode { Type = "Frame", Name = "FlexThird", Size = [50, 30, 2] };
+flexScreen.Children.Add(flexFirst);
+flexScreen.Children.Add(flexSecond);
+flexScreen.Children.Add(flexThird);
+flexScreen.Children.Add(new SceneNode { Type = "UIListLayout", LayoutDirection = "Horizontal", LayoutSpacing = 10 });
+if (!GameProjectStore.CanParentNode(flexProject, new SceneNode { Type = "UIFlexItem" }, flexFirst)
+    || GameProjectStore.CanParentNode(flexProject, new SceneNode { Type = "UIFlexItem" }, flexScreen))
+    throw new Exception("UIFlexItem parenting rules are wrong.");
+var flexOutput = new List<string>();
+var flexRuntime = new LuaXRuntime(flexProject, output: flexOutput.Add);
+var flexScript = new GameScript
+{
+    Source = "local a = Instance.new('UIFlexItem', game.Gui.ScreenGui.FlexFirst); a.FlexMode = 'Grow'; a.ItemLineAlignment = 'End'; local b = Instance.new('UIFlexItem', game.Gui.ScreenGui.FlexSecond); b.FlexMode = 'Fill'; local c = Instance.new('UIFlexItem', game.Gui.ScreenGui.FlexThird); c.FlexMode = 'Shrink'; c.ItemLineAlignment = 'Stretch'; c.GrowRatio = 2; c.ShrinkRatio = 3; print('flex-values', a:IsA('UIComponent'), b.FlexMode, c.ShrinkRatio)"
+};
+flexProject.Scripts.Add(flexScript);
+flexRuntime.Run(flexScript.Id);
+if (!flexOutput.Any(line => line.Contains("flex-values\ttrue\tFill\t3", StringComparison.Ordinal)))
+    throw new Exception("UIFlexItem Lua X properties failed: " + string.Join(" | ", flexOutput));
+var restoredFlexProject = JsonSerializer.Deserialize<GameProject>(
+    JsonSerializer.Serialize(flexProject, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions)
+    ?? throw new Exception("UIFlexItem project did not deserialize.");
+GameProjectStore.EnsureProject(restoredFlexProject);
+var restoredFlexScreen = restoredFlexProject.Gui.Children.Single(node => node.Type == "ScreenGui");
+if (restoredFlexScreen.Children.Single(node => node.Name == "FlexThird").Children.Single(node => node.Type == "UIFlexItem")
+    is not { FlexMode: "Shrink", ShrinkRatio: 3, ItemLineAlignment: "Stretch" })
+    throw new Exception("UIFlexItem did not survive project serialization.");
+Exception? flexRenderError = null;
+var flexRenderThread = new Thread(() =>
+{
+    try
+    {
+        static Dictionary<string, System.Windows.Controls.Border> Frames(GameProject project, double width) =>
+            GuiRenderService.Render(project, false, width, 100).Children.OfType<System.Windows.Controls.Border>()
+                .ToDictionary(border => ((SceneNode)border.Tag).Name);
+        var growing = Frames(restoredFlexProject, 300);
+        if (Math.Abs(growing["FlexFirst"].Width - 115) > .001
+            || Math.Abs(growing["FlexSecond"].Width - 115) > .001
+            || Math.Abs(growing["FlexThird"].Width - 50) > .001
+            || Math.Abs(System.Windows.Controls.Canvas.GetLeft(growing["FlexSecond"]) - 125) > .001
+            || Math.Abs(System.Windows.Controls.Canvas.GetTop(growing["FlexFirst"]) - 20) > .001
+            || Math.Abs(growing["FlexThird"].Height - 40) > .001)
+            throw new Exception("UIFlexItem growth or cross-axis alignment rendered incorrectly.");
+        var shrinking = Frames(restoredFlexProject, 120);
+        if (Math.Abs(shrinking["FlexFirst"].Width - 50) > .001
+            || Math.Abs(shrinking["FlexSecond"].Width - 25) > .001
+            || Math.Abs(shrinking["FlexThird"].Width - 25) > .001
+            || Math.Abs(System.Windows.Controls.Canvas.GetLeft(shrinking["FlexThird"]) - 95) > .001)
+            throw new Exception("UIFlexItem shrink behavior rendered incorrectly.");
+        var customSecond = restoredFlexScreen.Children.Single(node => node.Name == "FlexSecond").Children.Single(node => node.Type == "UIFlexItem");
+        var customThird = restoredFlexScreen.Children.Single(node => node.Name == "FlexThird").Children.Single(node => node.Type == "UIFlexItem");
+        customSecond.FlexMode = "Custom";
+        customSecond.ShrinkRatio = 1;
+        customThird.FlexMode = "Custom";
+        var custom = Frames(restoredFlexProject, 120);
+        if (Math.Abs(custom["FlexSecond"].Width - 37.5) > .001
+            || Math.Abs(custom["FlexThird"].Width - 12.5) > .001)
+            throw new Exception("UIFlexItem custom shrink ratios rendered incorrectly.");
+        var flexFirstNode = restoredFlexScreen.Children.Single(node => node.Name == "FlexFirst");
+        var flexSecondNode = restoredFlexScreen.Children.Single(node => node.Name == "FlexSecond");
+        restoredFlexScreen.Children.Remove(restoredFlexScreen.Children.Single(node => node.Name == "FlexThird"));
+        restoredFlexScreen.Children.Single(node => node.Type == "UIListLayout").LayoutSpacing = 0;
+        flexFirstNode.Size[0] = 100;
+        flexSecondNode.Size[0] = 10;
+        flexFirstNode.Children.Single(node => node.Type == "UIFlexItem").FlexMode = "Fill";
+        customSecond.FlexMode = "Fill";
+        var saturated = Frames(restoredFlexProject, 50);
+        if (Math.Abs(saturated["FlexFirst"].Width - 49) > .001
+            || Math.Abs(saturated["FlexSecond"].Width - 1) > .001
+            || Math.Abs(System.Windows.Controls.Canvas.GetLeft(saturated["FlexSecond"]) - 49) > .001)
+            throw new Exception("UIFlexItem did not redistribute shrink after an item reached its minimum size.");
+    }
+    catch (Exception exception) { flexRenderError = exception; }
+});
+flexRenderThread.SetApartmentState(ApartmentState.STA);
+flexRenderThread.Start();
+flexRenderThread.Join();
+if (flexRenderError is not null) throw flexRenderError;
 
 var paddingProject = new GameProject();
 var paddingScreen = paddingProject.Gui.Children.Single(node => node.Type == "ScreenGui");
@@ -1575,6 +1781,76 @@ if (restoredTrail.Attachment0 != trailAttachment0.Id || restoredTrail.Attachment
     throw new Exception("Trail settings or references did not persist.");
 
 {
+var noCollisionProject = new GameProject();
+noCollisionProject.Workspace.Gravity = 0;
+var passingPart = new SceneNode { Type = "Part", Name = "PassingPart", Position = [0, 2, 0], Anchored = false, Velocity = [20, 0, 0] };
+var blockingPart = new SceneNode { Type = "Part", Name = "BlockingPart", Position = [4, 2, 0], Anchored = true };
+var otherBlocker = new SceneNode { Type = "Part", Name = "OtherBlocker", Position = [8, 2, 0], Anchored = true };
+noCollisionProject.Workspace.Children.Add(passingPart);
+noCollisionProject.Workspace.Children.Add(blockingPart);
+noCollisionProject.Workspace.Children.Add(otherBlocker);
+if (!GameProjectStore.CanParentNode(noCollisionProject, new SceneNode { Type = "NoCollisionConstraint" }, passingPart)
+    || GameProjectStore.CanParentNode(noCollisionProject, new SceneNode { Type = "NoCollisionConstraint" }, noCollisionProject.Gui))
+    throw new Exception("NoCollisionConstraint parent rules failed.");
+new PhysicsSimulationService(noCollisionProject, _ => { }).Step(.2f);
+if (passingPart.Position[0] > 2.01f)
+    throw new Exception("Baseline collision did not stop the moving part.");
+passingPart.Position = [0, 2, 0]; passingPart.Velocity = [20, 0, 0];
+var noCollisionOutput = new List<string>();
+var noCollisionRuntime = new LuaXRuntime(noCollisionProject, output: noCollisionOutput.Add);
+var noCollisionScript = new GameScript
+{
+    Source = "local c = Instance.new('NoCollisionConstraint', workspace.PassingPart); c.Part1 = workspace.BlockingPart; print('no-collision', c.Part0 == workspace.PassingPart, c.Part1 == workspace.BlockingPart, c.Enabled)"
+};
+noCollisionProject.Scripts.Add(noCollisionScript);
+noCollisionRuntime.Run(noCollisionScript.Id);
+var noCollisionNode = passingPart.Children.Single(node => node.Type == "NoCollisionConstraint");
+if (!noCollisionOutput.Contains("no-collision\ttrue\ttrue\ttrue")
+    || noCollisionNode.Part0 != passingPart.Id || noCollisionNode.Part1 != blockingPart.Id)
+    throw new Exception("NoCollisionConstraint Lua X properties failed: " + string.Join(" | ", noCollisionOutput));
+new PhysicsSimulationService(noCollisionProject, _ => { }).Step(.2f);
+if (passingPart.Position[0] < 3.9f)
+    throw new Exception("NoCollisionConstraint did not let its linked parts pass through each other.");
+new PhysicsSimulationService(noCollisionProject, _ => { }).Step(.2f);
+if (passingPart.Position[0] > 6.01f)
+    throw new Exception("NoCollisionConstraint also suppressed collision with an unrelated part.");
+noCollisionNode.Enabled = false;
+passingPart.Position = [0, 2, 0]; passingPart.Velocity = [20, 0, 0];
+new PhysicsSimulationService(noCollisionProject, _ => { }).Step(.2f);
+if (passingPart.Position[0] > 2.01f)
+    throw new Exception("Disabled NoCollisionConstraint still suppressed collision.");
+noCollisionNode.Enabled = true;
+passingPart.Position = [0, 2, 0]; passingPart.Velocity = [0, 0, 0];
+blockingPart.Position = [0, 0, 0];
+var noCollisionPhysics = new PhysicsSimulationService(noCollisionProject, _ => { });
+if (noCollisionPhysics.IsGrounded(passingPart))
+    throw new Exception("NoCollisionConstraint did not suppress ground contact for its linked parts.");
+noCollisionNode.Enabled = false;
+if (!noCollisionPhysics.IsGrounded(passingPart))
+    throw new Exception("Disabling NoCollisionConstraint did not restore ground contact.");
+var clonedPassingPart = GameProjectStore.CloneSubtree(passingPart, out _) ?? throw new Exception("NoCollisionConstraint parent did not clone.");
+var clonedNoCollision = clonedPassingPart.Children.Single(node => node.Type == "NoCollisionConstraint");
+if (clonedNoCollision.Part0 != clonedPassingPart.Id || clonedNoCollision.Part1 != blockingPart.Id)
+    throw new Exception("NoCollisionConstraint clone did not preserve part references.");
+var restoredNoCollisionProject = JsonSerializer.Deserialize<GameProject>(
+    JsonSerializer.Serialize(noCollisionProject, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions)
+    ?? throw new Exception("NoCollisionConstraint project did not deserialize.");
+GameProjectStore.EnsureProject(restoredNoCollisionProject);
+var restoredNoCollision = restoredNoCollisionProject.Workspace.Children.Single(node => node.Name == "PassingPart")
+    .Children.Single(node => node.Type == "NoCollisionConstraint");
+if (restoredNoCollision.Part0 != passingPart.Id || restoredNoCollision.Part1 != blockingPart.Id || restoredNoCollision.Enabled)
+    throw new Exception("NoCollisionConstraint did not persist its references and Enabled state.");
+var destroyBlockerScript = new GameScript
+{
+    Source = "workspace.BlockingPart:Destroy(); print('collision-ref-cleared', workspace.PassingPart.NoCollisionConstraint.Part1 == nil)"
+};
+noCollisionProject.Scripts.Add(destroyBlockerScript);
+noCollisionRuntime.Run(destroyBlockerScript.Id);
+if (noCollisionNode.Part1 != string.Empty || !noCollisionOutput.Contains("collision-ref-cleared\ttrue"))
+    throw new Exception("Destroying a linked part did not clear NoCollisionConstraint.Part1.");
+}
+
+{
 var vectorForceProject = new GameProject();
 vectorForceProject.Workspace.Gravity = 0;
 var forcePart = new SceneNode { Type = "Part", Name = "ForcePart", Position = [0, 4, 0], Anchored = false };
@@ -1731,6 +2007,99 @@ if (restoredVelocity.Attachment0 != velocityAttachment.Id || restoredVelocity.Ve
     || restoredVelocity.PlaneVelocity[0] != 3 || restoredVelocity.LineVelocity != 4
     || restoredVelocity.MaxForce != 80 || !restoredVelocity.ForceLimitsEnabled)
     throw new Exception("LinearVelocity settings did not persist.");
+}
+
+{
+var alignProject = new GameProject();
+alignProject.Workspace.Gravity = 0;
+var alignPart = new SceneNode { Type = "Part", Name = "AlignMover", Position = [0, 10, 0], Anchored = false, CanCollide = false };
+var alignAttachment = new SceneNode { Type = "Attachment", Name = "MoverAttachment", Position = [1, 0, 0] };
+alignPart.Children.Add(alignAttachment);
+alignProject.Workspace.Children.Add(alignPart);
+var alignTarget = new SceneNode { Type = "Part", Name = "AlignTarget", Position = [20, 10, 0], Anchored = true, CanCollide = false };
+var targetAttachment = new SceneNode { Type = "Attachment", Name = "TargetAttachment" };
+alignTarget.Children.Add(targetAttachment);
+alignProject.Workspace.Children.Add(alignTarget);
+if (!GameProjectStore.CanParentNode(alignProject, new SceneNode { Type = "AlignPosition" }, alignAttachment)
+    || GameProjectStore.CanParentNode(alignProject, new SceneNode { Type = "AlignPosition" }, alignProject.Gui))
+    throw new Exception("AlignPosition parent rules failed.");
+var alignOutput = new List<string>();
+var alignRuntime = new LuaXRuntime(alignProject, output: alignOutput.Add);
+var alignScript = new GameScript
+{
+    Source = "local a = Instance.new('AlignPosition', workspace.AlignMover.MoverAttachment); a.Mode = 'OneAttachment'; a.Position = Vector3.new(11, 10, 0); a.Responsiveness = 10; a.MaxVelocity = 100; a.MaxForce = 80; print('align-position', a.Mode, typeof(a.Position), a.Attachment0 == workspace.AlignMover.MoverAttachment, a.MaxForce)"
+};
+alignProject.Scripts.Add(alignScript);
+alignRuntime.Run(alignScript.Id);
+var alignNode = alignAttachment.Children.Single(node => node.Type == "AlignPosition");
+if (!alignOutput.Contains("align-position\tOneAttachment\tVector3\ttrue\t80")
+    || alignNode.Attachment0 != alignAttachment.Id || alignNode.AlignmentMode != "OneAttachment"
+    || alignNode.Position[0] != 11 || alignNode.Responsiveness != 10 || alignNode.MaxForce != 80)
+    throw new Exception("AlignPosition Lua X properties failed: " + string.Join(" | ", alignOutput));
+new PhysicsSimulationService(alignProject, _ => { }).Step(.1f);
+if (alignPart.Velocity[0] < .9f || alignPart.Velocity[0] > 1.01f || alignPart.Position[0] <= 0)
+    throw new Exception("AlignPosition did not move toward its one-attachment goal within MaxForce.");
+alignNode.Enabled = false;
+alignPart.Velocity = [0, 0, 0];
+var disabledPosition = alignPart.Position[0];
+new PhysicsSimulationService(alignProject, _ => { }).Step(.1f);
+if (alignPart.Position[0] != disabledPosition)
+    throw new Exception("Disabled AlignPosition still moved its part.");
+alignNode.Enabled = true;
+var alignSwitchScript = new GameScript
+{
+    Source = "local a = workspace.AlignMover.MoverAttachment.AlignPosition; a.Mode = Enum.PositionAlignmentMode.TwoAttachment; a.Attachment1 = workspace.AlignTarget.TargetAttachment; a.ReactionForceEnabled = true; print('align-switched', a.Mode, a.Attachment1 == workspace.AlignTarget.TargetAttachment, a.ReactionForceEnabled)"
+};
+alignProject.Scripts.Add(alignSwitchScript);
+alignRuntime.Run(alignSwitchScript.Id);
+if (!alignOutput.Contains("align-switched\tTwoAttachment\ttrue\ttrue")
+    || alignNode.AlignmentMode != "TwoAttachment" || alignNode.Attachment1 != targetAttachment.Id || !alignNode.ReactionForceEnabled)
+    throw new Exception("AlignPosition Lua X mode and attachment switching failed: " + string.Join(" | ", alignOutput));
+alignPart.Position = [0, 10, 0]; alignPart.Velocity = [0, 0, 0];
+new PhysicsSimulationService(alignProject, _ => { }).Step(.1f);
+if (alignPart.Position[0] <= 0 || alignTarget.Position[0] != 20)
+    throw new Exception("AlignPosition did not move toward Attachment1.");
+alignTarget.Anchored = false;
+alignPart.Position = [0, 10, 0]; alignPart.Velocity = [0, 0, 0];
+alignTarget.Position = [20, 10, 0]; alignTarget.Velocity = [0, 0, 0];
+new PhysicsSimulationService(alignProject, _ => { }).Step(.1f);
+if (alignPart.Velocity[0] <= 0 || alignTarget.Velocity[0] >= 0)
+    throw new Exception("AlignPosition reaction force did not push both attachment owners in opposite directions.");
+alignTarget.Anchored = true;
+alignNode.AlignmentMode = "OneAttachment";
+alignNode.RigidityEnabled = true;
+alignNode.MaxVelocity = 0;
+alignNode.MaxForce = 0;
+alignPart.Position = [0, 10, 0]; alignPart.Velocity = [0, 0, 0];
+new PhysicsSimulationService(alignProject, _ => { }).Step(.02f);
+if (alignPart.Position[0] <= 0)
+    throw new Exception("AlignPosition rigidity mode incorrectly obeyed force and velocity limits.");
+alignNode.AlignmentMode = "TwoAttachment";
+alignNode.RigidityEnabled = false;
+alignNode.MaxVelocity = 100;
+alignNode.MaxForce = 80;
+var clonedAlignPart = GameProjectStore.CloneSubtree(alignPart, out _) ?? throw new Exception("AlignPosition parent did not clone.");
+var clonedAlignAttachment = clonedAlignPart.Children.Single(node => node.Type == "Attachment");
+var clonedAlignNode = clonedAlignAttachment.Children.Single(node => node.Type == "AlignPosition");
+if (clonedAlignNode.Attachment0 != clonedAlignAttachment.Id || clonedAlignNode.Attachment1 != targetAttachment.Id)
+    throw new Exception("AlignPosition clone did not preserve attachment references.");
+var restoredAlignProject = JsonSerializer.Deserialize<GameProject>(
+    JsonSerializer.Serialize(alignProject, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions)
+    ?? throw new Exception("AlignPosition project did not deserialize.");
+GameProjectStore.EnsureProject(restoredAlignProject);
+var restoredAlignNode = restoredAlignProject.Workspace.Children.Single(node => node.Name == "AlignMover")
+    .Children.Single(node => node.Name == "MoverAttachment").Children.Single(node => node.Type == "AlignPosition");
+if (restoredAlignNode.AlignmentMode != "TwoAttachment" || restoredAlignNode.Attachment1 != targetAttachment.Id
+    || restoredAlignNode.Responsiveness != 10 || restoredAlignNode.MaxForce != 80)
+    throw new Exception("AlignPosition settings did not persist.");
+var destroyAttachmentScript = new GameScript
+{
+    Source = "workspace.AlignTarget.TargetAttachment:Destroy(); print('attachment-ref-cleared', workspace.AlignMover.MoverAttachment.AlignPosition.Attachment1 == nil)"
+};
+alignProject.Scripts.Add(destroyAttachmentScript);
+alignRuntime.Run(destroyAttachmentScript.Id);
+if (alignNode.Attachment1 != string.Empty || !alignOutput.Contains("attachment-ref-cleared\ttrue"))
+    throw new Exception("Destroying an Attachment did not clear AlignPosition.Attachment1.");
 }
 
 var attributeProject = new GameProject();

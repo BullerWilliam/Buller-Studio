@@ -84,9 +84,9 @@ public sealed class LuaXRuntime
     {
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue",
-        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "VectorForce", "LinearVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "Attachment", "Beam",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam",
         "Sky", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
-        "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UISizeConstraint", "UITextSizeConstraint"
+        "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"
     };
 
     public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null, bool isStudio = true)
@@ -423,6 +423,10 @@ public sealed class LuaXRuntime
         enumTable.Set("CameraMode", DynValue.NewTable(cameraModeEnum));
         enumTable.Set("LayoutDirection", DynValue.NewTable(layoutDirectionEnum));
         enumTable.Set("FillDirection", DynValue.NewTable(layoutDirectionEnum));
+        var positionAlignmentModeEnum = new Table(script);
+        positionAlignmentModeEnum.Set("OneAttachment", DynValue.NewString("OneAttachment"));
+        positionAlignmentModeEnum.Set("TwoAttachment", DynValue.NewString("TwoAttachment"));
+        enumTable.Set("PositionAlignmentMode", DynValue.NewTable(positionAlignmentModeEnum));
         var raycastFilterEnum = new Table(script);
         raycastFilterEnum.Set("Exclude", DynValue.NewString("Exclude"));
         raycastFilterEnum.Set("Include", DynValue.NewString("Include"));
@@ -948,8 +952,8 @@ public sealed class LuaXRuntime
         instance.Set("Playing", DynValue.NewBoolean(node.Playing));
         instance.Set("RollOffMinDistance", DynValue.NewNumber(node.RollOffMinDistance));
         instance.Set("RollOffMaxDistance", DynValue.NewNumber(node.RollOffMaxDistance));
-        instance.Set("Part0", DynValue.NewString(node.Part0));
-        instance.Set("Part1", DynValue.NewString(node.Part1));
+        instance.Set("Part0", node.Type is "WeldConstraint" or "NoCollisionConstraint" ? GetPartReferenceValue(node.Part0) : DynValue.NewString(node.Part0));
+        instance.Set("Part1", node.Type is "WeldConstraint" or "NoCollisionConstraint" ? GetPartReferenceValue(node.Part1) : DynValue.NewString(node.Part1));
         instance.Set("Attachment0", DynValue.NewString(node.Attachment0));
         instance.Set("Attachment1", DynValue.NewString(node.Attachment1));
         instance.Set("Width0", DynValue.NewNumber(node.Width0));
@@ -970,7 +974,16 @@ public sealed class LuaXRuntime
         instance.Set("LayoutSpacing", DynValue.NewNumber(node.LayoutSpacing));
         instance.Set("TableColumns", DynValue.NewNumber(node.TableColumns));
         instance.Set("AspectRatio", DynValue.NewNumber(node.AspectRatio));
+        instance.Set("AspectType", DynValue.NewString(node.AspectType));
+        instance.Set("DominantAxis", DynValue.NewString(node.DominantAxis));
         instance.Set("LayoutDirection", DynValue.NewString(node.LayoutDirection));
+        instance.Set("HorizontalAlignment", DynValue.NewString(node.HorizontalAlignment));
+        instance.Set("VerticalAlignment", DynValue.NewString(node.VerticalAlignment));
+        instance.Set("SortOrder", DynValue.NewString(node.SortOrder));
+        instance.Set("FlexMode", DynValue.NewString(node.FlexMode));
+        instance.Set("GrowRatio", DynValue.NewNumber(node.GrowRatio));
+        instance.Set("ShrinkRatio", DynValue.NewNumber(node.ShrinkRatio));
+        instance.Set("ItemLineAlignment", DynValue.NewString(node.ItemLineAlignment));
         instance.Set("SkyboxFront", DynValue.NewString(node.SkyboxFront));
         instance.Set("SkyboxBack", DynValue.NewString(node.SkyboxBack));
         instance.Set("SkyboxLeft", DynValue.NewString(node.SkyboxLeft));
@@ -1007,7 +1020,7 @@ public sealed class LuaXRuntime
         if (SceneNodeTypes.IsValueObject(node)) instance.Set("Value", GetValueObjectValue(node));
         instance.Set("Asset", DynValue.NewString(node.Asset));
         instance.Set("CameraMode", DynValue.NewString(node.CameraMode));
-        instance.Set("Mode", DynValue.NewString(node.CameraMode));
+        instance.Set("Mode", DynValue.NewString(node.Type == "AlignPosition" ? node.AlignmentMode : node.CameraMode));
         instance.Set("Subject", DynValue.NewString(node.Subject));
         instance.Set("FieldOfView", DynValue.NewNumber(node.FieldOfView));
         if (node.Type == "ParticleEmitter")
@@ -1078,6 +1091,16 @@ public sealed class LuaXRuntime
             instance.Set("SecondaryTangentAxis", VectorValue(node.SecondaryTangentAxis));
             instance.Set("ForceLimitsEnabled", DynValue.NewBoolean(node.ForceLimitsEnabled));
             instance.Set("MaxForce", DynValue.NewNumber(node.MaxForce));
+        }
+        if (node.Type == "AlignPosition")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("Responsiveness", DynValue.NewNumber(node.Responsiveness));
+            instance.Set("MaxVelocity", DynValue.NewNumber(node.MaxVelocity));
+            instance.Set("MaxForce", DynValue.NewNumber(node.MaxForce));
+            instance.Set("RigidityEnabled", DynValue.NewBoolean(node.RigidityEnabled));
+            instance.Set("ReactionForceEnabled", DynValue.NewBoolean(node.ReactionForceEnabled));
         }
         instance.Set("SetProperty", DynValue.NewCallback((_, args) =>
         {
@@ -1917,7 +1940,9 @@ public sealed class LuaXRuntime
         if (className == "Sparkles") node.Color = "#FFFFFF";
         if (className is "ParticleEmitter" or "Trail") node.Color = "#FFFFFF";
         if (className == "VectorForce") node.RelativeTo = "Attachment0";
-        if (className is "VectorForce" or "LinearVelocity" && args.Count > 1 && ReadNodeArgument(args[1]) is { } forceParent)
+        if (className is "WeldConstraint" or "NoCollisionConstraint" && args.Count > 1 && ReadNodeArgument(args[1]) is { } constraintParent && IsBasePart(constraintParent))
+            node.Part0 = constraintParent.Id;
+        if (className is "VectorForce" or "LinearVelocity" or "AlignPosition" && args.Count > 1 && ReadNodeArgument(args[1]) is { } forceParent)
             node.Attachment0 = forceParent.Type == "Attachment" ? forceParent.Id
                 : IsBasePart(forceParent) ? forceParent.Children.FirstOrDefault(child => child.Type == "Attachment")?.Id ?? string.Empty : string.Empty;
         createdNodes[node.Id] = node;
@@ -1950,15 +1975,15 @@ public sealed class LuaXRuntime
             var parent = FindParentNode(node);
             instances[node.Id].Set("Parent", parent is not null ? DynValue.NewTable(instances[parent.Id]) : DynValue.Nil);
             RefreshParentChildren(node);
-            if (node.Type == "WeldConstraint")
+            if (node.Type is "WeldConstraint" or "NoCollisionConstraint")
             {
                 instances[node.Id].Set("Part0", GetPartReferenceValue(node.Part0));
                 instances[node.Id].Set("Part1", GetPartReferenceValue(node.Part1));
             }
-            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity")
+            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition")
             {
                 instances[node.Id].Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
-                if (node.Type is "Beam" or "Trail") instances[node.Id].Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+                if (node.Type is "Beam" or "Trail" or "AlignPosition") instances[node.Id].Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
             }
         }
         foreach (var node in clonedNodes.Where(node => node.Type == "ObjectValue"))
@@ -2054,6 +2079,36 @@ public sealed class LuaXRuntime
             if (instances.TryGetValue(objectValue.Id, out var valueInstance)) valueInstance.Set("Value", DynValue.Nil);
             propertyChanged?.Invoke(objectValue, "Value", DynValue.Nil);
             FireValueChanged(objectValue, DynValue.Nil);
+        }
+        foreach (var constraint in KnownNodes().Where(item => item.Type is "WeldConstraint" or "NoCollisionConstraint"))
+        {
+            if (removedIds.Contains(constraint.Part0))
+            {
+                constraint.Part0 = string.Empty;
+                if (instances.TryGetValue(constraint.Id, out var instance)) instance.Set("Part0", DynValue.Nil);
+                propertyChanged?.Invoke(constraint, "Part0", DynValue.Nil);
+            }
+            if (removedIds.Contains(constraint.Part1))
+            {
+                constraint.Part1 = string.Empty;
+                if (instances.TryGetValue(constraint.Id, out var instance)) instance.Set("Part1", DynValue.Nil);
+                propertyChanged?.Invoke(constraint, "Part1", DynValue.Nil);
+            }
+        }
+        foreach (var constraint in KnownNodes().Where(item => item.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition"))
+        {
+            if (removedIds.Contains(constraint.Attachment0))
+            {
+                constraint.Attachment0 = string.Empty;
+                if (instances.TryGetValue(constraint.Id, out var instance)) instance.Set("Attachment0", DynValue.Nil);
+                propertyChanged?.Invoke(constraint, "Attachment0", DynValue.Nil);
+            }
+            if (removedIds.Contains(constraint.Attachment1))
+            {
+                constraint.Attachment1 = string.Empty;
+                if (instances.TryGetValue(constraint.Id, out var instance)) instance.Set("Attachment1", DynValue.Nil);
+                propertyChanged?.Invoke(constraint, "Attachment1", DynValue.Nil);
+            }
         }
         StopScripts(removedScriptIds);
         propertyChanged?.Invoke(node, "Parent", DynValue.Nil);
@@ -2250,15 +2305,15 @@ public sealed class LuaXRuntime
             if (node.Type == "Seat") instance.Set("Occupant", GetOccupantValue(node));
             if (FindNode(node.Subject) is { } subjectNode && IsBasePart(subjectNode) && instances.TryGetValue(subjectNode.Id, out var subject)) instance.Set("Subject", DynValue.NewTable(subject));
             else if (!IsBasePart(ReadNodeArgument(instance.Get("Subject")))) instance.Set("Subject", DynValue.Nil);
-            if (node.Type == "WeldConstraint")
+            if (node.Type is "WeldConstraint" or "NoCollisionConstraint")
             {
                 instance.Set("Part0", GetPartReferenceValue(node.Part0));
                 instance.Set("Part1", GetPartReferenceValue(node.Part1));
             }
-            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity")
+            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition")
             {
                 instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
-                if (node.Type is "Beam" or "Trail") instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+                if (node.Type is "Beam" or "Trail" or "AlignPosition") instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
             }
         }
         foreach (var node in nodes)
@@ -2295,6 +2350,11 @@ public sealed class LuaXRuntime
         {
             instance.Set("Velocity", VectorValue(node.Velocity));
             instance.Set("AssemblyLinearVelocity", VectorValue(node.Velocity));
+            return;
+        }
+        if (normalizedProperty == "mode" && node.Type == "AlignPosition")
+        {
+            instance.Set("Mode", DynValue.NewString(node.AlignmentMode));
             return;
         }
         if (normalizedProperty is "mode" or "cameramode")
@@ -2404,6 +2464,10 @@ public sealed class LuaXRuntime
             "velocityconstraintmode" => "VelocityConstraintMode",
             "forcelimitsenabled" => "ForceLimitsEnabled",
             "maxforce" => "MaxForce",
+            "maxvelocity" => "MaxVelocity",
+            "responsiveness" => "Responsiveness",
+            "rigidityenabled" => "RigidityEnabled",
+            "reactionforceenabled" => "ReactionForceEnabled",
             "width0" => "Width0",
             "width1" => "Width1",
             "fieldofview" => "FieldOfView",
@@ -2414,7 +2478,16 @@ public sealed class LuaXRuntime
             "layoutspacing" => "LayoutSpacing",
             "tablecolumns" => "TableColumns",
             "aspectratio" => "AspectRatio",
+            "aspecttype" => "AspectType",
+            "dominantaxis" => "DominantAxis",
             "layoutdirection" => "LayoutDirection",
+            "horizontalalignment" => "HorizontalAlignment",
+            "verticalalignment" => "VerticalAlignment",
+            "sortorder" => "SortOrder",
+            "flexmode" => "FlexMode",
+            "growratio" => "GrowRatio",
+            "shrinkratio" => "ShrinkRatio",
+            "itemlinealignment" => "ItemLineAlignment",
             "skyboxfront" => "SkyboxFront",
             "skyboxback" => "SkyboxBack",
             "skyboxleft" => "SkyboxLeft",
@@ -2640,12 +2713,16 @@ public sealed class LuaXRuntime
                     break;
                 case "minsize":
                     if (node.Type != "UISizeConstraint" || !TryReadVector2(value, out var minSize)) return DynValue.Nil;
+                    var priorMaxSize = instances.TryGetValue(node.Id, out var minSizeInstance)
+                        && TryReadVector2(minSizeInstance.Get("MaxSize"), out var pendingMaxSize) ? pendingMaxSize : node.MaxSize;
                     node.MinSize = minSize.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
-                    node.MaxSize = [Math.Max(node.MaxSize[0], node.MinSize[0]), Math.Max(node.MaxSize[1], node.MinSize[1])];
+                    node.MaxSize = [Math.Max(priorMaxSize[0], node.MinSize[0]), Math.Max(priorMaxSize[1], node.MinSize[1])];
                     break;
                 case "maxsize":
                     if (node.Type != "UISizeConstraint" || !TryReadVector2(value, out var maxSize)) return DynValue.Nil;
-                    node.MaxSize = [Math.Clamp(maxSize[0], node.MinSize[0], 1000000), Math.Clamp(maxSize[1], node.MinSize[1], 1000000)];
+                    var priorMinSize = instances.TryGetValue(node.Id, out var maxSizeInstance)
+                        && TryReadVector2(maxSizeInstance.Get("MinSize"), out var pendingMinSize) ? pendingMinSize : node.MinSize;
+                    node.MaxSize = [Math.Clamp(maxSize[0], Math.Clamp(priorMinSize[0], 0, 1000000), 1000000), Math.Clamp(maxSize[1], Math.Clamp(priorMinSize[1], 0, 1000000), 1000000)];
                     break;
                 case "textscaled":
                     if (node.Type is not ("TextLabel" or "TextButton" or "TextBox") || value.Type != DataType.Boolean) return DynValue.Nil;
@@ -2653,12 +2730,26 @@ public sealed class LuaXRuntime
                     break;
                 case "mintextsize":
                     if (node.Type != "UITextSizeConstraint" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    var priorMaxTextSize = instances.TryGetValue(node.Id, out var minTextSizeInstance)
+                        && minTextSizeInstance.Get("MaxTextSize") is { Type: DataType.Number } pendingMaxTextSize && double.IsFinite(pendingMaxTextSize.Number)
+                        ? (float)Math.Clamp(pendingMaxTextSize.Number, 1, 1000) : node.MaxTextSize;
                     node.MinTextSize = (float)Math.Clamp(value.Number, 1, 1000);
-                    node.MaxTextSize = Math.Max(node.MaxTextSize, node.MinTextSize);
+                    node.MaxTextSize = Math.Max(priorMaxTextSize, node.MinTextSize);
                     break;
                 case "maxtextsize":
                     if (node.Type != "UITextSizeConstraint" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
-                    node.MaxTextSize = (float)Math.Clamp(value.Number, node.MinTextSize, 1000);
+                    var priorMinTextSize = instances.TryGetValue(node.Id, out var maxTextSizeInstance)
+                        && maxTextSizeInstance.Get("MinTextSize") is { Type: DataType.Number } pendingMinTextSize && double.IsFinite(pendingMinTextSize.Number)
+                        ? (float)Math.Clamp(pendingMinTextSize.Number, 1, 1000) : node.MinTextSize;
+                    node.MaxTextSize = (float)Math.Clamp(value.Number, priorMinTextSize, 1000);
+                    break;
+                case "aspecttype":
+                    if (node.Type != "UIAspectRatioConstraint" || value.Type != DataType.String || value.String is not ("FitWithinMaxSize" or "ScaleWithParentSize")) return DynValue.Nil;
+                    node.AspectType = value.String;
+                    break;
+                case "dominantaxis":
+                    if (node.Type != "UIAspectRatioConstraint" || value.Type != DataType.String || value.String is not ("Width" or "Height")) return DynValue.Nil;
+                    node.DominantAxis = value.String;
                     break;
                 case "enabled":
                     if (value.Type != DataType.Boolean) return DynValue.Nil;
@@ -2779,6 +2870,13 @@ public sealed class LuaXRuntime
                     break;
                 case "cameramode":
                 case "mode":
+                    if (normalized == "mode" && node.Type == "AlignPosition")
+                    {
+                        if (value.Type != DataType.String || value.String is not ("OneAttachment" or "TwoAttachment")) return DynValue.Nil;
+                        node.AlignmentMode = value.String;
+                        break;
+                    }
+                    if (node.Type != "Camera") return DynValue.Nil;
                     var cameraMode = value.CastToString() is "Subject" ? "Subject" : "Custom";
                     if (cameraMode == "Subject" && !IsBasePart(FindNode(node.Subject))) return DynValue.Nil;
                     node.CameraMode = cameraMode;
@@ -2796,7 +2894,7 @@ public sealed class LuaXRuntime
                     break;
                 case "part0":
                 case "part1":
-                    if (node.Type != "WeldConstraint") return DynValue.Nil;
+                    if (node.Type is not ("WeldConstraint" or "NoCollisionConstraint")) return DynValue.Nil;
                     var endpoint = value.Type == DataType.Nil ? null : ReadNodeArgument(value);
                     if (value.Type != DataType.Nil && !IsBasePart(endpoint)) return DynValue.Nil;
                     var endpointId = endpoint?.Id ?? string.Empty;
@@ -2806,11 +2904,11 @@ public sealed class LuaXRuntime
                     break;
                 case "attachment0":
                 case "attachment1":
-                    if (node.Type is not ("Beam" or "Trail" or "VectorForce" or "LinearVelocity") || normalized == "attachment1" && node.Type is ("VectorForce" or "LinearVelocity")) return DynValue.Nil;
+                    if (node.Type is not ("Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition") || normalized == "attachment1" && node.Type is ("VectorForce" or "LinearVelocity")) return DynValue.Nil;
                     var attachment = value.Type == DataType.Nil ? null : ReadNodeArgument(value);
                     if (value.Type != DataType.Nil && attachment?.Type != "Attachment") return DynValue.Nil;
                     var attachmentId = attachment?.Id ?? string.Empty;
-                    if (node.Type is "Beam" or "Trail" && attachmentId.Length > 0 && attachmentId == (normalized == "attachment0" ? node.Attachment1 : node.Attachment0)) return DynValue.Nil;
+                    if (node.Type is "Beam" or "Trail" or "AlignPosition" && attachmentId.Length > 0 && attachmentId == (normalized == "attachment0" ? node.Attachment1 : node.Attachment0)) return DynValue.Nil;
                     if (normalized == "attachment0") node.Attachment0 = attachmentId;
                     else node.Attachment1 = attachmentId;
                     break;
@@ -2824,11 +2922,68 @@ public sealed class LuaXRuntime
                 case "cornerradius": node.CornerRadius = (float)Math.Max(0, value.Number); break;
                 case "strokecolor": node.StrokeColor = value.CastToString() ?? node.StrokeColor; break;
                 case "strokethickness": node.StrokeThickness = (float)Math.Max(0, value.Number); break;
-                case "textsize": node.TextSize = (float)Math.Clamp(value.Number, 1, 200); break;
-                case "layoutspacing": node.LayoutSpacing = (float)Math.Max(0, value.Number); break;
+                case "textsize":
+                    if (node.Type is not ("TextLabel" or "TextButton" or "TextBox") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.TextSize = (float)Math.Clamp(value.Number, 1, 200);
+                    break;
+                case "layoutspacing":
+                    if (node.Type is not ("UIListLayout" or "UITableLayout") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.LayoutSpacing = (float)Math.Clamp(value.Number, 0, 1000000);
+                    break;
                 case "tablecolumns": node.TableColumns = (int)Math.Clamp(value.Number, 1, 24); break;
-                case "aspectratio": node.AspectRatio = (float)Math.Max(.001, value.Number); break;
+                case "aspectratio":
+                    if (node.Type is not ("UIAspectRatio" or "UIAspectRatioConstraint") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.AspectRatio = (float)Math.Clamp(value.Number, .001, 1000);
+                    break;
                 case "layoutdirection": node.LayoutDirection = value.CastToString() == "Horizontal" ? "Horizontal" : "Vertical"; break;
+                case "horizontalalignment":
+                    if (node.Type != "UIListLayout" || value.Type != DataType.String || value.String is not ("Left" or "Center" or "Right")) return DynValue.Nil;
+                    node.HorizontalAlignment = value.String;
+                    break;
+                case "verticalalignment":
+                    if (node.Type != "UIListLayout" || value.Type != DataType.String || value.String is not ("Top" or "Center" or "Bottom")) return DynValue.Nil;
+                    node.VerticalAlignment = value.String;
+                    break;
+                case "sortorder":
+                    if (node.Type != "UIListLayout" || value.Type != DataType.String || value.String is not ("LayoutOrder" or "Name")) return DynValue.Nil;
+                    node.SortOrder = value.String;
+                    break;
+                case "flexmode":
+                    if (node.Type != "UIFlexItem" || value.Type != DataType.String || value.String is not ("None" or "Grow" or "Shrink" or "Fill" or "Custom")) return DynValue.Nil;
+                    node.FlexMode = value.String;
+                    break;
+                case "growratio":
+                    if (node.Type != "UIFlexItem" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.GrowRatio = (float)Math.Clamp(value.Number, 0, 1000);
+                    break;
+                case "shrinkratio":
+                    if (node.Type != "UIFlexItem" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.ShrinkRatio = (float)Math.Clamp(value.Number, 0, 1000);
+                    break;
+                case "itemlinealignment":
+                    if (node.Type != "UIFlexItem" || value.Type != DataType.String || value.String is not ("Automatic" or "Start" or "Center" or "End" or "Stretch")) return DynValue.Nil;
+                    node.ItemLineAlignment = value.String;
+                    break;
+                case "responsiveness":
+                    if (node.Type != "AlignPosition" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.Responsiveness = (float)Math.Clamp(value.Number, 0, 200);
+                    break;
+                case "maxvelocity":
+                    if (node.Type != "AlignPosition" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.MaxVelocity = (float)Math.Clamp(value.Number, 0, 10000);
+                    break;
+                case "maxforce":
+                    if (node.Type != "AlignPosition" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.MaxForce = (float)Math.Clamp(value.Number, 0, 1000000);
+                    break;
+                case "rigidityenabled":
+                    if (node.Type != "AlignPosition" || value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.RigidityEnabled = value.Boolean;
+                    break;
+                case "reactionforceenabled":
+                    if (node.Type != "AlignPosition" || value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.ReactionForceEnabled = value.Boolean;
+                    break;
                 case "skyboxfront" or "skyboxft": if (node.Type is not ("Workspace" or "Sky")) return DynValue.Nil; node.SkyboxFront = value.CastToString() ?? string.Empty; break;
                 case "skyboxback" or "skyboxbk": if (node.Type is not ("Workspace" or "Sky")) return DynValue.Nil; node.SkyboxBack = value.CastToString() ?? string.Empty; break;
                 case "skyboxleft" or "skyboxlf": if (node.Type is not ("Workspace" or "Sky")) return DynValue.Nil; node.SkyboxLeft = value.CastToString() ?? string.Empty; break;
@@ -2850,6 +3005,10 @@ public sealed class LuaXRuntime
             humanoidInstance.Set("Health", DynValue.NewNumber(node.Health));
         if (normalized == "rolloffmindistance" && instances.TryGetValue(node.Id, out var soundInstance))
             soundInstance.Set("RollOffMaxDistance", DynValue.NewNumber(node.RollOffMaxDistance));
+        if (normalized == "minsize" && node.Type == "UISizeConstraint" && instances.TryGetValue(node.Id, out var sizeConstraintInstance))
+            sizeConstraintInstance.Set("MaxSize", Vector2Value(node.MaxSize));
+        if (normalized == "mintextsize" && node.Type == "UITextSizeConstraint" && instances.TryGetValue(node.Id, out var textConstraintInstance))
+            textConstraintInstance.Set("MaxTextSize", DynValue.NewNumber(node.MaxTextSize));
         if (normalized == "name" && FindParentNode(node) is { } parent) RefreshParentChildren(parent);
         propertyChanged?.Invoke(node, property, value);
         return DynValue.Nil;
@@ -3119,6 +3278,20 @@ public sealed class LuaXRuntime
             };
             if (velocityValue.Type != DataType.Nil) return velocityValue;
         }
+        if (node.Type == "AlignPosition")
+        {
+            var alignmentValue = property.ToLowerInvariant() switch
+            {
+                "mode" => DynValue.NewString(node.AlignmentMode),
+                "responsiveness" => DynValue.NewNumber(node.Responsiveness),
+                "maxvelocity" => DynValue.NewNumber(node.MaxVelocity),
+                "maxforce" => DynValue.NewNumber(node.MaxForce),
+                "rigidityenabled" => DynValue.NewBoolean(node.RigidityEnabled),
+                "reactionforceenabled" => DynValue.NewBoolean(node.ReactionForceEnabled),
+                _ => DynValue.Nil
+            };
+            if (alignmentValue.Type != DataType.Nil) return alignmentValue;
+        }
         if (node.Type == "ParticleEmitter")
         {
             var emitterValue = property.ToLowerInvariant() switch
@@ -3196,6 +3369,8 @@ public sealed class LuaXRuntime
         "textscaled" => node.Type is "TextLabel" or "TextButton" or "TextBox" ? DynValue.NewBoolean(node.TextScaled) : DynValue.Nil,
         "mintextsize" => node.Type == "UITextSizeConstraint" ? DynValue.NewNumber(node.MinTextSize) : DynValue.Nil,
         "maxtextsize" => node.Type == "UITextSizeConstraint" ? DynValue.NewNumber(node.MaxTextSize) : DynValue.Nil,
+        "aspecttype" => node.Type == "UIAspectRatioConstraint" ? DynValue.NewString(node.AspectType) : DynValue.Nil,
+        "dominantaxis" => node.Type == "UIAspectRatioConstraint" ? DynValue.NewString(node.DominantAxis) : DynValue.Nil,
         "enabled" => DynValue.NewBoolean(node.Enabled),
         "brightness" => DynValue.NewNumber(node.Brightness),
         "range" => DynValue.NewNumber(node.Range),
@@ -3261,6 +3436,13 @@ public sealed class LuaXRuntime
         "tablecolumns" => DynValue.NewNumber(node.TableColumns),
         "aspectratio" => DynValue.NewNumber(node.AspectRatio),
         "layoutdirection" => DynValue.NewString(node.LayoutDirection),
+        "horizontalalignment" => node.Type == "UIListLayout" ? DynValue.NewString(node.HorizontalAlignment) : DynValue.Nil,
+        "verticalalignment" => node.Type == "UIListLayout" ? DynValue.NewString(node.VerticalAlignment) : DynValue.Nil,
+        "sortorder" => node.Type == "UIListLayout" ? DynValue.NewString(node.SortOrder) : DynValue.Nil,
+        "flexmode" => node.Type == "UIFlexItem" ? DynValue.NewString(node.FlexMode) : DynValue.Nil,
+        "growratio" => node.Type == "UIFlexItem" ? DynValue.NewNumber(node.GrowRatio) : DynValue.Nil,
+        "shrinkratio" => node.Type == "UIFlexItem" ? DynValue.NewNumber(node.ShrinkRatio) : DynValue.Nil,
+        "itemlinealignment" => node.Type == "UIFlexItem" ? DynValue.NewString(node.ItemLineAlignment) : DynValue.Nil,
         "skyboxfront" or "skyboxft" => DynValue.NewString(node.SkyboxFront),
         "skyboxback" or "skyboxbk" => DynValue.NewString(node.SkyboxBack),
         "skyboxleft" or "skyboxlf" => DynValue.NewString(node.SkyboxLeft),
@@ -3403,7 +3585,7 @@ public sealed class LuaXRuntime
         "BasePart" => IsBasePart(node),
         "Light" => SceneNodeTypes.IsLight(node),
         "ValueBase" => SceneNodeTypes.IsValueObject(node),
-        "UIComponent" => node.Type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UISizeConstraint" or "UITextSizeConstraint",
+        "UIComponent" => node.Type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UIAspectRatioConstraint" or "UISizeConstraint" or "UITextSizeConstraint" or "UIFlexItem",
         "LuaSourceContainer" => node.Type is "Script" or "ModuleScript",
         "BaseScript" => node.Type == "Script",
         "FaceInstance" or "Decal" => node.Type is "Decal" or "Texture",
@@ -3740,7 +3922,7 @@ public sealed class LuaXRuntime
                 if (instance.Get("RollOffMaxDistance").Type == DataType.Number && double.IsFinite(instance.Get("RollOffMaxDistance").Number))
                     Assign(node, "RollOffMaxDistance", node.RollOffMaxDistance, (float)Math.Clamp(instance.Get("RollOffMaxDistance").Number, node.RollOffMinDistance + .01f, 10000), value => node.RollOffMaxDistance = value);
             }
-            if (node.Type == "WeldConstraint")
+            if (node.Type is "WeldConstraint" or "NoCollisionConstraint")
             {
                 var part0Value = instance.Get("Part0");
                 var requestedPart0 = ReadNodeArgument(part0Value);
@@ -3753,7 +3935,7 @@ public sealed class LuaXRuntime
                     Assign(node, "Part1", node.Part1, requestedPart1.Id, value => node.Part1 = value);
                 else if (part1Value.Type == DataType.Nil) Assign(node, "Part1", node.Part1, string.Empty, value => node.Part1 = value);
             }
-            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity")
+            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition")
             {
                 var attachment0Value = instance.Get("Attachment0");
                 var requestedAttachment0 = ReadNodeArgument(attachment0Value);
@@ -3801,6 +3983,27 @@ public sealed class LuaXRuntime
                         Assign(node, "VelocityConstraintMode", node.VelocityConstraintMode, instance.Get("VelocityConstraintMode").String, value => node.VelocityConstraintMode = value);
                     if (instance.Get("RelativeTo").Type == DataType.String && instance.Get("RelativeTo").String is "World" or "Attachment0")
                         Assign(node, "RelativeTo", node.RelativeTo, instance.Get("RelativeTo").String, value => node.RelativeTo = value);
+                }
+                else if (node.Type == "AlignPosition")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    if (instance.Get("Mode").CastToString() is { } mode && mode is ("OneAttachment" or "TwoAttachment"))
+                        Assign(node, "Mode", node.AlignmentMode, mode, value => node.AlignmentMode = value);
+                    if (instance.Get("Responsiveness") is { Type: DataType.Number } responsiveness && double.IsFinite(responsiveness.Number))
+                        Assign(node, "Responsiveness", node.Responsiveness, (float)Math.Clamp(responsiveness.Number, 0, 200), value => node.Responsiveness = value);
+                    if (instance.Get("MaxVelocity") is { Type: DataType.Number } maxVelocity && double.IsFinite(maxVelocity.Number))
+                        Assign(node, "MaxVelocity", node.MaxVelocity, (float)Math.Clamp(maxVelocity.Number, 0, 10000), value => node.MaxVelocity = value);
+                    if (instance.Get("MaxForce") is { Type: DataType.Number } maxForce && double.IsFinite(maxForce.Number))
+                        Assign(node, "MaxForce", node.MaxForce, (float)Math.Clamp(maxForce.Number, 0, 1000000), value => node.MaxForce = value);
+                    if (instance.Get("RigidityEnabled").Type == DataType.Boolean)
+                        Assign(node, "RigidityEnabled", node.RigidityEnabled, instance.Get("RigidityEnabled").Boolean, value => node.RigidityEnabled = value);
+                    if (instance.Get("ReactionForceEnabled").Type == DataType.Boolean)
+                        Assign(node, "ReactionForceEnabled", node.ReactionForceEnabled, instance.Get("ReactionForceEnabled").Boolean, value => node.ReactionForceEnabled = value);
                 }
                 else
                 {
@@ -3860,7 +4063,8 @@ public sealed class LuaXRuntime
             if (instance.Get("CornerRadius").Type == DataType.Number) Assign(node, "CornerRadius", node.CornerRadius, (float)Math.Max(0, instance.Get("CornerRadius").Number), value => node.CornerRadius = value);
             if (instance.Get("StrokeColor").CastToString() is { } strokeColor) Assign(node, "StrokeColor", node.StrokeColor, strokeColor, value => node.StrokeColor = value);
             if (instance.Get("StrokeThickness").Type == DataType.Number) Assign(node, "StrokeThickness", node.StrokeThickness, (float)Math.Max(0, instance.Get("StrokeThickness").Number), value => node.StrokeThickness = value);
-            if (instance.Get("TextSize").Type == DataType.Number) Assign(node, "TextSize", node.TextSize, (float)Math.Clamp(instance.Get("TextSize").Number, 1, 200), value => node.TextSize = value);
+            if (node.Type is "TextLabel" or "TextButton" or "TextBox" && instance.Get("TextSize") is { Type: DataType.Number } requestedTextSize && double.IsFinite(requestedTextSize.Number))
+                Assign(node, "TextSize", node.TextSize, (float)Math.Clamp(requestedTextSize.Number, 1, 200), value => node.TextSize = value);
             if (node.Type is "TextLabel" or "TextButton" or "TextBox" && instance.Get("TextScaled").Type == DataType.Boolean)
                 Assign(node, "TextScaled", node.TextScaled, instance.Get("TextScaled").Boolean, value => node.TextScaled = value);
             if (node.Type == "UITextSizeConstraint")
@@ -3869,10 +4073,23 @@ public sealed class LuaXRuntime
                     Assign(node, "MinTextSize", node.MinTextSize, (float)Math.Clamp(minTextSize.Number, 1, 1000), value => node.MinTextSize = value);
                 if (instance.Get("MaxTextSize") is { Type: DataType.Number } maxTextSize && double.IsFinite(maxTextSize.Number))
                     Assign(node, "MaxTextSize", node.MaxTextSize, (float)Math.Clamp(maxTextSize.Number, node.MinTextSize, 1000), value => node.MaxTextSize = value);
+                instance.Set("MinTextSize", DynValue.NewNumber(node.MinTextSize));
+                instance.Set("MaxTextSize", DynValue.NewNumber(node.MaxTextSize));
             }
-            if (instance.Get("LayoutSpacing").Type == DataType.Number) Assign(node, "LayoutSpacing", node.LayoutSpacing, (float)Math.Max(0, instance.Get("LayoutSpacing").Number), value => node.LayoutSpacing = value);
+            if (node.Type is "UIListLayout" or "UITableLayout" && instance.Get("LayoutSpacing") is { Type: DataType.Number } requestedSpacing && double.IsFinite(requestedSpacing.Number))
+                Assign(node, "LayoutSpacing", node.LayoutSpacing, (float)Math.Clamp(requestedSpacing.Number, 0, 1000000), value => node.LayoutSpacing = value);
             if (instance.Get("TableColumns").Type == DataType.Number) Assign(node, "TableColumns", node.TableColumns, (int)Math.Clamp(instance.Get("TableColumns").Number, 1, 24), value => node.TableColumns = value);
-            if (instance.Get("AspectRatio").Type == DataType.Number) Assign(node, "AspectRatio", node.AspectRatio, (float)Math.Max(.001, instance.Get("AspectRatio").Number), value => node.AspectRatio = value);
+            if (node.Type is "UIAspectRatio" or "UIAspectRatioConstraint" && instance.Get("AspectRatio") is { Type: DataType.Number } requestedAspectRatio && double.IsFinite(requestedAspectRatio.Number))
+                Assign(node, "AspectRatio", node.AspectRatio, (float)Math.Clamp(requestedAspectRatio.Number, .001, 1000), value => node.AspectRatio = value);
+            if (node.Type == "UIAspectRatioConstraint")
+            {
+                var aspectType = instance.Get("AspectType").CastToString();
+                if (aspectType is "FitWithinMaxSize" or "ScaleWithParentSize")
+                    Assign(node, "AspectType", node.AspectType, aspectType, value => node.AspectType = value);
+                var dominantAxis = instance.Get("DominantAxis").CastToString();
+                if (dominantAxis is "Width" or "Height")
+                    Assign(node, "DominantAxis", node.DominantAxis, dominantAxis, value => node.DominantAxis = value);
+            }
             if (node.Type == "UISizeConstraint")
             {
                 if (TryReadVector2(instance.Get("MinSize"), out var requestedMin))
@@ -3885,8 +4102,30 @@ public sealed class LuaXRuntime
                     var nextMax = new[] { Math.Clamp(requestedMax[0], node.MinSize[0], 1000000), Math.Clamp(requestedMax[1], node.MinSize[1], 1000000) };
                     if (!node.MaxSize.SequenceEqual(nextMax)) { node.MaxSize = nextMax; MarkChanged(node, "MaxSize"); }
                 }
+                instance.Set("MinSize", Vector2Value(node.MinSize));
+                instance.Set("MaxSize", Vector2Value(node.MaxSize));
             }
             if (instance.Get("LayoutDirection").CastToString() is { } layoutDirection) Assign(node, "LayoutDirection", node.LayoutDirection, layoutDirection == "Horizontal" ? "Horizontal" : "Vertical", value => node.LayoutDirection = value);
+            if (node.Type == "UIListLayout")
+            {
+                if (instance.Get("HorizontalAlignment").CastToString() is { } horizontalAlignment && horizontalAlignment is ("Left" or "Center" or "Right"))
+                    Assign(node, "HorizontalAlignment", node.HorizontalAlignment, horizontalAlignment, value => node.HorizontalAlignment = value);
+                if (instance.Get("VerticalAlignment").CastToString() is { } verticalAlignment && verticalAlignment is ("Top" or "Center" or "Bottom"))
+                    Assign(node, "VerticalAlignment", node.VerticalAlignment, verticalAlignment, value => node.VerticalAlignment = value);
+                if (instance.Get("SortOrder").CastToString() is { } sortOrder && sortOrder is ("LayoutOrder" or "Name"))
+                    Assign(node, "SortOrder", node.SortOrder, sortOrder, value => node.SortOrder = value);
+            }
+            if (node.Type == "UIFlexItem")
+            {
+                if (instance.Get("FlexMode").CastToString() is { } flexMode && flexMode is ("None" or "Grow" or "Shrink" or "Fill" or "Custom"))
+                    Assign(node, "FlexMode", node.FlexMode, flexMode, value => node.FlexMode = value);
+                if (instance.Get("GrowRatio") is { Type: DataType.Number } growRatio && double.IsFinite(growRatio.Number))
+                    Assign(node, "GrowRatio", node.GrowRatio, (float)Math.Clamp(growRatio.Number, 0, 1000), value => node.GrowRatio = value);
+                if (instance.Get("ShrinkRatio") is { Type: DataType.Number } shrinkRatio && double.IsFinite(shrinkRatio.Number))
+                    Assign(node, "ShrinkRatio", node.ShrinkRatio, (float)Math.Clamp(shrinkRatio.Number, 0, 1000), value => node.ShrinkRatio = value);
+                if (instance.Get("ItemLineAlignment").CastToString() is { } itemAlignment && itemAlignment is ("Automatic" or "Start" or "Center" or "End" or "Stretch"))
+                    Assign(node, "ItemLineAlignment", node.ItemLineAlignment, itemAlignment, value => node.ItemLineAlignment = value);
+            }
             if (node.Type == "UIGridLayout")
             {
                 if (TryReadUDim2(instance.Get("CellSize"), out var sizeScale, out var sizeOffset)
