@@ -18,6 +18,8 @@ public sealed class SceneRenderService
     private readonly DirectionalLight3D sunLight = new() { Color = Colors.White, Direction = new Vector3D(-.5, -1, -.7) };
     private readonly Dictionary<string, MeshGeometryModel3D> visuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MeshGeometryModel3D> highlightFills = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (MeshGeometryModel3D? Surface, MeshGeometryModel3D? Outline)> selectionBoxVisuals = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (MeshGeometryModel3D? Surface, MeshGeometryModel3D? Outline)> selectionSphereVisuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MeshGeometryModel3D> forceFieldVisuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (MeshGeometryModel3D Outer, MeshGeometryModel3D? Inner)> particleEffectVisuals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, float> particleEffectTimes = new(StringComparer.Ordinal);
@@ -48,6 +50,7 @@ public sealed class SceneRenderService
     private bool hasBeamNodes;
     private bool hasTrailNodes;
     private bool hasVisibleForceFields;
+    private bool hasSelectionAdornments;
     private bool hasParticleEffects;
 
     private sealed record BeamState(Point3D Start, Point3D End, float Width0, float Width1, string Color, float Transparency);
@@ -70,6 +73,8 @@ public sealed class SceneRenderService
     public IReadOnlyDictionary<string, MeshGeometryModel3D> Visuals => visuals;
     public IReadOnlyDictionary<string, OutLineMeshGeometryModel3D> BeamVisuals => beamVisuals;
     public IReadOnlyDictionary<string, MeshGeometryModel3D> HighlightFills => highlightFills;
+    public IReadOnlyDictionary<string, (MeshGeometryModel3D? Surface, MeshGeometryModel3D? Outline)> SelectionBoxVisuals => selectionBoxVisuals;
+    public IReadOnlyDictionary<string, (MeshGeometryModel3D? Surface, MeshGeometryModel3D? Outline)> SelectionSphereVisuals => selectionSphereVisuals;
     public float CameraYaw => orbitYaw;
 
     public void SetSelection(string? selectedId)
@@ -79,10 +84,17 @@ public sealed class SceneRenderService
         var selectedParts = selectedNode?.Type == "Model"
             ? GameProjectStore.Flatten(selectedNode.Children).Where(IsRenderable).Select(node => node.Id).ToHashSet(StringComparer.Ordinal)
             : null;
+        var selectedAdornee = selectedNode?.Type is ("SelectionBox" or "SelectionSphere") && activeProject is not null
+            ? GameProjectStore.Flatten(activeProject.Workspace.Children).FirstOrDefault(node => node.Id == selectedNode.Adornee)
+            : null;
+        var selectedBoxParts = selectedAdornee?.Type == "Model"
+            ? GameProjectStore.Flatten(selectedAdornee.Children).Where(SceneNodeTypes.IsBasePart).Select(node => node.Id).ToHashSet(StringComparer.Ordinal)
+            : null;
         foreach (var entry in visuals)
         {
             if (entry.Value is not OutLineMeshGeometryModel3D visual) continue;
             var isSelected = entry.Key == selectedId || selectedParts?.Contains(entry.Key) == true
+                || entry.Key == selectedAdornee?.Id || selectedBoxParts?.Contains(entry.Key) == true
                 || selectedNode?.Type == "Highlight" && highlightSources.TryGetValue(entry.Key, out var selectedHighlight) && selectedHighlight.Id == selectedId;
             highlightSources.TryGetValue(entry.Key, out var highlight);
             visual.EnableOutline = isSelected || highlight is not null && highlight.Enabled && highlight.OutlineTransparency < 1;
@@ -131,6 +143,18 @@ public sealed class SceneRenderService
         }
         visuals.Clear();
         highlightFills.Clear();
+        foreach (var (surface, outline) in selectionBoxVisuals.Values)
+        {
+            if (surface is not null) viewport.Items.Remove(surface);
+            if (outline is not null) viewport.Items.Remove(outline);
+        }
+        selectionBoxVisuals.Clear();
+        foreach (var (surface, outline) in selectionSphereVisuals.Values)
+        {
+            if (surface is not null) viewport.Items.Remove(surface);
+            if (outline is not null) viewport.Items.Remove(outline);
+        }
+        selectionSphereVisuals.Clear();
         forceFieldVisuals.Clear();
         particleEffectVisuals.Clear();
         highlightSources.Clear();
@@ -152,6 +176,7 @@ public sealed class SceneRenderService
         RefreshBeams(project);
         RefreshTrails(project);
         RefreshHighlights(project);
+        RefreshSelectionAdornments(project);
         RefreshForceFields(project);
         RefreshParticleEffects(project);
         RefreshSkybox(project.Workspace, project);
@@ -168,6 +193,8 @@ public sealed class SceneRenderService
         }
         if (node.Type == "Model")
         {
+            if (highlightFills.Count > 0) RefreshHighlights(project);
+            if (hasSelectionAdornments && AffectsSelectionAdornment(node, project)) RefreshSelectionAdornments(project);
             if (hasBeamNodes) RefreshBeams(project);
             if (hasTrailNodes) RefreshTrails(project);
             if (hasVisibleForceFields) RefreshForceFields(project);
@@ -201,6 +228,11 @@ public sealed class SceneRenderService
         {
             RefreshHighlights(project);
             SetSelection(selectedId);
+            return;
+        }
+        if (node.Type is "SelectionBox" or "SelectionSphere")
+        {
+            RefreshSelectionAdornments(project);
             return;
         }
         if (node.Type == "ForceField")
@@ -253,6 +285,7 @@ public sealed class SceneRenderService
         if (node.Type is not ("ImageLabel" or "Decal" or "Texture") && !(node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture))) model.Material = MakeMaterial(node);
         if (SceneNodeTypes.IsBasePart(node))
         {
+            if (hasSelectionAdornments && AffectsSelectionAdornment(node, project)) RefreshSelectionAdornments(project);
             if (hasBeamNodes) RefreshBeams(project);
             if (hasTrailNodes) RefreshTrails(project);
             if (hasVisibleForceFields) RefreshForceFields(project);
@@ -1047,10 +1080,16 @@ public sealed class SceneRenderService
         foreach (var fill in highlightFills.Values) viewport.Items.Remove(fill);
         highlightFills.Clear();
         highlightSources.Clear();
+        var explicitTargets = GameProjectStore.Flatten(project.Workspace.Children)
+            .Where(node => node.Type == "Highlight" && node.Enabled && node.Adornee.Length > 0)
+            .GroupBy(node => node.Adornee, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
 
         void Visit(SceneNode node, SceneNode? inheritedHighlight)
         {
-            var highlight = node.Children.FirstOrDefault(child => child.Type == "Highlight" && child.Enabled)
+            explicitTargets.TryGetValue(node.Id, out var explicitHighlight);
+            var highlight = explicitHighlight
+                ?? node.Children.FirstOrDefault(child => child.Type == "Highlight" && child.Enabled && child.Adornee.Length == 0)
                 ?? inheritedHighlight;
             if (SceneNodeTypes.IsBasePart(node) && highlight is not null && visuals.TryGetValue(node.Id, out var target))
             {
@@ -1073,6 +1112,142 @@ public sealed class SceneRenderService
         }
 
         Visit(project.Workspace, null);
+    }
+
+    private void RefreshSelectionAdornments(GameProject project)
+    {
+        foreach (var (surface, outline) in selectionBoxVisuals.Values)
+        {
+            if (surface is not null) viewport.Items.Remove(surface);
+            if (outline is not null) viewport.Items.Remove(outline);
+        }
+        selectionBoxVisuals.Clear();
+        foreach (var (surface, outline) in selectionSphereVisuals.Values)
+        {
+            if (surface is not null) viewport.Items.Remove(surface);
+            if (outline is not null) viewport.Items.Remove(outline);
+        }
+        selectionSphereVisuals.Clear();
+        var workspaceNodes = GameProjectStore.Flatten(project.Workspace.Children);
+        var targets = workspaceNodes.ToDictionary(node => node.Id, StringComparer.Ordinal);
+        hasSelectionAdornments = workspaceNodes.Any(node => node.Type is "SelectionBox" or "SelectionSphere");
+        foreach (var box in workspaceNodes.Where(node => node.Type is ("SelectionBox" or "SelectionSphere") && node.Visible))
+        {
+            if (!targets.TryGetValue(box.Adornee, out var target) || !TryGetSelectionBounds(target, out var size, out var transform)) continue;
+            var isSphere = box.Type == "SelectionSphere";
+            var sphereRadius = size.Length() / 2;
+            MeshGeometryModel3D? surface = null;
+            MeshGeometryModel3D? outline = null;
+            if (box.SurfaceTransparency < 1)
+            {
+                var builder = new MeshBuilder();
+                if (isSphere) builder.AddSphere(Vector3.Zero, sphereRadius + .002f, 32, 24);
+                else builder.AddBox(Vector3.Zero, size.X + .004f, size.Y + .004f, size.Z + .004f);
+                var color = ParseHighlightColor(box.SurfaceColor3, box.SurfaceTransparency, Colors.White);
+                surface = new MeshGeometryModel3D
+                {
+                    Geometry = builder.ToMeshGeometry3D(),
+                    Material = new PhongMaterial { DiffuseColor = new Color4(color.R / 255f, color.G / 255f, color.B / 255f, color.A / 255f) },
+                    Transform = transform, IsTransparent = true, IsHitTestVisible = false, IsThrowingShadow = false
+                };
+                viewport.Items.Add(surface);
+            }
+            if ((isSphere || box.LineThickness > 0) && box.Transparency < 1)
+            {
+                var builder = new MeshBuilder();
+                if (isSphere) AddSelectionSphereRings(builder, sphereRadius);
+                else
+                {
+                    var thickness = Math.Clamp(box.LineThickness, .001f, 10);
+                    foreach (var y in new[] { -size.Y / 2, size.Y / 2 })
+                    foreach (var z in new[] { -size.Z / 2, size.Z / 2 })
+                        builder.AddBox(new Vector3(0, y, z), size.X + thickness, thickness, thickness);
+                    foreach (var x in new[] { -size.X / 2, size.X / 2 })
+                    foreach (var z in new[] { -size.Z / 2, size.Z / 2 })
+                        builder.AddBox(new Vector3(x, 0, z), thickness, size.Y + thickness, thickness);
+                    foreach (var x in new[] { -size.X / 2, size.X / 2 })
+                    foreach (var y in new[] { -size.Y / 2, size.Y / 2 })
+                        builder.AddBox(new Vector3(x, y, 0), thickness, thickness, size.Z + thickness);
+                }
+                var color = ParseHighlightColor(box.Color, box.Transparency, Colors.White);
+                outline = new MeshGeometryModel3D
+                {
+                    Geometry = builder.ToMeshGeometry3D(),
+                    Material = new PhongMaterial { DiffuseColor = new Color4(color.R / 255f, color.G / 255f, color.B / 255f, color.A / 255f) },
+                    Transform = transform, IsTransparent = box.Transparency > 0, IsHitTestVisible = false, IsThrowingShadow = false
+                };
+                viewport.Items.Add(outline);
+            }
+            if (isSphere) selectionSphereVisuals[box.Id] = (surface, outline);
+            else selectionBoxVisuals[box.Id] = (surface, outline);
+        }
+    }
+
+    private static void AddSelectionSphereRings(MeshBuilder builder, float radius)
+    {
+        var thickness = Math.Clamp(radius * .015f, .015f, .12f);
+        const int segments = 32;
+        for (var axis = 0; axis < 3; axis++)
+        for (var segment = 0; segment < segments; segment++)
+        {
+            Vector3 Point(float angle)
+            {
+                var cosine = MathF.Cos(angle) * radius;
+                var sine = MathF.Sin(angle) * radius;
+                return axis switch
+                {
+                    0 => new Vector3(0, cosine, sine),
+                    1 => new Vector3(cosine, 0, sine),
+                    _ => new Vector3(cosine, sine, 0)
+                };
+            }
+            builder.AddCylinder(Point(2 * MathF.PI * segment / segments), Point(2 * MathF.PI * (segment + 1) / segments), thickness, 6, true, true);
+        }
+    }
+
+    private static bool AffectsSelectionAdornment(SceneNode changed, GameProject project)
+    {
+        var nodes = GameProjectStore.Flatten(project.Workspace.Children);
+        foreach (var box in nodes.Where(node => node.Type is ("SelectionBox" or "SelectionSphere") && node.Visible))
+        {
+            if (box.Adornee == changed.Id) return true;
+            var target = nodes.FirstOrDefault(node => node.Id == box.Adornee);
+            if (target?.Type == "Model" && GameProjectStore.Flatten(target.Children).Any(node => node.Id == changed.Id)) return true;
+            if (changed.Type == "Model" && GameProjectStore.Flatten(changed.Children).Any(node => node.Id == box.Adornee)) return true;
+        }
+        return false;
+    }
+
+    private static bool TryGetSelectionBounds(SceneNode target, out Vector3 size, out Transform3D transform)
+    {
+        size = Vector3.Zero;
+        transform = Transform3D.Identity;
+        if (SceneNodeTypes.IsBasePart(target))
+        {
+            size = new Vector3(Math.Max(.01f, target.Size[0]), Math.Max(.01f, target.Size[1]), Math.Max(.01f, target.Size[2]));
+            transform = TransformFor(target, false);
+            return true;
+        }
+        if (target.Type != "Model") return false;
+        var parts = GameProjectStore.Flatten(target.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
+        if (parts.Length == 0) return false;
+        var minimum = new Point3D(double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity);
+        var maximum = new Point3D(double.NegativeInfinity, double.NegativeInfinity, double.NegativeInfinity);
+        foreach (var part in parts)
+        {
+            var partTransform = TransformFor(part);
+            foreach (var x in new[] { -.5, .5 })
+            foreach (var y in new[] { -.5, .5 })
+            foreach (var z in new[] { -.5, .5 })
+            {
+                var point = partTransform.Transform(new Point3D(x, y, z));
+                minimum = new Point3D(Math.Min(minimum.X, point.X), Math.Min(minimum.Y, point.Y), Math.Min(minimum.Z, point.Z));
+                maximum = new Point3D(Math.Max(maximum.X, point.X), Math.Max(maximum.Y, point.Y), Math.Max(maximum.Z, point.Z));
+            }
+        }
+        size = new Vector3((float)(maximum.X - minimum.X), (float)(maximum.Y - minimum.Y), (float)(maximum.Z - minimum.Z));
+        transform = new TranslateTransform3D((minimum.X + maximum.X) / 2, (minimum.Y + maximum.Y) / 2, (minimum.Z + maximum.Z) / 2);
+        return true;
     }
 
     private void RefreshForceFields(GameProject project)

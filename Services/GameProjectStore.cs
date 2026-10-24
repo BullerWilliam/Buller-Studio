@@ -321,6 +321,7 @@ public static class GameProjectStore
             node.ImageTransparency = float.IsFinite(node.ImageTransparency) ? Math.Clamp(node.ImageTransparency, 0, 1) : 0;
             node.TextSize = float.IsFinite(node.TextSize) ? Math.Clamp(node.TextSize, 1, 200) : 18;
             node.LayoutSpacing = float.IsFinite(node.LayoutSpacing) ? Math.Clamp(node.LayoutSpacing, 0, 1000000) : 0;
+            node.ListPaddingScale = float.IsFinite(node.ListPaddingScale) ? Math.Clamp(node.ListPaddingScale, 0, 100) : 0;
             node.MinTextSize = float.IsFinite(node.MinTextSize) ? Math.Clamp(node.MinTextSize, 1, 1000) : 1;
             node.MaxTextSize = float.IsFinite(node.MaxTextSize) ? Math.Clamp(node.MaxTextSize, node.MinTextSize, 1000) : 1000;
             node.AspectRatio = float.IsFinite(node.AspectRatio) ? Math.Clamp(node.AspectRatio, .001f, 1000) : 1;
@@ -339,6 +340,12 @@ public static class GameProjectStore
             node.EndColor ??= "#808080";
             node.FillTransparency = float.IsFinite(node.FillTransparency) ? Math.Clamp(node.FillTransparency, 0, 1) : .5f;
             node.OutlineTransparency = float.IsFinite(node.OutlineTransparency) ? Math.Clamp(node.OutlineTransparency, 0, 1) : 0;
+            node.SurfaceTransparency = float.IsFinite(node.SurfaceTransparency) ? Math.Clamp(node.SurfaceTransparency, 0, 1) : 1;
+            node.LineThickness = float.IsFinite(node.LineThickness) ? Math.Clamp(node.LineThickness, 0, 10) : .05f;
+            if (node.Type == "UICorner") UICornerRadiusService.Normalize(node);
+            if (node.Type == "UIShadow") UIShadowService.Normalize(node);
+            node.Adornee ??= string.Empty;
+            if (node.SurfaceColor3 is null || !System.Text.RegularExpressions.Regex.IsMatch(node.SurfaceColor3, "^#[0-9A-Fa-f]{6}$")) node.SurfaceColor3 = "#FFFFFF";
             node.Brightness = float.IsFinite(node.Brightness) ? Math.Clamp(node.Brightness, 0, 8) : 1;
             node.Range = float.IsFinite(node.Range) ? Math.Clamp(node.Range, 1, 1000) : 16;
             node.SecondaryColor ??= "#FFE69A";
@@ -438,6 +445,11 @@ public static class GameProjectStore
         var validObjectIds = Flatten(project).Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var objectValue in Flatten(project).Where(node => node.Type == "ObjectValue" && node.ObjectValueId.Length > 0))
             if (!validObjectIds.Contains(objectValue.ObjectValueId)) objectValue.ObjectValueId = string.Empty;
+        var validAdorneeIds = Flatten(project)
+            .Where(node => SceneNodeTypes.IsBasePart(node) || node.Type == "Model")
+            .Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var adornment in Flatten(project).Where(node => node.Type is ("SelectionBox" or "SelectionSphere" or "Highlight") && node.Adornee.Length > 0))
+            if (!validAdorneeIds.Contains(adornment.Adornee)) adornment.Adornee = string.Empty;
         var scriptNames = Flatten(project.Workspace.Children).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.Gui.Children))
             .Where(node => node.Type is "Script" or "ModuleScript")
             .GroupBy(node => node.Id, StringComparer.Ordinal)
@@ -509,6 +521,7 @@ public static class GameProjectStore
             if (idMap.TryGetValue(node.Character, out var character)) node.Character = character;
             if (idMap.TryGetValue(node.Occupant, out var occupant)) node.Occupant = occupant;
             if (idMap.TryGetValue(node.ObjectValueId, out var referencedObject)) node.ObjectValueId = referencedObject;
+            if (idMap.TryGetValue(node.Adornee, out var adornee)) node.Adornee = adornee;
         }
         if (!respectArchivable) clone.Archivable = true;
         return clone;
@@ -650,7 +663,7 @@ public static class GameProjectStore
 
     private static bool IsGuiObject(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
 
-    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UIAspectRatioConstraint" or "UISizeConstraint" or "UITextSizeConstraint" or "UIFlexItem";
+    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIShadow" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UIAspectRatioConstraint" or "UISizeConstraint" or "UITextSizeConstraint" or "UIFlexItem";
 
     private static bool IsGuiSubtreeCompatible(SceneNode node, bool isGuiServiceChild, string? destinationType = null)
     {
@@ -684,8 +697,10 @@ public static class GameProjectStore
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type == "Sound")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
+        if (node.Type is "SelectionBox" or "SelectionSphere")
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
         if (node.Type == "Highlight")
-            return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Model") && node.Children.Count == 0;
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
         if (node.Type == "ForceField")
             return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Model") && node.Children.Count == 0;
         if (node.Type == "Explosion")

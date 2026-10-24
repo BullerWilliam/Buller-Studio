@@ -664,11 +664,27 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("Highlight");
             AddCheckField("Enabled", selected.Enabled);
+            var adornee = FindSceneNode(selected.Adornee);
+            AddObjectReferenceField("Adornee", selected, adornee is not null && (SceneNodeTypes.IsBasePart(adornee) || adornee.Type == "Model") ? adornee : null);
+            AddClearAdorneeButton(selected);
             AddTextField("FillColor", selected.FillColor);
             AddTextField("FillTransparency", selected.FillTransparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("OutlineColor", selected.OutlineColor);
             AddTextField("OutlineTransparency", selected.OutlineTransparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            AddLabel("Highlights the parent part or all parts in a Model.", "Adornee");
+            AddLabel("When Adornee is empty, a Highlight under a part or Model targets its parent.", "Adornee");
+        }
+        if (selected.Type is "SelectionBox" or "SelectionSphere")
+        {
+            propertyTarget = AddPropertySection(selected.Type == "SelectionBox" ? "Selection Box" : "Selection Sphere");
+            AddCheckField("Visible", selected.Visible);
+            var adornee = FindSceneNode(selected.Adornee);
+            AddObjectReferenceField("Adornee", selected, adornee is not null && (SceneNodeTypes.IsBasePart(adornee) || adornee.Type == "Model") ? adornee : null);
+            AddClearAdorneeButton(selected);
+            AddTextField("Color3", selected.Color);
+            AddTextField("Transparency", selected.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (selected.Type == "SelectionBox") AddTextField("LineThickness", selected.LineThickness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("SurfaceColor3", selected.SurfaceColor3);
+            AddTextField("SurfaceTransparency", selected.SurfaceTransparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         if (selected.Type == "ForceField")
         {
@@ -984,7 +1000,22 @@ public partial class MainWindow : Window
         if (node.Type == "UICorner")
         {
             propertyTarget = AddPropertySection("Appearance");
-            AddTextField("CornerRadius", node.CornerRadius.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            foreach (var radiusProperty in new[] { "CornerRadius", "TopLeftRadius", "TopRightRadius", "BottomRightRadius", "BottomLeftRadius" })
+                AddTextField(radiusProperty, GuiUDimText(UICornerRadiusService.Get(node, radiusProperty)));
+        }
+        if (node.Type == "UIShadow")
+        {
+            propertyTarget = AddPropertySection("Shadow");
+            AddTextField("Color", node.Color);
+            AddTextField("Transparency", node.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("BlurRadius", GuiUDimText(node.ShadowBlurRadius));
+            AddTextField("Offset", GuiUDim2Text(node.ShadowOffset, node.ShadowOffsetScale));
+            AddTextField("Spread", GuiUDim2Text(node.ShadowSpread, node.ShadowSpreadScale));
+            AddComboField("Mode", ["Shape", "Text"], node.ShadowMode);
+            AddCheckField("Inset", node.ShadowInset);
+            AddCheckField("ShowBehindParent", node.ShadowShowBehindParent);
+            AddCheckField("Enabled", node.Enabled);
+            AddTextField("ZIndex", node.ZIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         if (node.Type is "UIOutline" or "UIStroke")
         {
@@ -1016,11 +1047,11 @@ public partial class MainWindow : Window
         if (node.Type == "UIListLayout")
         {
             propertyTarget = AddPropertySection("Layout");
-            AddComboField("LayoutDirection", ["Vertical", "Horizontal"], node.LayoutDirection);
+            AddComboField("FillDirection", ["Vertical", "Horizontal"], node.LayoutDirection);
             AddComboField("HorizontalAlignment", ["Left", "Center", "Right"], node.HorizontalAlignment);
             AddComboField("VerticalAlignment", ["Top", "Center", "Bottom"], node.VerticalAlignment);
             AddComboField("SortOrder", ["LayoutOrder", "Name"], node.SortOrder);
-            AddTextField("LayoutSpacing", node.LayoutSpacing.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Padding", GuiUDimText([node.ListPaddingScale, node.LayoutSpacing]));
         }
         if (node.Type == "UIFlexItem")
         {
@@ -1135,6 +1166,20 @@ public partial class MainWindow : Window
         }
         button.Click += (_, _) => BeginObjectReferencePick(target, property);
         (propertyTarget ?? PropertyEditor).Children.Add(CreatePropertyRow(property, button));
+    }
+
+    private void AddClearAdorneeButton(SceneNode target)
+    {
+        var button = new Button { Content = "Clear Adornee", Margin = new Thickness(3, 2, 3, 2), Padding = new Thickness(5, 2, 5, 2), IsEnabled = target.Adornee.Length > 0 };
+        button.Click += (_, _) =>
+        {
+            if (project is null) return;
+            target.Adornee = string.Empty;
+            renderer?.UpdateNode(target, project);
+            RecordEdit();
+            RenderProperties();
+        };
+        (propertyTarget ?? PropertyEditor).Children.Add(button);
     }
 
     private static Grid CreatePropertyRow(string property, FrameworkElement value)
@@ -1309,6 +1354,57 @@ public partial class MainWindow : Window
                 target.CellPadding = [values[1], values[3]];
             }
         }
+        else if (target.Type == "UICorner" && UICornerRadiusService.IsRadiusProperty(property))
+        {
+            var value = ParseGuiUDim(text);
+            if (value is null)
+            {
+                SetStatus("Enter a pixel offset or a scale, offset pair.");
+                box.Text = GuiUDimText(UICornerRadiusService.Get(target, property));
+                return;
+            }
+            UICornerRadiusService.Set(target, property, value[0], value[1]);
+            box.Text = GuiUDimText(UICornerRadiusService.Get(target, property));
+        }
+        else if (target.Type == "UIShadow" && property == "BlurRadius")
+        {
+            var value = ParseGuiUDim(text);
+            if (value is null) { SetStatus("Enter a pixel offset or a scale, offset pair."); box.Text = GuiUDimText(target.ShadowBlurRadius); return; }
+            target.ShadowBlurRadius = UIShadowService.NormalizeUDim(value, false);
+        }
+        else if (target.Type == "UIShadow" && property is ("Offset" or "Spread"))
+        {
+            var value = ParseGuiUDim2(text);
+            if (value is null)
+            {
+                SetStatus("Enter two pixel offsets or scale, offset pairs for both axes.");
+                box.Text = property == "Offset" ? GuiUDim2Text(target.ShadowOffset, target.ShadowOffsetScale) : GuiUDim2Text(target.ShadowSpread, target.ShadowSpreadScale);
+                return;
+            }
+            if (property == "Offset")
+            {
+                target.ShadowOffsetScale = [value[0], value[2]];
+                target.ShadowOffset = [value[1], value[3]];
+            }
+            else
+            {
+                target.ShadowSpreadScale = [value[0], value[2]];
+                target.ShadowSpread = [value[1], value[3]];
+            }
+            UIShadowService.Normalize(target);
+        }
+        else if (target.Type == "UIListLayout" && property == "Padding")
+        {
+            var value = ParseGuiUDim(text);
+            if (value is null)
+            {
+                SetStatus("Enter a pixel offset or a scale, offset pair.");
+                box.Text = GuiUDimText([target.ListPaddingScale, target.LayoutSpacing]);
+                return;
+            }
+            target.ListPaddingScale = Math.Clamp(value[0], 0, 100);
+            target.LayoutSpacing = Math.Clamp(value[1], 0, 1000000);
+        }
         else if (target.Type == "UIPadding" && property is ("PaddingLeft" or "PaddingTop" or "PaddingRight" or "PaddingBottom"))
         {
             var value = ParseGuiUDim(text);
@@ -1440,6 +1536,8 @@ public partial class MainWindow : Window
             target.Color = text;
             if (target.Type is "ParticleEmitter" or "Trail") target.ColorSequence = [];
         }
+        else if (property == "Color3" && target.Type is ("SelectionBox" or "SelectionSphere")) target.Color = text;
+        else if (property == "SurfaceColor3" && target.Type is ("SelectionBox" or "SelectionSphere")) target.SurfaceColor3 = text;
         else if (property == "SparkleColor" && target.Type == "Sparkles") target.Color = text;
         else if (property == "SecondaryColor" && target.Type == "Fire") target.SecondaryColor = text;
         else if (property == "TimeScale" && SceneNodeTypes.IsParticleEffect(target) && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var timeScale) && float.IsFinite(timeScale)) target.TimeScale = Math.Clamp(timeScale, 0, 1);
@@ -1502,6 +1600,8 @@ public partial class MainWindow : Window
         }
         else if (property == "FillTransparency" && target.Type == "Highlight" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fillTransparency) && float.IsFinite(fillTransparency)) target.FillTransparency = Math.Clamp(fillTransparency, 0, 1);
         else if (property == "OutlineTransparency" && target.Type == "Highlight" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var outlineTransparency) && float.IsFinite(outlineTransparency)) target.OutlineTransparency = Math.Clamp(outlineTransparency, 0, 1);
+        else if (property == "SurfaceTransparency" && target.Type is ("SelectionBox" or "SelectionSphere") && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var surfaceTransparency) && float.IsFinite(surfaceTransparency)) target.SurfaceTransparency = Math.Clamp(surfaceTransparency, 0, 1);
+        else if (property == "LineThickness" && target.Type == "SelectionBox" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var lineThickness) && float.IsFinite(lineThickness)) target.LineThickness = Math.Clamp(lineThickness, 0, 10);
         else if (target.Type == "Beam" && property is ("Width0" or "Width1")
             && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var beamWidth) && float.IsFinite(beamWidth))
         {
@@ -1592,10 +1692,9 @@ public partial class MainWindow : Window
         else if (property == "ShrinkRatio" && target.Type == "UIFlexItem" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var shrinkRatio) && float.IsFinite(shrinkRatio)) target.ShrinkRatio = Math.Clamp(shrinkRatio, 0, 1000);
         else if (property == "TableColumns" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var tableColumns)) target.TableColumns = Math.Clamp(tableColumns, 1, 24);
         else if (property == "FillDirectionMaxCells" && target.Type == "UIGridLayout" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var maxCells)) target.FillDirectionMaxCells = Math.Clamp(maxCells, 0, 1000);
-        else if (property == "ZIndex" && IsGuiNode(target) && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var zIndex)) target.ZIndex = zIndex;
+        else if (property == "ZIndex" && IsGuiNode(target) && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var zIndex)) target.ZIndex = target.Type == "UIShadow" ? Math.Min(0, zIndex) : zIndex;
         else if (property == "LayoutOrder" && IsGuiNode(target) && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var layoutOrder)) target.LayoutOrder = layoutOrder;
         else if (property == "AspectRatio" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var aspect) && float.IsFinite(aspect)) target.AspectRatio = Math.Clamp(aspect, .001f, 1000);
-        else if (property == "CornerRadius" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var cornerRadius)) target.CornerRadius = Math.Max(0, cornerRadius);
         else if (property == "StrokeThickness" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var strokeThickness)) target.StrokeThickness = Math.Max(0, strokeThickness);
         else if (property == "TextSize" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var textSize) && float.IsFinite(textSize)) target.TextSize = Math.Clamp(textSize, 1, 200);
         else if (property.StartsWith("Skybox", StringComparison.Ordinal) && target.Type is "Workspace" or "Sky")
@@ -1636,6 +1735,7 @@ public partial class MainWindow : Window
         else renderer?.UpdateNode(target, project);
         RecordEdit();
         if (property == "Name") RefreshEditor();
+        else if (target.Type == "UICorner" && UICornerRadiusService.IsRadiusProperty(property)) RenderProperties();
     }
 
     private void ApplyAttributeText(SceneNode target, string name, TextBox box)
@@ -1694,6 +1794,8 @@ public partial class MainWindow : Window
             "OffsetStudsV" => node.OffsetStudsV,
             "FillTransparency" => node.FillTransparency,
             "OutlineTransparency" => node.OutlineTransparency,
+            "SurfaceTransparency" => node.Type is ("SelectionBox" or "SelectionSphere") ? node.SurfaceTransparency : (float?)null,
+            "LineThickness" => node.Type == "SelectionBox" ? node.LineThickness : (float?)null,
             "Gravity" => node.Gravity,
             "ClockTime" => node.ClockTime,
             "Health" => node.Health,
@@ -1728,7 +1830,6 @@ public partial class MainWindow : Window
             "LayoutOrder" => node.LayoutOrder,
             "AspectRatio" => node.AspectRatio,
             "Scale" => node.Type == "UIScale" ? node.Scale : (float?)null,
-            "CornerRadius" => node.CornerRadius,
             "StrokeThickness" => node.StrokeThickness,
             "TextSize" => node.TextSize,
             _ => (float?)null
@@ -1756,6 +1857,8 @@ public partial class MainWindow : Window
         if (property == "Visible") target.Visible = box.IsChecked == true;
         if (property == "TextScaled" && target.Type is "TextLabel" or "TextButton" or "TextBox") target.TextScaled = box.IsChecked == true;
         if (property == "Enabled") target.Enabled = box.IsChecked == true;
+        if (property == "Inset" && target.Type == "UIShadow") target.ShadowInset = box.IsChecked == true;
+        if (property == "ShowBehindParent" && target.Type == "UIShadow") target.ShadowShowBehindParent = box.IsChecked == true;
         if (property == "FaceCamera" && target.Type == "Trail") target.FaceCamera = box.IsChecked == true;
         if (property == "ForceLimitsEnabled" && target.Type == "LinearVelocity") target.ForceLimitsEnabled = box.IsChecked == true;
         if (property == "RigidityEnabled" && target.Type == "AlignPosition") target.RigidityEnabled = box.IsChecked == true;
@@ -1783,6 +1886,7 @@ public partial class MainWindow : Window
         }
         if (property == "Mode" && target.Type == "Camera") target.CameraMode = value;
         if (property == "Mode" && target.Type == "AlignPosition" && value is ("OneAttachment" or "TwoAttachment")) target.AlignmentMode = value;
+        if (property == "Mode" && target.Type == "UIShadow" && value is ("Shape" or "Text")) target.ShadowMode = value;
         if (property == "Shape" && target.Type == "Part") target.Shape = value;
         if (property == "Material" && SceneNodeTypes.IsBasePart(target)) target.Material = value;
         if (property == "Face" && target.Type is ("Decal" or "Texture" or "SurfaceLight") && SceneNodeTypes.IsFace(value)) target.Face = value;
@@ -1791,6 +1895,7 @@ public partial class MainWindow : Window
         if (property == "RelativeTo" && target.Type is ("VectorForce" or "LinearVelocity") && value is ("World" or "Attachment0")) target.RelativeTo = value;
         if (property == "VelocityConstraintMode" && target.Type == "LinearVelocity" && value is ("Vector" or "Line" or "Plane")) target.VelocityConstraintMode = value;
         if (property == "LayoutDirection") target.LayoutDirection = value;
+        if (property == "FillDirection" && target.Type == "UIListLayout" && value is ("Horizontal" or "Vertical")) target.LayoutDirection = value;
         if (property == "HorizontalAlignment" && target.Type == "UIListLayout" && value is ("Left" or "Center" or "Right")) target.HorizontalAlignment = value;
         if (property == "VerticalAlignment" && target.Type == "UIListLayout" && value is ("Top" or "Center" or "Bottom")) target.VerticalAlignment = value;
         if (property == "SortOrder" && target.Type == "UIListLayout" && value is ("LayoutOrder" or "Name")) target.SortOrder = value;
@@ -1859,6 +1964,19 @@ public partial class MainWindow : Window
             propertyPickerProperty = null;
             target.Subject = value.Id;
             renderer?.UpdateCamera(project);
+            RecordEdit();
+        }
+        else if (property == "Adornee" && target.Type is ("SelectionBox" or "SelectionSphere" or "Highlight"))
+        {
+            if (!SceneNodeTypes.IsBasePart(value) && value.Type != "Model")
+            {
+                SetStatus("Adornee must be a BasePart or Model.");
+                return true;
+            }
+            propertyPickerTargetId = null;
+            propertyPickerProperty = null;
+            target.Adornee = value.Id;
+            renderer?.UpdateNode(target, project);
             RecordEdit();
         }
         else if (property is "Part0" or "Part1")
@@ -2007,6 +2125,12 @@ public partial class MainWindow : Window
         }
         var node = new SceneNode { Type = type is "Ball" or "Cylinder" ? "Part" : type, Name = name };
         if (type is "Ball" or "Cylinder") node.Shape = type;
+        if (type is "SelectionBox" or "SelectionSphere" or "Highlight")
+        {
+            if (type is "SelectionBox" or "SelectionSphere") node.Color = "#FFFFFF";
+            if (SceneNodeTypes.IsBasePart(parent) || parent.Type == "Model") node.Adornee = parent.Id;
+        }
+        if (type == "UICorner") UICornerRadiusService.Set(node, "CornerRadius", 0, 8);
         if (type is "WeldConstraint" or "NoCollisionConstraint" && SceneNodeTypes.IsBasePart(parent)) node.Part0 = parent.Id;
         if (type == "VectorForce") node.RelativeTo = "Attachment0";
         if (type is "VectorForce" or "LinearVelocity" or "AlignPosition") node.Attachment0 = parent.Type == "Attachment" ? parent.Id
@@ -2049,8 +2173,8 @@ public partial class MainWindow : Window
         var choices = IsGuiNode(parent)
             ? (parent.Type == "Gui"
                 ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") }
-                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatioConstraint", "UIAspectRatioConstraint"), ("UISizeConstraint", "UISizeConstraint"), ("UITextSizeConstraint", "UITextSizeConstraint"), ("UIFlexItem", "UIFlexItem"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
-            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("VectorForce", "VectorForce"), ("LinearVelocity", "LinearVelocity"), ("AlignPosition", "AlignPosition"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("NoCollisionConstraint", "NoCollisionConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
+                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIShadow", "UIShadow"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatioConstraint", "UIAspectRatioConstraint"), ("UISizeConstraint", "UISizeConstraint"), ("UITextSizeConstraint", "UITextSizeConstraint"), ("UIFlexItem", "UIFlexItem"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
+            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("VectorForce", "VectorForce"), ("LinearVelocity", "LinearVelocity"), ("AlignPosition", "AlignPosition"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("SelectionBox", "SelectionBox"), ("SelectionSphere", "SelectionSphere"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("NoCollisionConstraint", "NoCollisionConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
         choices = choices.Concat(new (string Type, string Name)[] { ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky"), ("Fire", "Fire"), ("Smoke", "Smoke"), ("Sparkles", "Sparkles"), ("ParticleEmitter", "ParticleEmitter") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
@@ -3122,7 +3246,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "CollectionService", "RunService", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "Model", "Camera", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "DataModel", "CollectionService", "RunService", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -3240,7 +3364,9 @@ public partial class MainWindow : Window
         if (node.Type == "Sound") members.AddRange(["Asset", "Volume", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop"]);
         if (node.Type == "ProximityPrompt") members.AddRange(["Enabled", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered"]);
         if (node.Type == "ClickDetector") members.AddRange(["Enabled", "MaxActivationDistance", "MouseClick"]);
-        if (node.Type == "Highlight") members.AddRange(["Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency"]);
+        if (node.Type == "Highlight") members.AddRange(["Adornee", "Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency"]);
+        if (node.Type == "SelectionBox") members.AddRange(["Adornee", "Visible", "Color3", "Transparency", "LineThickness", "SurfaceColor3", "SurfaceTransparency"]);
+        if (node.Type == "SelectionSphere") members.AddRange(["Adornee", "Visible", "Color3", "Transparency", "SurfaceColor3", "SurfaceTransparency"]);
         if (node.Type is "WeldConstraint" or "NoCollisionConstraint") members.AddRange(["Enabled", "Part0", "Part1"]);
         if (node.Type == "Beam") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Width0", "Width1", "Color", "Transparency"]);
         if (node.Type == "Trail") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Lifetime", "MinLength", "MaxLength", "WidthScale", "Color", "Transparency", "Texture", "FaceCamera", "TextureMode", "TextureLength", "Clear"]);
@@ -3260,12 +3386,12 @@ public partial class MainWindow : Window
         if (node.Type is "TextButton" or "ImageButton") members.AddRange(["Activated", "MouseButton1Click"]);
         if (node.Type == "TextBox") members.Add("TextChanged");
         if (node.Type is "ImageLabel" or "ImageButton") members.AddRange(["Asset", "ImageTransparency"]);
-        if (node.Type == "UICorner") members.Add("CornerRadius");
+        if (node.Type == "UICorner") members.AddRange(["CornerRadius", "TopLeftRadius", "TopRightRadius", "BottomRightRadius", "BottomLeftRadius"]);
         if (node.Type is "UIOutline" or "UIStroke") members.AddRange(["StrokeColor", "StrokeThickness"]);
         if (node.Type == "UIGradient") members.AddRange(["Enabled", "StartColor", "EndColor", "Rotation"]);
         if (node.Type == "UIPadding") members.AddRange(["PaddingLeft", "PaddingTop", "PaddingRight", "PaddingBottom"]);
         if (node.Type == "UIScale") members.Add("Scale");
-        if (node.Type == "UIListLayout") members.AddRange(["LayoutDirection", "LayoutSpacing", "HorizontalAlignment", "VerticalAlignment", "SortOrder"]);
+        if (node.Type == "UIListLayout") members.AddRange(["FillDirection", "Padding", "LayoutDirection", "LayoutSpacing", "HorizontalAlignment", "VerticalAlignment", "SortOrder"]);
         if (node.Type == "UIFlexItem") members.AddRange(["FlexMode", "GrowRatio", "ShrinkRatio", "ItemLineAlignment"]);
         if (node.Type == "UIGridLayout") members.AddRange(["CellSize", "CellPadding", "FillDirection", "FillDirectionMaxCells"]);
         if (node.Type == "UITableLayout") members.AddRange(["LayoutSpacing", "TableColumns"]);
@@ -3534,13 +3660,17 @@ public partial class MainWindow : Window
                 "size" => IsLuaXGuiObject(node) || node.Type is "GuiBase2d" or "GuiObject" ? "UDim2" : "Vector3",
                 "velocity" or "assemblylinearvelocity" => "Vector3",
                 "minsize" or "maxsize" => "Vector2",
+                "padding" when node.Type == "UIListLayout" => "UDim",
+                "cornerradius" or "topleftradius" or "toprightradius" or "bottomrightradius" or "bottomleftradius" when node.Type == "UICorner" => "UDim",
                 "color" or "fillcolor" or "outlinecolor" => "Color3",
+                "color3" or "surfacecolor3" when node.Type is ("SelectionBox" or "SelectionSphere") => "Color3",
+                "adornee" when node.Type is ("SelectionBox" or "SelectionSphere" or "Highlight") => "Instance",
                 "parent" or "subject" => "Instance",
                 "part0" or "part1" => "BasePart",
                 "touched" or "activated" or "mousebutton1click" or "textchanged" or "triggered" or "mouseclick" or "hit" => "RBXScriptSignal",
-                "fieldofview" or "textsize" or "mintextsize" or "maxtextsize" or "strokethickness" or "cornerradius" or "layoutspacing" or "growratio" or "shrinkratio" or "tablecolumns" or "aspectratio" or "transparency" or "backgroundtransparency" or "texttransparency" or "imagetransparency" or "filltransparency" or "outlinetransparency" or "brightness" or "range" or "angle" or "maxactivationdistance" or "blastradius" or "blastpressure" or "destroyjointradiuspercent" => "number",
+                "fieldofview" or "textsize" or "mintextsize" or "maxtextsize" or "strokethickness" or "layoutspacing" or "growratio" or "shrinkratio" or "tablecolumns" or "aspectratio" or "transparency" or "backgroundtransparency" or "texttransparency" or "imagetransparency" or "filltransparency" or "outlinetransparency" or "surfacetransparency" or "linethickness" or "brightness" or "range" or "angle" or "maxactivationdistance" or "blastradius" or "blastpressure" or "destroyjointradiuspercent" => "number",
                 "anchored" or "cancollide" or "cantouch" or "castshadow" or "visible" or "enabled" or "textscaled" => "boolean",
-                "name" or "id" or "classname" or "type" or "texture" or "asset" or "face" or "text" or "textcolor" or "strokecolor" or "layoutdirection" or "horizontalalignment" or "verticalalignment" or "sortorder" or "flexmode" or "itemlinealignment" or "aspecttype" or "dominantaxis" or "cameramode" or "mode" or "skyboxfront" or "skyboxback" or "skyboxleft" or "skyboxright" or "skyboxtop" or "skyboxbottom" or "actiontext" or "objecttext" => "string",
+                "name" or "id" or "classname" or "type" or "texture" or "asset" or "face" or "text" or "textcolor" or "strokecolor" or "layoutdirection" or "filldirection" or "horizontalalignment" or "verticalalignment" or "sortorder" or "flexmode" or "itemlinealignment" or "aspecttype" or "dominantaxis" or "cameramode" or "mode" or "skyboxfront" or "skyboxback" or "skyboxleft" or "skyboxright" or "skyboxtop" or "skyboxbottom" or "actiontext" or "objecttext" => "string",
                 _ => null
             };
             if (propertyType is not null) return propertyType;
@@ -3756,8 +3886,8 @@ public partial class MainWindow : Window
     ];
 
     private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Fire", "Invoke", "Disconnect", "TakeDamage", "AddItem", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Lighting", "Sky", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -4479,6 +4609,8 @@ public partial class MainWindow : Window
         }
         foreach (var objectValue in GameProjectStore.Flatten(project).Where(node => node.Type == "ObjectValue" && removedIds.Contains(node.ObjectValueId)))
             objectValue.ObjectValueId = string.Empty;
+        foreach (var adornment in GameProjectStore.Flatten(project).Where(node => node.Type is ("SelectionBox" or "SelectionSphere" or "Highlight") && removedIds.Contains(node.Adornee)))
+            adornment.Adornee = string.Empty;
         if (selectedScript is not null && removedIds.Contains(selectedScript.Id)) CommitScriptEditor();
         project.Scripts.RemoveAll(script => removedIds.Contains(script.Id));
         var scriptDocuments = DockManager.Layout.Descendents().OfType<LayoutDocument>()
@@ -4501,7 +4633,7 @@ public partial class MainWindow : Window
     private void UngroupSelected_Click(object sender, RoutedEventArgs e) => UngroupSelected();
 
     private bool CanGroupSelected() => project is not null && selected is not null
-        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "WeldConstraint" or "NoCollisionConstraint" or "Humanoid")
+        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "SelectionBox" or "SelectionSphere" or "WeldConstraint" or "NoCollisionConstraint" or "Humanoid")
         && !SceneNodeTypes.IsLight(selected)
         && FindParentNode(selected) is not null;
 
@@ -4841,6 +4973,11 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["OutlineColor"] = "Color3 — Highlight outline color.",
         ["FillTransparency"] = "number — Highlight fill transparency from 0 to 1.",
         ["OutlineTransparency"] = "number — Highlight outline transparency from 0 to 1.",
+        ["Adornee"] = "Instance — BasePart or Model targeted by a Highlight, SelectionBox, or SelectionSphere.",
+        ["Color3"] = "Color3 — SelectionBox or SelectionSphere outline color.",
+        ["SurfaceColor3"] = "Color3 — SelectionBox or SelectionSphere surface color.",
+        ["SurfaceTransparency"] = "number — SelectionBox or SelectionSphere surface transparency from 0 to 1.",
+        ["LineThickness"] = "number — SelectionBox outline thickness in studs.",
         ["MaxActivationDistance"] = "number — Maximum distance from the part for a prompt or click detector to work.",
         ["ActionText"] = "string — Action displayed on a ProximityPrompt.",
         ["ObjectText"] = "string — Object label displayed on a ProximityPrompt.",
@@ -4872,10 +5009,15 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Text"] = "string — Text displayed by a TextLabel, TextButton, or TextBox.",
         ["TextColor"] = "string — Hex color used for GUI text, for example #FFFFFF.",
         ["TextSize"] = "number — GUI text size in pixels.",
-        ["CornerRadius"] = "number — UICorner radius in pixels.",
+        ["CornerRadius"] = "UDim — set all four UICorner radii; scale uses the shorter rendered side.",
+        ["TopLeftRadius"] = "UDim — UICorner top-left radius.",
+        ["TopRightRadius"] = "UDim — UICorner top-right radius.",
+        ["BottomRightRadius"] = "UDim — UICorner bottom-right radius.",
+        ["BottomLeftRadius"] = "UDim — UICorner bottom-left radius.",
         ["StrokeColor"] = "string — UIOutline or UIStroke hex color.",
         ["StrokeThickness"] = "number — UIOutline or UIStroke width in pixels.",
-        ["LayoutDirection"] = "string — UIListLayout direction: Vertical or Horizontal.",
+        ["LayoutDirection"] = "string — Legacy UIListLayout direction: Vertical or Horizontal.",
+        ["Padding"] = "UDim — UIListLayout spacing along the fill direction.",
         ["HorizontalAlignment"] = "string — align UIListLayout items and the list horizontally.",
         ["VerticalAlignment"] = "string — align UIListLayout items and the list vertically.",
         ["SortOrder"] = "string — arrange UIListLayout items by LayoutOrder or Name.",
@@ -4887,7 +5029,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["TableColumns"] = "number — UITableLayout column count.",
         ["CellSize"] = "UDim2 — Width and height of UIGridLayout cells.",
         ["CellPadding"] = "UDim2 — Horizontal and vertical gap between UIGridLayout cells.",
-        ["FillDirection"] = "string — Fill UIGridLayout horizontally or vertically.",
+        ["FillDirection"] = "string — Fill UIListLayout or UIGridLayout horizontally or vertically.",
         ["FillDirectionMaxCells"] = "integer — Maximum grid cells per row or column; zero uses available space.",
         ["AspectRatio"] = "number — width-to-height ratio for UIAspectRatioConstraint.",
         ["AspectType"] = "string — fit within the object's size or scale with its parent.",

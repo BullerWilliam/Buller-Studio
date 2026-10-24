@@ -52,6 +52,10 @@ public sealed class SceneNode
     public string EndColor { get; set; } = "#808080";
     public float FillTransparency { get; set; } = .5f;
     public float OutlineTransparency { get; set; }
+    public string Adornee { get; set; } = string.Empty;
+    public string SurfaceColor3 { get; set; } = "#FFFFFF";
+    public float SurfaceTransparency { get; set; } = 1;
+    public float LineThickness { get; set; } = .05f;
     public string Shape { get; set; } = "Block";
     public string Face { get; set; } = "Front";
     public float StudsPerTileU { get; set; } = 2;
@@ -136,8 +140,22 @@ public sealed class SceneNode
     public float MinTextSize { get; set; } = 1;
     public float MaxTextSize { get; set; } = 1000;
     public float CornerRadius { get; set; }
+    public float CornerRadiusScale { get; set; }
+    public float[]? TopLeftRadius { get; set; }
+    public float[]? TopRightRadius { get; set; }
+    public float[]? BottomRightRadius { get; set; }
+    public float[]? BottomLeftRadius { get; set; }
+    public float[] ShadowBlurRadius { get; set; } = [0, 12];
+    public float[] ShadowOffset { get; set; } = [0, 4];
+    public float[] ShadowOffsetScale { get; set; } = [0, 0];
+    public float[] ShadowSpread { get; set; } = [0, 0];
+    public float[] ShadowSpreadScale { get; set; } = [0, 0];
+    public bool ShadowInset { get; set; }
+    public bool ShadowShowBehindParent { get; set; } = true;
+    public string ShadowMode { get; set; } = "Shape";
     public float StrokeThickness { get; set; } = 1;
     public float LayoutSpacing { get; set; }
+    public float ListPaddingScale { get; set; }
     public float[] CellSize { get; set; } = [100, 100];
     public float[] CellSizeScale { get; set; } = [0, 0];
     public float[] CellPadding { get; set; } = [0, 0];

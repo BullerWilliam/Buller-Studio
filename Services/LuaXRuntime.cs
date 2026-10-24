@@ -84,9 +84,9 @@ public sealed class LuaXRuntime
     {
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "ModuleScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector3Value", "Color3Value", "ObjectValue",
-        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "ProximityPrompt", "ClickDetector", "Highlight", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam",
         "Sky", "ScreenGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
-        "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"
+        "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"
     };
 
     public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null, bool isStudio = true)
@@ -358,6 +358,8 @@ public sealed class LuaXRuntime
         }
         foreach (var node in GameProjectStore.Flatten(project).Where(node => node.Type == "ObjectValue"))
             instances[node.Id].Set("Value", GetValueObjectValue(node));
+        foreach (var node in GameProjectStore.Flatten(project).Where(node => node.Type is "SelectionBox" or "SelectionSphere" or "Highlight"))
+            instances[node.Id].Set("Adornee", GetObjectValueReference(node.Adornee));
         var game = new Table(script);
         runtimeTypeTags.Add(game, new LuaXTypeTag("DataModel"));
         var workspace = instances[project.Workspace.Id];
@@ -907,6 +909,14 @@ public sealed class LuaXRuntime
         instance.Set("SecondaryColor", ColorValue(node.SecondaryColor));
         instance.Set("FillColor", ColorValue(node.FillColor));
         instance.Set("OutlineColor", ColorValue(node.OutlineColor));
+        if (node.Type is "SelectionBox" or "SelectionSphere" or "Highlight") instance.Set("Adornee", GetObjectValueReference(node.Adornee));
+        if (node.Type is "SelectionBox" or "SelectionSphere")
+        {
+            instance.Set("Color3", ColorValue(node.Color));
+            instance.Set("SurfaceColor3", ColorValue(node.SurfaceColor3));
+            instance.Set("SurfaceTransparency", DynValue.NewNumber(node.SurfaceTransparency));
+            if (node.Type == "SelectionBox") instance.Set("LineThickness", DynValue.NewNumber(node.LineThickness));
+        }
         instance.Set("StartColor", ColorValue(node.StartColor));
         instance.Set("EndColor", ColorValue(node.EndColor));
         instance.Set("PaddingLeft", CreateUDim(node.PaddingLeft[0], node.PaddingLeft[1]));
@@ -918,7 +928,7 @@ public sealed class LuaXRuntime
         instance.Set("MaxSize", Vector2Value(node.MaxSize));
         instance.Set("CellSize", CreateUDim2Value(node.CellSizeScale, node.CellSize));
         instance.Set("CellPadding", CreateUDim2Value(node.CellPaddingScale, node.CellPadding));
-        instance.Set("FillDirection", DynValue.NewString(node.FillDirection));
+        instance.Set("FillDirection", DynValue.NewString(node.Type == "UIListLayout" ? node.LayoutDirection : node.FillDirection));
         instance.Set("FillDirectionMaxCells", DynValue.NewNumber(node.FillDirectionMaxCells));
         instance.Set("FillTransparency", DynValue.NewNumber(node.FillTransparency));
         instance.Set("OutlineTransparency", DynValue.NewNumber(node.OutlineTransparency));
@@ -964,7 +974,8 @@ public sealed class LuaXRuntime
         instance.Set("Visible", DynValue.NewBoolean(node.Visible));
         instance.Set("ZIndex", DynValue.NewNumber(node.ZIndex));
         instance.Set("LayoutOrder", DynValue.NewNumber(node.LayoutOrder));
-        instance.Set("CornerRadius", DynValue.NewNumber(node.CornerRadius));
+        if (node.Type == "UICorner") SetCornerInstanceProperties(node, instance);
+        if (node.Type == "UIShadow") SetShadowInstanceProperties(node, instance);
         instance.Set("StrokeColor", DynValue.NewString(node.StrokeColor));
         instance.Set("StrokeThickness", DynValue.NewNumber(node.StrokeThickness));
         instance.Set("TextSize", DynValue.NewNumber(node.TextSize));
@@ -972,6 +983,7 @@ public sealed class LuaXRuntime
         instance.Set("MinTextSize", DynValue.NewNumber(node.MinTextSize));
         instance.Set("MaxTextSize", DynValue.NewNumber(node.MaxTextSize));
         instance.Set("LayoutSpacing", DynValue.NewNumber(node.LayoutSpacing));
+        if (node.Type == "UIListLayout") instance.Set("Padding", CreateUDim(node.ListPaddingScale, node.LayoutSpacing));
         instance.Set("TableColumns", DynValue.NewNumber(node.TableColumns));
         instance.Set("AspectRatio", DynValue.NewNumber(node.AspectRatio));
         instance.Set("AspectType", DynValue.NewString(node.AspectType));
@@ -1940,6 +1952,14 @@ public sealed class LuaXRuntime
         if (className == "Sparkles") node.Color = "#FFFFFF";
         if (className is "ParticleEmitter" or "Trail") node.Color = "#FFFFFF";
         if (className == "VectorForce") node.RelativeTo = "Attachment0";
+        if (className is "SelectionBox" or "SelectionSphere" or "Highlight")
+        {
+            if (className is "SelectionBox" or "SelectionSphere") node.Color = "#FFFFFF";
+            if (args.Count > 1 && ReadNodeArgument(args[1]) is { } adornmentParent
+                && (IsBasePart(adornmentParent) || adornmentParent.Type == "Model")) node.Adornee = adornmentParent.Id;
+        }
+        if (className == "UICorner") UICornerRadiusService.Set(node, "CornerRadius", 0, 8);
+        if (className == "UIShadow") { node.Color = "#000000"; node.Transparency = .5f; node.ZIndex = -1; }
         if (className is "WeldConstraint" or "NoCollisionConstraint" && args.Count > 1 && ReadNodeArgument(args[1]) is { } constraintParent && IsBasePart(constraintParent))
             node.Part0 = constraintParent.Id;
         if (className is "VectorForce" or "LinearVelocity" or "AlignPosition" && args.Count > 1 && ReadNodeArgument(args[1]) is { } forceParent)
@@ -1980,6 +2000,7 @@ public sealed class LuaXRuntime
                 instances[node.Id].Set("Part0", GetPartReferenceValue(node.Part0));
                 instances[node.Id].Set("Part1", GetPartReferenceValue(node.Part1));
             }
+            if (node.Type is "SelectionBox" or "SelectionSphere" or "Highlight") instances[node.Id].Set("Adornee", GetObjectValueReference(node.Adornee));
             if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition")
             {
                 instances[node.Id].Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
@@ -2079,6 +2100,12 @@ public sealed class LuaXRuntime
             if (instances.TryGetValue(objectValue.Id, out var valueInstance)) valueInstance.Set("Value", DynValue.Nil);
             propertyChanged?.Invoke(objectValue, "Value", DynValue.Nil);
             FireValueChanged(objectValue, DynValue.Nil);
+        }
+        foreach (var box in KnownNodes().Where(item => item.Type is ("SelectionBox" or "SelectionSphere" or "Highlight") && removedIds.Contains(item.Adornee)))
+        {
+            box.Adornee = string.Empty;
+            if (instances.TryGetValue(box.Id, out var instance)) instance.Set("Adornee", DynValue.Nil);
+            propertyChanged?.Invoke(box, "Adornee", DynValue.Nil);
         }
         foreach (var constraint in KnownNodes().Where(item => item.Type is "WeldConstraint" or "NoCollisionConstraint"))
         {
@@ -2372,6 +2399,11 @@ public sealed class LuaXRuntime
             "rotation" => "Rotation",
             "size" => "Size",
             "color" => "Color",
+            "color3" => "Color3",
+            "surfacecolor3" => "SurfaceColor3",
+            "surfacetransparency" => "SurfaceTransparency",
+            "linethickness" => "LineThickness",
+            "adornee" => "Adornee",
             "sparklecolor" => "SparkleColor",
             "secondarycolor" => "SecondaryColor",
             "fillcolor" => "FillColor",
@@ -2382,6 +2414,7 @@ public sealed class LuaXRuntime
             "paddingtop" => "PaddingTop",
             "paddingright" => "PaddingRight",
             "paddingbottom" => "PaddingBottom",
+            "padding" => "Padding",
             "scale" => "Scale",
             "cellsize" => "CellSize",
             "cellpadding" => "CellPadding",
@@ -2472,6 +2505,10 @@ public sealed class LuaXRuntime
             "width1" => "Width1",
             "fieldofview" => "FieldOfView",
             "cornerradius" => "CornerRadius",
+            "topleftradius" => "TopLeftRadius",
+            "toprightradius" => "TopRightRadius",
+            "bottomrightradius" => "BottomRightRadius",
+            "bottomleftradius" => "BottomLeftRadius",
             "strokecolor" => "StrokeColor",
             "strokethickness" => "StrokeThickness",
             "textsize" => "TextSize",
@@ -2625,6 +2662,28 @@ public sealed class LuaXRuntime
                     break;
                 case "size": SetSizeProperty(node, value); break;
                 case "color": node.Color = ReadColor(value, node.Color); break;
+                case "color3":
+                    if (node.Type is not ("SelectionBox" or "SelectionSphere") || !IsTypedValue(value, "Color3")) return DynValue.Nil;
+                    node.Color = ReadColor(value, node.Color);
+                    break;
+                case "surfacecolor3":
+                    if (node.Type is not ("SelectionBox" or "SelectionSphere") || !IsTypedValue(value, "Color3")) return DynValue.Nil;
+                    node.SurfaceColor3 = ReadColor(value, node.SurfaceColor3);
+                    break;
+                case "surfacetransparency":
+                    if (node.Type is not ("SelectionBox" or "SelectionSphere") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.SurfaceTransparency = (float)Math.Clamp(value.Number, 0, 1);
+                    break;
+                case "linethickness":
+                    if (node.Type != "SelectionBox" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.LineThickness = (float)Math.Clamp(value.Number, 0, 10);
+                    break;
+                case "adornee":
+                    if (node.Type is not ("SelectionBox" or "SelectionSphere" or "Highlight")) return DynValue.Nil;
+                    var adornment = value.Type == DataType.Nil ? null : ReadNodeArgument(value);
+                    if (value.Type != DataType.Nil && adornment is null || adornment is not null && !IsBasePart(adornment) && adornment.Type != "Model") return DynValue.Nil;
+                    node.Adornee = adornment?.Id ?? string.Empty;
+                    break;
                 case "sparklecolor": if (node.Type != "Sparkles" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.Color = ReadColor(value, node.Color); break;
                 case "secondarycolor": if (node.Type != "Fire" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.SecondaryColor = ReadColor(value, node.SecondaryColor); break;
                 case "fillcolor": if (node.Type != "Highlight") return DynValue.Nil; node.FillColor = ReadColor(value, node.FillColor); break;
@@ -2652,8 +2711,14 @@ public sealed class LuaXRuntime
                     else { node.CellPaddingScale = cellScale; node.CellPadding = cellOffset; }
                     break;
                 case "filldirection":
-                    if (node.Type != "UIGridLayout" || value.CastToString() is not ("Horizontal" or "Vertical")) return DynValue.Nil;
-                    node.FillDirection = value.CastToString()!;
+                    if (node.Type is not ("UIGridLayout" or "UIListLayout") || value.CastToString() is not ("Horizontal" or "Vertical")) return DynValue.Nil;
+                    if (node.Type == "UIListLayout") node.LayoutDirection = value.CastToString()!;
+                    else node.FillDirection = value.CastToString()!;
+                    break;
+                case "padding":
+                    if (node.Type != "UIListLayout" || !TryReadUDim(value, out var listPadding)) return DynValue.Nil;
+                    node.ListPaddingScale = Math.Clamp(listPadding[0], 0, 100);
+                    node.LayoutSpacing = Math.Clamp(listPadding[1], 0, 1000000);
                     break;
                 case "filldirectionmaxcells":
                     if (node.Type != "UIGridLayout" || value.Type != DataType.Number || !double.IsFinite(value.Number) || value.Number != Math.Truncate(value.Number)) return DynValue.Nil;
@@ -2696,7 +2761,7 @@ public sealed class LuaXRuntime
                     node.Material = material;
                     break;
                 case "transparency":
-                    if ((!IsBasePart(node) && node.Type is not ("Decal" or "Texture" or "Beam")) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    if ((!IsBasePart(node) && node.Type is not ("Decal" or "Texture" or "Beam" or "SelectionBox" or "SelectionSphere")) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.Transparency = (float)Math.Clamp(value.Number, 0, 1);
                     break;
                 case "backgroundtransparency":
@@ -2919,7 +2984,21 @@ public sealed class LuaXRuntime
                     else node.Width1 = (float)Math.Clamp(value.Number, 0, 100);
                     break;
                 case "fieldofview": node.FieldOfView = (float)Math.Clamp(value.Number, 10, 120); break;
-                case "cornerradius": node.CornerRadius = (float)Math.Max(0, value.Number); break;
+                case "cornerradius":
+                case "topleftradius":
+                case "toprightradius":
+                case "bottomrightradius":
+                case "bottomleftradius":
+                    if (node.Type != "UICorner" || !TryReadCornerUDim(value, out var requestedCorner)) return DynValue.Nil;
+                    UICornerRadiusService.Set(node, normalized switch
+                    {
+                        "topleftradius" => "TopLeftRadius",
+                        "toprightradius" => "TopRightRadius",
+                        "bottomrightradius" => "BottomRightRadius",
+                        "bottomleftradius" => "BottomLeftRadius",
+                        _ => "CornerRadius"
+                    }, requestedCorner[0], requestedCorner[1]);
+                    break;
                 case "strokecolor": node.StrokeColor = value.CastToString() ?? node.StrokeColor; break;
                 case "strokethickness": node.StrokeThickness = (float)Math.Max(0, value.Number); break;
                 case "textsize":
@@ -2935,7 +3014,10 @@ public sealed class LuaXRuntime
                     if (node.Type is not ("UIAspectRatio" or "UIAspectRatioConstraint") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.AspectRatio = (float)Math.Clamp(value.Number, .001, 1000);
                     break;
-                case "layoutdirection": node.LayoutDirection = value.CastToString() == "Horizontal" ? "Horizontal" : "Vertical"; break;
+                case "layoutdirection":
+                    if (node.Type != "UIListLayout" || value.CastToString() is not ("Horizontal" or "Vertical")) return DynValue.Nil;
+                    node.LayoutDirection = value.CastToString()!;
+                    break;
                 case "horizontalalignment":
                     if (node.Type != "UIListLayout" || value.Type != DataType.String || value.String is not ("Left" or "Center" or "Right")) return DynValue.Nil;
                     node.HorizontalAlignment = value.String;
@@ -3000,6 +3082,23 @@ public sealed class LuaXRuntime
             else if (node.Type == "Lighting" && normalized == "clocktime") instance.Set("ClockTime", DynValue.NewNumber(node.ClockTime));
             else if (node.Type == "Lighting" && normalized == "globalshadows") instance.Set("GlobalShadows", DynValue.NewBoolean(project.Settings.Shadows));
             else WriteInstanceProperty(node, instance, normalized);
+            if (node.Type == "UICorner" && normalized is ("cornerradius" or "topleftradius" or "toprightradius" or "bottomrightradius" or "bottomleftradius"))
+                SetCornerInstanceProperties(node, instance);
+            if (node.Type is ("SelectionBox" or "SelectionSphere") && normalized is ("color" or "color3"))
+            {
+                instance.Set("Color", ColorValue(node.Color));
+                instance.Set("Color3", ColorValue(node.Color));
+            }
+            if (node.Type == "UIListLayout" && normalized is ("filldirection" or "layoutdirection"))
+            {
+                instance.Set("FillDirection", DynValue.NewString(node.LayoutDirection));
+                instance.Set("LayoutDirection", DynValue.NewString(node.LayoutDirection));
+            }
+            if (node.Type == "UIListLayout" && normalized is ("padding" or "layoutspacing"))
+            {
+                instance.Set("Padding", CreateUDim(node.ListPaddingScale, node.LayoutSpacing));
+                instance.Set("LayoutSpacing", DynValue.NewNumber(node.LayoutSpacing));
+            }
         }
         if (normalized == "maxhealth" && instances.TryGetValue(node.Id, out var humanoidInstance))
             humanoidInstance.Set("Health", DynValue.NewNumber(node.Health));
@@ -3336,6 +3435,11 @@ public sealed class LuaXRuntime
         "rotation" => VectorValue(node.Rotation),
         "size" => node.Type == "Sparkles" ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
         "color" => ColorValue(node.Color),
+        "color3" => node.Type is ("SelectionBox" or "SelectionSphere") ? ColorValue(node.Color) : DynValue.Nil,
+        "surfacecolor3" => node.Type is ("SelectionBox" or "SelectionSphere") ? ColorValue(node.SurfaceColor3) : DynValue.Nil,
+        "surfacetransparency" => node.Type is ("SelectionBox" or "SelectionSphere") ? DynValue.NewNumber(node.SurfaceTransparency) : DynValue.Nil,
+        "linethickness" => node.Type == "SelectionBox" ? DynValue.NewNumber(node.LineThickness) : DynValue.Nil,
+        "adornee" => node.Type is ("SelectionBox" or "SelectionSphere" or "Highlight") ? GetObjectValueReference(node.Adornee) : DynValue.Nil,
         "sparklecolor" => node.Type == "Sparkles" ? ColorValue(node.Color) : DynValue.Nil,
         "secondarycolor" => node.Type == "Fire" ? ColorValue(node.SecondaryColor) : DynValue.Nil,
         "fillcolor" => ColorValue(node.FillColor),
@@ -3346,10 +3450,11 @@ public sealed class LuaXRuntime
         "paddingtop" => node.Type == "UIPadding" ? CreateUDim(node.PaddingTop[0], node.PaddingTop[1]) : DynValue.Nil,
         "paddingright" => node.Type == "UIPadding" ? CreateUDim(node.PaddingRight[0], node.PaddingRight[1]) : DynValue.Nil,
         "paddingbottom" => node.Type == "UIPadding" ? CreateUDim(node.PaddingBottom[0], node.PaddingBottom[1]) : DynValue.Nil,
+        "padding" => node.Type == "UIListLayout" ? CreateUDim(node.ListPaddingScale, node.LayoutSpacing) : DynValue.Nil,
         "scale" => node.Type == "UIScale" ? DynValue.NewNumber(node.Scale) : DynValue.Nil,
         "cellsize" => node.Type == "UIGridLayout" ? CreateUDim2Value(node.CellSizeScale, node.CellSize) : DynValue.Nil,
         "cellpadding" => node.Type == "UIGridLayout" ? CreateUDim2Value(node.CellPaddingScale, node.CellPadding) : DynValue.Nil,
-        "filldirection" => node.Type == "UIGridLayout" ? DynValue.NewString(node.FillDirection) : DynValue.Nil,
+        "filldirection" => node.Type == "UIListLayout" ? DynValue.NewString(node.LayoutDirection) : node.Type == "UIGridLayout" ? DynValue.NewString(node.FillDirection) : DynValue.Nil,
         "filldirectionmaxcells" => node.Type == "UIGridLayout" ? DynValue.NewNumber(node.FillDirectionMaxCells) : DynValue.Nil,
         "filltransparency" => DynValue.NewNumber(node.FillTransparency),
         "outlinetransparency" => DynValue.NewNumber(node.OutlineTransparency),
@@ -3428,7 +3533,11 @@ public sealed class LuaXRuntime
         "width0" => DynValue.NewNumber(node.Width0),
         "width1" => DynValue.NewNumber(node.Width1),
         "fieldofview" => DynValue.NewNumber(node.FieldOfView),
-        "cornerradius" => DynValue.NewNumber(node.CornerRadius),
+        "cornerradius" => node.Type == "UICorner" ? CornerUDim(node, "CornerRadius") : DynValue.Nil,
+        "topleftradius" => node.Type == "UICorner" ? CornerUDim(node, "TopLeftRadius") : DynValue.Nil,
+        "toprightradius" => node.Type == "UICorner" ? CornerUDim(node, "TopRightRadius") : DynValue.Nil,
+        "bottomrightradius" => node.Type == "UICorner" ? CornerUDim(node, "BottomRightRadius") : DynValue.Nil,
+        "bottomleftradius" => node.Type == "UICorner" ? CornerUDim(node, "BottomLeftRadius") : DynValue.Nil,
         "strokecolor" => DynValue.NewString(node.StrokeColor),
         "strokethickness" => DynValue.NewNumber(node.StrokeThickness),
         "textsize" => DynValue.NewNumber(node.TextSize),
@@ -3585,6 +3694,9 @@ public sealed class LuaXRuntime
         "BasePart" => IsBasePart(node),
         "Light" => SceneNodeTypes.IsLight(node),
         "ValueBase" => SceneNodeTypes.IsValueObject(node),
+        "GuiBase3d" => node.Type is "SelectionBox" or "SelectionSphere",
+        "InstanceAdornment" => node.Type == "SelectionBox",
+        "PVAdornment" => node.Type == "SelectionSphere",
         "UIComponent" => node.Type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UIAspectRatioConstraint" or "UISizeConstraint" or "UITextSizeConstraint" or "UIFlexItem",
         "LuaSourceContainer" => node.Type is "Script" or "ModuleScript",
         "BaseScript" => node.Type == "Script",
@@ -3778,7 +3890,7 @@ public sealed class LuaXRuntime
                     }
                 }
             }
-            else Assign(node, "Color", node.Color, ReadColor(instance.Get("Color"), node.Color), value => node.Color = value);
+            else if (node.Type is not ("SelectionBox" or "SelectionSphere")) Assign(node, "Color", node.Color, ReadColor(instance.Get("Color"), node.Color), value => node.Color = value);
             if (node.Type == "Fire") Assign(node, "SecondaryColor", node.SecondaryColor, ReadColor(instance.Get("SecondaryColor"), node.SecondaryColor), value => node.SecondaryColor = value);
             if (node.Type == "UIGradient")
             {
@@ -3802,6 +3914,28 @@ public sealed class LuaXRuntime
                     Assign(node, "FillTransparency", node.FillTransparency, (float)Math.Clamp(instance.Get("FillTransparency").Number, 0, 1), value => node.FillTransparency = value);
                 if (instance.Get("OutlineTransparency").Type == DataType.Number && double.IsFinite(instance.Get("OutlineTransparency").Number))
                     Assign(node, "OutlineTransparency", node.OutlineTransparency, (float)Math.Clamp(instance.Get("OutlineTransparency").Number, 0, 1), value => node.OutlineTransparency = value);
+            }
+            if (node.Type is "SelectionBox" or "SelectionSphere" or "Highlight")
+            {
+                var requestedAdornee = ReadNodeArgument(instance.Get("Adornee"));
+                if (requestedAdornee is not null && (IsBasePart(requestedAdornee) || requestedAdornee.Type == "Model"))
+                    Assign(node, "Adornee", node.Adornee, requestedAdornee.Id, value => node.Adornee = value);
+                else if (instance.Get("Adornee").Type == DataType.Nil)
+                    Assign(node, "Adornee", node.Adornee, string.Empty, value => node.Adornee = value);
+            }
+            if (node.Type is "SelectionBox" or "SelectionSphere")
+            {
+                var color3 = ReadColor(instance.Get("Color3"), node.Color);
+                var colorAlias = ReadColor(instance.Get("Color"), node.Color);
+                if (color3 != node.Color) Assign(node, "Color3", node.Color, color3, value => node.Color = value);
+                else Assign(node, "Color", node.Color, colorAlias, value => node.Color = value);
+                instance.Set("Color3", ColorValue(node.Color));
+                instance.Set("Color", ColorValue(node.Color));
+                Assign(node, "SurfaceColor3", node.SurfaceColor3, ReadColor(instance.Get("SurfaceColor3"), node.SurfaceColor3), value => node.SurfaceColor3 = value);
+                if (instance.Get("SurfaceTransparency") is { Type: DataType.Number } surfaceTransparency && double.IsFinite(surfaceTransparency.Number))
+                    Assign(node, "SurfaceTransparency", node.SurfaceTransparency, (float)Math.Clamp(surfaceTransparency.Number, 0, 1), value => node.SurfaceTransparency = value);
+                if (node.Type == "SelectionBox" && instance.Get("LineThickness") is { Type: DataType.Number } lineThickness && double.IsFinite(lineThickness.Number))
+                    Assign(node, "LineThickness", node.LineThickness, (float)Math.Clamp(lineThickness.Number, 0, 10), value => node.LineThickness = value);
             }
             if (node.Type == "Part" && instance.Get("Shape").CastToString() is "Block" or "Ball" or "Cylinder")
                 Assign(node, "Shape", node.Shape, instance.Get("Shape").String, value => node.Shape = value);
@@ -3830,7 +3964,7 @@ public sealed class LuaXRuntime
                     MarkChanged(node, "Transparency");
                 }
             }
-            else if ((IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam") && instance.Get("Transparency").Type == DataType.Number && double.IsFinite(instance.Get("Transparency").Number))
+            else if ((IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam" or "SelectionBox" or "SelectionSphere") && instance.Get("Transparency").Type == DataType.Number && double.IsFinite(instance.Get("Transparency").Number))
                 Assign(node, "Transparency", node.Transparency, (float)Math.Clamp(instance.Get("Transparency").Number, 0, 1), value => node.Transparency = value);
             if (IsGuiObject(node) && instance.Get("BackgroundTransparency") is { Type: DataType.Number } backgroundTransparency && double.IsFinite(backgroundTransparency.Number))
                 Assign(node, "BackgroundTransparency", node.BackgroundTransparency, (float)Math.Clamp(backgroundTransparency.Number, 0, 1), value => node.BackgroundTransparency = value);
@@ -4060,7 +4194,27 @@ public sealed class LuaXRuntime
                     && requestedLayoutOrder.Number >= int.MinValue && requestedLayoutOrder.Number <= int.MaxValue)
                     Assign(node, "LayoutOrder", node.LayoutOrder, (int)requestedLayoutOrder.Number, value => node.LayoutOrder = value);
             }
-            if (instance.Get("CornerRadius").Type == DataType.Number) Assign(node, "CornerRadius", node.CornerRadius, (float)Math.Max(0, instance.Get("CornerRadius").Number), value => node.CornerRadius = value);
+            if (node.Type == "UICorner")
+            {
+                var current = UICornerRadiusService.Get(node, "CornerRadius");
+                var individualProperties = new[] { "TopLeftRadius", "TopRightRadius", "BottomRightRadius", "BottomLeftRadius" };
+                var previous = individualProperties.ToDictionary(property => property, property => UICornerRadiusService.Get(node, property).ToArray(), StringComparer.Ordinal);
+                var changedAll = TryReadCornerUDim(instance.Get("CornerRadius"), out var requested)
+                    && !current.SequenceEqual(requested);
+                if (changedAll)
+                {
+                    UICornerRadiusService.Set(node, "CornerRadius", requested[0], requested[1]);
+                    MarkChanged(node, "CornerRadius");
+                }
+                foreach (var cornerProperty in individualProperties)
+                {
+                    if (!TryReadCornerUDim(instance.Get(cornerProperty), out requested)
+                        || (changedAll ? previous[cornerProperty] : UICornerRadiusService.Get(node, cornerProperty)).SequenceEqual(requested)) continue;
+                    UICornerRadiusService.Set(node, cornerProperty, requested[0], requested[1]);
+                    MarkChanged(node, cornerProperty);
+                }
+                SetCornerInstanceProperties(node, instance);
+            }
             if (instance.Get("StrokeColor").CastToString() is { } strokeColor) Assign(node, "StrokeColor", node.StrokeColor, strokeColor, value => node.StrokeColor = value);
             if (instance.Get("StrokeThickness").Type == DataType.Number) Assign(node, "StrokeThickness", node.StrokeThickness, (float)Math.Max(0, instance.Get("StrokeThickness").Number), value => node.StrokeThickness = value);
             if (node.Type is "TextLabel" or "TextButton" or "TextBox" && instance.Get("TextSize") is { Type: DataType.Number } requestedTextSize && double.IsFinite(requestedTextSize.Number))
@@ -4076,7 +4230,7 @@ public sealed class LuaXRuntime
                 instance.Set("MinTextSize", DynValue.NewNumber(node.MinTextSize));
                 instance.Set("MaxTextSize", DynValue.NewNumber(node.MaxTextSize));
             }
-            if (node.Type is "UIListLayout" or "UITableLayout" && instance.Get("LayoutSpacing") is { Type: DataType.Number } requestedSpacing && double.IsFinite(requestedSpacing.Number))
+            if (node.Type == "UITableLayout" && instance.Get("LayoutSpacing") is { Type: DataType.Number } requestedSpacing && double.IsFinite(requestedSpacing.Number))
                 Assign(node, "LayoutSpacing", node.LayoutSpacing, (float)Math.Clamp(requestedSpacing.Number, 0, 1000000), value => node.LayoutSpacing = value);
             if (instance.Get("TableColumns").Type == DataType.Number) Assign(node, "TableColumns", node.TableColumns, (int)Math.Clamp(instance.Get("TableColumns").Number, 1, 24), value => node.TableColumns = value);
             if (node.Type is "UIAspectRatio" or "UIAspectRatioConstraint" && instance.Get("AspectRatio") is { Type: DataType.Number } requestedAspectRatio && double.IsFinite(requestedAspectRatio.Number))
@@ -4105,9 +4259,27 @@ public sealed class LuaXRuntime
                 instance.Set("MinSize", Vector2Value(node.MinSize));
                 instance.Set("MaxSize", Vector2Value(node.MaxSize));
             }
-            if (instance.Get("LayoutDirection").CastToString() is { } layoutDirection) Assign(node, "LayoutDirection", node.LayoutDirection, layoutDirection == "Horizontal" ? "Horizontal" : "Vertical", value => node.LayoutDirection = value);
             if (node.Type == "UIListLayout")
             {
+                var fillDirection = instance.Get("FillDirection").CastToString();
+                var legacyDirection = instance.Get("LayoutDirection").CastToString();
+                if (fillDirection is ("Horizontal" or "Vertical") && fillDirection != node.LayoutDirection)
+                    Assign(node, "FillDirection", node.LayoutDirection, fillDirection, value => node.LayoutDirection = value);
+                else if (legacyDirection is ("Horizontal" or "Vertical"))
+                    Assign(node, "LayoutDirection", node.LayoutDirection, legacyDirection, value => node.LayoutDirection = value);
+                instance.Set("FillDirection", DynValue.NewString(node.LayoutDirection));
+                instance.Set("LayoutDirection", DynValue.NewString(node.LayoutDirection));
+                if (TryReadUDim(instance.Get("Padding"), out var listPadding)
+                    && (listPadding[0] != node.ListPaddingScale || listPadding[1] != node.LayoutSpacing))
+                {
+                    node.ListPaddingScale = Math.Clamp(listPadding[0], 0, 100);
+                    node.LayoutSpacing = Math.Clamp(listPadding[1], 0, 1000000);
+                    MarkChanged(node, "Padding");
+                }
+                else if (instance.Get("LayoutSpacing") is { Type: DataType.Number } listSpacing && double.IsFinite(listSpacing.Number))
+                    Assign(node, "LayoutSpacing", node.LayoutSpacing, (float)Math.Clamp(listSpacing.Number, 0, 1000000), value => node.LayoutSpacing = value);
+                instance.Set("Padding", CreateUDim(node.ListPaddingScale, node.LayoutSpacing));
+                instance.Set("LayoutSpacing", DynValue.NewNumber(node.LayoutSpacing));
                 if (instance.Get("HorizontalAlignment").CastToString() is { } horizontalAlignment && horizontalAlignment is ("Left" or "Center" or "Right"))
                     Assign(node, "HorizontalAlignment", node.HorizontalAlignment, horizontalAlignment, value => node.HorizontalAlignment = value);
                 if (instance.Get("VerticalAlignment").CastToString() is { } verticalAlignment && verticalAlignment is ("Top" or "Center" or "Bottom"))
@@ -4562,6 +4734,27 @@ public sealed class LuaXRuntime
     };
 
     private DynValue CreateUDim2Value(float[] scale, float[] offset) => CreateUDim2(scale[0], offset[0], scale[1], offset[1]);
+
+    private DynValue CornerUDim(SceneNode node, string property)
+    {
+        var value = UICornerRadiusService.Get(node, property);
+        return CreateUDim(value[0], value[1]);
+    }
+
+    private void SetCornerInstanceProperties(SceneNode node, Table instance)
+    {
+        foreach (var property in new[] { "CornerRadius", "TopLeftRadius", "TopRightRadius", "BottomRightRadius", "BottomLeftRadius" })
+            instance.Set(property, CornerUDim(node, property));
+    }
+
+    private bool TryReadCornerUDim(DynValue value, out float[] result)
+    {
+        if (TryReadUDim(value, out result)) return true;
+        result = [0, 0];
+        if (value.Type != DataType.Number || !double.IsFinite(value.Number) || value.Number < float.MinValue || value.Number > float.MaxValue) return false;
+        result[1] = (float)value.Number;
+        return true;
+    }
 
     private bool TryReadUDim(DynValue value, out float[] result)
     {

@@ -45,6 +45,7 @@ public static class GuiRenderService
             children = children.OrderBy(node => node.LayoutOrder).ToArray();
         var grid = gridLayout is null ? default : GetGridMetrics(gridLayout, innerWidth, innerHeight, children.Length);
         var listSizes = listLayout is null ? [] : GetListSizes(children, listLayout, innerWidth, innerHeight);
+        var listSpacing = listLayout is null ? 0 : GetListSpacing(listLayout, innerWidth, innerHeight);
         var listCrossSize = listLayout is null || listSizes.Length == 0 ? 0 :
             children.Select((node, index) => (listLayout.LayoutDirection == "Horizontal" ? listSizes[index].Height : listSizes[index].Width) * GetScale(node)).Max();
         var cursorX = padding.Left;
@@ -52,9 +53,9 @@ public static class GuiRenderService
         if (listLayout is not null && children.Length > 0)
         {
             if (listLayout.LayoutDirection == "Horizontal")
-                cursorX += AlignmentOffset(innerWidth, children.Select((node, index) => listSizes[index].Width * GetScale(node)).Sum() + listLayout.LayoutSpacing * (children.Length - 1), listLayout.HorizontalAlignment);
+                cursorX += AlignmentOffset(innerWidth, children.Select((node, index) => listSizes[index].Width * GetScale(node)).Sum() + listSpacing * (children.Length - 1), listLayout.HorizontalAlignment);
             else
-                cursorY += AlignmentOffset(innerHeight, children.Select((node, index) => listSizes[index].Height * GetScale(node)).Sum() + listLayout.LayoutSpacing * (children.Length - 1), listLayout.VerticalAlignment);
+                cursorY += AlignmentOffset(innerHeight, children.Select((node, index) => listSizes[index].Height * GetScale(node)).Sum() + listSpacing * (children.Length - 1), listLayout.VerticalAlignment);
         }
         var tableColumns = tableLayout is null ? 1 : Math.Clamp(tableLayout.TableColumns, 1, 24);
         var cellWidth = children.Length == 0 ? 0 : Math.Max(1, innerWidth / tableColumns);
@@ -108,14 +109,14 @@ public static class GuiRenderService
                     var itemAlignment = GetItemLineAlignment(node, listLayout.VerticalAlignment);
                     top += AlignmentOffset(innerHeight, listCrossSize, listLayout.VerticalAlignment)
                         + AlignmentOffset(listCrossSize, height * visualScale, itemAlignment);
-                    cursorX += width * visualScale + listLayout.LayoutSpacing;
+                    cursorX += width * visualScale + listSpacing;
                 }
                 else
                 {
                     var itemAlignment = GetItemLineAlignment(node, listLayout.HorizontalAlignment);
                     left += AlignmentOffset(innerWidth, listCrossSize, listLayout.HorizontalAlignment)
                         + AlignmentOffset(listCrossSize, width * visualScale, itemAlignment);
-                    cursorY += height * visualScale + listLayout.LayoutSpacing;
+                    cursorY += height * visualScale + listSpacing;
                 }
             }
             var visual = CreateNode(node, project, width, height, selectedId, activated, textChanged);
@@ -143,7 +144,7 @@ public static class GuiRenderService
             Background = Brushes.Transparent,
             BorderBrush = outline is null ? Brushes.Transparent : BrushFrom(outline.StrokeColor, Brushes.White),
             BorderThickness = outline is null ? new Thickness(0) : new Thickness(Math.Max(0, outline.StrokeThickness)),
-            CornerRadius = rounded is null ? new CornerRadius(0) : new CornerRadius(Math.Max(0, rounded.CornerRadius)),
+            CornerRadius = rounded is null ? new CornerRadius(0) : UICornerRadiusService.Render(rounded, width, height),
             ClipToBounds = rounded is not null,
             RenderTransform = transform
         };
@@ -286,12 +287,13 @@ public static class GuiRenderService
         }
         if (listLayout is not null)
         {
+            var listSpacing = GetListSpacing(listLayout, innerWidth, innerHeight);
             if (listLayout.LayoutDirection == "Horizontal")
             {
-                var contentWidth = elementSizes.Sum(size => size.Width) + listLayout.LayoutSpacing * Math.Max(0, children.Length - 1);
+                var contentWidth = elementSizes.Sum(size => size.Width) + listSpacing * Math.Max(0, children.Length - 1);
                 return new Size(Math.Max(availableWidth, padding.Left + contentWidth + padding.Right), Math.Max(availableHeight, padding.Top + elementSizes.Max(size => size.Height) + padding.Bottom));
             }
-            var contentHeight = elementSizes.Sum(size => size.Height) + listLayout.LayoutSpacing * Math.Max(0, children.Length - 1);
+            var contentHeight = elementSizes.Sum(size => size.Height) + listSpacing * Math.Max(0, children.Length - 1);
             return new Size(Math.Max(availableWidth, padding.Left + elementSizes.Max(size => size.Width) + padding.Right), Math.Max(availableHeight, padding.Top + contentHeight + padding.Bottom));
         }
         if (tableLayout is not null)
@@ -397,6 +399,9 @@ public static class GuiRenderService
         return item?.ItemLineAlignment is { } alignment && alignment != "Automatic" ? alignment : layoutAlignment;
     }
 
+    private static double GetListSpacing(SceneNode layout, double availableWidth, double availableHeight) =>
+        Math.Max(0, layout.ListPaddingScale * (layout.LayoutDirection == "Horizontal" ? availableWidth : availableHeight) + layout.LayoutSpacing);
+
     private static Size[] GetListSizes(SceneNode[] children, SceneNode layout, double availableWidth, double availableHeight)
     {
         var sizes = children.Select(node => GetElementSize(node, availableWidth, availableHeight)).ToArray();
@@ -404,7 +409,7 @@ public static class GuiRenderService
         var horizontal = layout.LayoutDirection == "Horizontal";
         var capacity = horizontal ? availableWidth : availableHeight;
         var occupied = children.Select((node, index) => (horizontal ? sizes[index].Width : sizes[index].Height) * GetScale(node)).Sum()
-            + layout.LayoutSpacing * (sizes.Length - 1);
+            + GetListSpacing(layout, availableWidth, availableHeight) * (sizes.Length - 1);
         var free = capacity - occupied;
         if (Math.Abs(free) > .001)
         {

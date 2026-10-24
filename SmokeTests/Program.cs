@@ -814,6 +814,58 @@ aspectRenderThread.Start();
 aspectRenderThread.Join();
 if (aspectRenderError is not null) throw aspectRenderError;
 
+var cornerProject = new GameProject();
+var cornerScreen = cornerProject.Gui.Children.Single(node => node.Type == "ScreenGui");
+var roundedFrame = new SceneNode { Type = "Frame", Name = "RoundedFrame", Size = [100, 50, 2] };
+cornerScreen.Children.Add(roundedFrame);
+var cornerOutput = new List<string>();
+var cornerRuntime = new LuaXRuntime(cornerProject, output: cornerOutput.Add);
+var cornerScript = new GameScript
+{
+    Source = "local c = Instance.new('UICorner', game.Gui.ScreenGui.RoundedFrame); print('corner-default', c.CornerRadius.Scale, c.CornerRadius.Offset); c.CornerRadius = UDim.new(.2, 5); c.TopRightRadius = UDim.new(0, 2); c.BottomLeftRadius = UDim.new(0, 6); print('corner-values', c.CornerRadius.Scale, c.TopRightRadius.Offset, c.BottomLeftRadius.Offset)"
+};
+cornerProject.Scripts.Add(cornerScript);
+cornerRuntime.Run(cornerScript.Id);
+var corner = roundedFrame.Children.Single(node => node.Type == "UICorner");
+if (Math.Abs(UICornerRadiusService.Get(corner, "CornerRadius")[0] - .2f) > .0001f
+    || UICornerRadiusService.Get(corner, "TopRightRadius")[1] != 2
+    || UICornerRadiusService.Get(corner, "BottomLeftRadius")[1] != 6
+    || !cornerOutput.Contains("corner-default\t0\t8"))
+    throw new Exception("UICorner UDim and per-corner Lua X properties failed: " + string.Join(" | ", cornerOutput));
+var restoredCornerProject = JsonSerializer.Deserialize<GameProject>(
+    JsonSerializer.Serialize(cornerProject, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions)
+    ?? throw new Exception("UICorner project did not deserialize.");
+GameProjectStore.EnsureProject(restoredCornerProject);
+Exception? cornerRenderError = null;
+var cornerRenderThread = new Thread(() =>
+{
+    try
+    {
+        var canvas = GuiRenderService.Render(restoredCornerProject, false, 200, 100);
+        var frame = canvas.Children.OfType<System.Windows.Controls.Border>().Single(border => ((SceneNode)border.Tag).Name == "RoundedFrame");
+        if (Math.Abs(frame.CornerRadius.TopLeft - 15) > .001
+            || Math.Abs(frame.CornerRadius.TopRight - 2) > .001
+            || Math.Abs(frame.CornerRadius.BottomRight - 15) > .001
+            || Math.Abs(frame.CornerRadius.BottomLeft - 6) > .001)
+            throw new Exception("UICorner scale or individual radii rendered incorrectly.");
+    }
+    catch (Exception exception) { cornerRenderError = exception; }
+});
+cornerRenderThread.SetApartmentState(ApartmentState.STA);
+cornerRenderThread.Start();
+cornerRenderThread.Join();
+if (cornerRenderError is not null) throw cornerRenderError;
+var cornerReset = new GameScript { Source = "local c = game.Gui.ScreenGui.RoundedFrame.UICorner; c:SetProperty('CornerRadius', UDim.new(0, 9)); print('corner-reset', c.TopLeftRadius.Offset, c.TopRightRadius.Offset, c.BottomRightRadius.Offset, c.BottomLeftRadius.Offset)" };
+cornerProject.Scripts.Add(cornerReset);
+cornerRuntime.Run(cornerReset.Id);
+if (!cornerOutput.Contains("corner-reset\t9\t9\t9\t9"))
+    throw new Exception("UICorner CornerRadius setter did not update all four corners: " + string.Join(" | ", cornerOutput));
+var legacyCorner = new SceneNode { Type = "UICorner", CornerRadius = 12 };
+UICornerRadiusService.Normalize(legacyCorner);
+if (UICornerRadiusService.Get(legacyCorner, "TopRightRadius")[1] != 12
+    || UICornerRadiusService.Render(legacyCorner, 100, 50).TopRight != 12)
+    throw new Exception("Legacy pixel UICorner radius did not remain compatible.");
+
 var alignedListProject = new GameProject();
 var alignedListScreen = alignedListProject.Gui.Children.Single(node => node.Type == "ScreenGui");
 alignedListScreen.Children.Add(new SceneNode { Type = "Frame", Name = "B", Size = [50, 20, 2], LayoutOrder = 0 });
@@ -854,12 +906,61 @@ alignedListRenderThread.SetApartmentState(ApartmentState.STA);
 alignedListRenderThread.Start();
 alignedListRenderThread.Join();
 if (alignedListRenderError is not null) throw alignedListRenderError;
+var listPaddingScript = new GameScript
+{
+    Source = "local l = game.Gui.ScreenGui.Layout; l.FillDirection = Enum.FillDirection.Vertical; l.Padding = UDim.new(.1, 5); print('list-padding', l.FillDirection, l.Padding.Scale, l.Padding.Offset)"
+};
+alignedListProject.Scripts.Add(listPaddingScript);
+alignedListRuntime.Run(listPaddingScript.Id);
+if (alignedList.LayoutDirection != "Vertical" || Math.Abs(alignedList.ListPaddingScale - .1f) > .0001f || alignedList.LayoutSpacing != 5
+    || !alignedListOutput.Any(line => line.StartsWith("list-padding\tVertical\t0.1", StringComparison.Ordinal) && line.EndsWith("\t5", StringComparison.Ordinal)))
+    throw new Exception("UIListLayout FillDirection or UDim Padding Lua X properties failed: " + string.Join(" | ", alignedListOutput));
+var listSetterScript = new GameScript
+{
+    Source = "local l = game.Gui.ScreenGui.Layout; l:SetProperty('FillDirection', Enum.FillDirection.Horizontal); print('list-setter', l:GetProperty('FillDirection'), l:GetProperty('Padding').Offset)"
+};
+alignedListProject.Scripts.Add(listSetterScript);
+alignedListRuntime.Run(listSetterScript.Id);
+if (alignedList.LayoutDirection != "Horizontal"
+    || !alignedListOutput.Any(line => line.Contains("list-setter\tHorizontal\t5", StringComparison.Ordinal)))
+    throw new Exception("UIListLayout FillDirection setter or Padding getter failed: " + string.Join(" | ", alignedListOutput));
+var paddedListProject = JsonSerializer.Deserialize<GameProject>(
+    JsonSerializer.Serialize(alignedListProject, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions)
+    ?? throw new Exception("Padded UIListLayout project did not deserialize.");
+GameProjectStore.EnsureProject(paddedListProject);
+Exception? paddedListRenderError = null;
+var paddedListRenderThread = new Thread(() =>
+{
+    try
+    {
+        var canvas = GuiRenderService.Render(paddedListProject, false, 300, 100);
+        var frames = canvas.Children.OfType<System.Windows.Controls.Border>().ToDictionary(border => ((SceneNode)border.Tag).Name);
+        if (Math.Abs(System.Windows.Controls.Canvas.GetLeft(frames["A"]) - 92.5) > .001
+            || Math.Abs(System.Windows.Controls.Canvas.GetLeft(frames["B"]) - 157.5) > .001)
+            throw new Exception("UIListLayout scaled Padding did not render correctly.");
+    }
+    catch (Exception exception) { paddedListRenderError = exception; }
+});
+paddedListRenderThread.SetApartmentState(ApartmentState.STA);
+paddedListRenderThread.Start();
+paddedListRenderThread.Join();
+if (paddedListRenderError is not null) throw paddedListRenderError;
+var legacyListScript = new GameScript
+{
+    Source = "local l = game.Gui.ScreenGui.Layout; l.LayoutSpacing = 10; l.LayoutDirection = 'Vertical'; print('legacy-list', l.LayoutSpacing, l.LayoutDirection)"
+};
+alignedListProject.Scripts.Add(legacyListScript);
+alignedListRuntime.Run(legacyListScript.Id);
+if (alignedList.LayoutSpacing != 10 || alignedList.LayoutDirection != "Vertical"
+    || !alignedListOutput.Any(line => line.Contains("legacy-list\t10\tVertical", StringComparison.Ordinal)))
+    throw new Exception("Legacy UIListLayout properties failed: " + string.Join(" | ", alignedListOutput));
 var restoredAlignedList = restoredAlignedListProject.Gui.Children.Single(node => node.Type == "ScreenGui")
     .Children.Single(node => node.Type == "UIListLayout");
 restoredAlignedList.LayoutSpacing = float.NaN;
+restoredAlignedList.ListPaddingScale = float.NaN;
 GameProjectStore.EnsureProject(restoredAlignedListProject);
-if (restoredAlignedList.LayoutSpacing != 0)
-    throw new Exception("Invalid UIListLayout spacing was not normalized.");
+if (restoredAlignedList.LayoutSpacing != 0 || restoredAlignedList.ListPaddingScale != 0)
+    throw new Exception("Invalid UIListLayout padding was not normalized.");
 
 var flexProject = new GameProject();
 var flexScreen = flexProject.Gui.Children.Single(node => node.Type == "ScreenGui");
@@ -1848,6 +1949,164 @@ noCollisionProject.Scripts.Add(destroyBlockerScript);
 noCollisionRuntime.Run(destroyBlockerScript.Id);
 if (noCollisionNode.Part1 != string.Empty || !noCollisionOutput.Contains("collision-ref-cleared\ttrue"))
     throw new Exception("Destroying a linked part did not clear NoCollisionConstraint.Part1.");
+}
+
+{
+var selectionProject = new GameProject();
+var selectionModel = new SceneNode { Type = "Model", Name = "SelectionModel" };
+var selectionPart = new SceneNode { Type = "Part", Name = "TargetPart", Position = [3, 2, 1], Size = [4, 2, 6] };
+selectionModel.Children.Add(selectionPart);
+selectionProject.Workspace.Children.Add(selectionModel);
+var selectionOutput = new List<string>();
+var selectionRuntime = new LuaXRuntime(selectionProject, output: selectionOutput.Add);
+var selectionScript = new GameScript
+{
+    Source = "local m = workspace.SelectionModel; local b = Instance.new('SelectionBox', m); b.Adornee = m.TargetPart; b.Color3 = Color3.fromRGB(255, 0, 0); b.SurfaceColor3 = Color3.fromRGB(0, 255, 0); b.SurfaceTransparency = .4; b.Transparency = .25; b.LineThickness = .2; print('selection-box', b:IsA('GuiBase3d'), b.Adornee == m.TargetPart, b.LineThickness)"
+};
+selectionProject.Scripts.Add(selectionScript);
+selectionRuntime.Run(selectionScript.Id);
+var selectionBox = selectionModel.Children.Single(node => node.Type == "SelectionBox");
+if (selectionBox.Adornee != selectionPart.Id || selectionBox.Color != "#FF0000" || selectionBox.SurfaceColor3 != "#00FF00"
+    || Math.Abs(selectionBox.SurfaceTransparency - .4f) > .0001f || Math.Abs(selectionBox.Transparency - .25f) > .0001f
+    || Math.Abs(selectionBox.LineThickness - .2f) > .0001f
+    || !selectionOutput.Any(line => line.StartsWith("selection-box\ttrue\ttrue\t0.2", StringComparison.Ordinal)))
+    throw new Exception("SelectionBox Lua X properties failed: " + string.Join(" | ", selectionOutput));
+if (!GameProjectStore.CanParentNode(selectionProject, new SceneNode { Type = "SelectionBox" }, selectionPart)
+    || GameProjectStore.CanParentNode(selectionProject, new SceneNode { Type = "SelectionBox" }, selectionProject.Gui))
+    throw new Exception("SelectionBox parent rules failed.");
+var highlightScript = new GameScript
+{
+    Source = "local h = Instance.new('Highlight', workspace); h.Adornee = workspace.SelectionModel.TargetPart; h.FillColor = Color3.fromRGB(255, 128, 0); print('highlight-adornee', h.Adornee == workspace.SelectionModel.TargetPart)"
+};
+selectionProject.Scripts.Add(highlightScript);
+selectionRuntime.Run(highlightScript.Id);
+var explicitHighlight = selectionProject.Workspace.Children.Single(node => node.Type == "Highlight");
+if (explicitHighlight.Adornee != selectionPart.Id || explicitHighlight.FillColor != "#FF8000"
+    || !selectionOutput.Contains("highlight-adornee\ttrue"))
+    throw new Exception("Highlight Adornee Lua X properties failed: " + string.Join(" | ", selectionOutput));
+if (!GameProjectStore.CanParentNode(selectionProject, new SceneNode { Type = "Highlight" }, selectionProject.Workspace)
+    || GameProjectStore.CanParentNode(selectionProject, new SceneNode { Type = "Highlight" }, selectionProject.Gui))
+    throw new Exception("Highlight Adornee parent rules failed.");
+var sphereScript = new GameScript
+{
+    Source = "local m = workspace.SelectionModel; local s = Instance.new('SelectionSphere', m); s.Adornee = m.TargetPart; s.Color3 = Color3.fromRGB(0, 0, 255); s.SurfaceColor3 = Color3.fromRGB(255, 255, 0); s.Transparency = .1; s.SurfaceTransparency = .5; print('selection-sphere', s:IsA('GuiBase3d'), s:IsA('PVAdornment'), s.Adornee == m.TargetPart)"
+};
+selectionProject.Scripts.Add(sphereScript);
+selectionRuntime.Run(sphereScript.Id);
+var selectionSphere = selectionModel.Children.Single(node => node.Type == "SelectionSphere");
+if (selectionSphere.Adornee != selectionPart.Id || selectionSphere.Color != "#0000FF" || selectionSphere.SurfaceColor3 != "#FFFF00"
+    || Math.Abs(selectionSphere.Transparency - .1f) > .0001f || Math.Abs(selectionSphere.SurfaceTransparency - .5f) > .0001f
+    || !selectionOutput.Contains("selection-sphere\ttrue\ttrue\ttrue"))
+    throw new Exception("SelectionSphere Lua X properties failed: " + string.Join(" | ", selectionOutput));
+if (!GameProjectStore.CanParentNode(selectionProject, new SceneNode { Type = "SelectionSphere" }, selectionPart)
+    || GameProjectStore.CanParentNode(selectionProject, new SceneNode { Type = "SelectionSphere" }, selectionProject.Gui))
+    throw new Exception("SelectionSphere parent rules failed.");
+var legacyHighlight = new SceneNode { Type = "Highlight", Name = "LegacyHighlight" };
+selectionPart.Children.Add(legacyHighlight);
+GameProjectStore.EnsureProject(selectionProject);
+Exception? selectionRenderError = null;
+var selectionRenderThread = new Thread(() =>
+{
+    try
+    {
+        var viewport = new HelixToolkit.Wpf.SharpDX.Viewport3DX();
+        var camera = selectionProject.Workspace.Children.Single(node => node.Type == "Camera");
+        var renderer = new SceneRenderService(viewport, camera);
+        renderer.Refresh(selectionProject);
+        if (!renderer.HighlightFills.ContainsKey(selectionPart.Id))
+            throw new Exception("Workspace Highlight did not render on its Adornee.");
+        explicitHighlight.Enabled = false;
+        renderer.UpdateNode(explicitHighlight, selectionProject);
+        if (!renderer.HighlightFills.ContainsKey(selectionPart.Id))
+            throw new Exception("Legacy child Highlight without Adornee stopped rendering.");
+        legacyHighlight.Enabled = false;
+        renderer.UpdateNode(legacyHighlight, selectionProject);
+        if (renderer.HighlightFills.ContainsKey(selectionPart.Id))
+            throw new Exception("Disabled Highlights still rendered.");
+        explicitHighlight.Enabled = true;
+        legacyHighlight.Enabled = true;
+        renderer.UpdateNode(explicitHighlight, selectionProject);
+        explicitHighlight.Adornee = selectionModel.Id;
+        legacyHighlight.Enabled = false;
+        renderer.UpdateNode(explicitHighlight, selectionProject);
+        if (!renderer.HighlightFills.ContainsKey(selectionPart.Id))
+            throw new Exception("Highlight did not render its Model Adornee.");
+        explicitHighlight.Adornee = selectionPart.Id;
+        legacyHighlight.Enabled = true;
+        renderer.UpdateNode(explicitHighlight, selectionProject);
+        if (!renderer.SelectionBoxVisuals.TryGetValue(selectionBox.Id, out var visuals)
+            || visuals.Surface?.Geometry is null || visuals.Outline?.Geometry is null)
+            throw new Exception("SelectionBox did not create a surface and outline in the viewport.");
+        if (!renderer.SelectionSphereVisuals.TryGetValue(selectionSphere.Id, out var sphereVisuals)
+            || sphereVisuals.Surface?.Geometry is null || sphereVisuals.Outline?.Geometry is null)
+            throw new Exception("SelectionSphere did not create a surface and outline in the viewport.");
+        selectionPart.Position = [8, 2, 1];
+        renderer.UpdateNode(selectionPart, selectionProject);
+        if (!renderer.SelectionBoxVisuals.TryGetValue(selectionBox.Id, out visuals)
+            || visuals.Outline?.Transform.Transform(new System.Windows.Media.Media3D.Point3D(0, 0, 0)).X != 8)
+            throw new Exception("SelectionBox did not follow its moved Adornee.");
+        if (!renderer.SelectionSphereVisuals.TryGetValue(selectionSphere.Id, out sphereVisuals)
+            || sphereVisuals.Outline?.Transform.Transform(new System.Windows.Media.Media3D.Point3D(0, 0, 0)).X != 8)
+            throw new Exception("SelectionSphere did not follow its moved Adornee.");
+        selectionSphere.Adornee = selectionModel.Id;
+        renderer.UpdateNode(selectionSphere, selectionProject);
+        if (!renderer.SelectionSphereVisuals.TryGetValue(selectionSphere.Id, out sphereVisuals)
+            || sphereVisuals.Surface?.Transform.Transform(new System.Windows.Media.Media3D.Point3D(0, 0, 0)).X != 8)
+            throw new Exception("SelectionSphere did not render its Model Adornee bounds.");
+        selectionSphere.Adornee = selectionPart.Id;
+        selectionSphere.SurfaceTransparency = 1;
+        renderer.UpdateNode(selectionSphere, selectionProject);
+        if (!renderer.SelectionSphereVisuals.TryGetValue(selectionSphere.Id, out sphereVisuals)
+            || sphereVisuals.Surface is not null || sphereVisuals.Outline is null)
+            throw new Exception("SelectionSphere opaque outline or transparent surface rendered incorrectly.");
+        selectionSphere.SurfaceTransparency = .5f;
+        renderer.UpdateNode(selectionSphere, selectionProject);
+        selectionBox.Adornee = selectionModel.Id;
+        renderer.UpdateNode(selectionBox, selectionProject);
+        if (!renderer.SelectionBoxVisuals.TryGetValue(selectionBox.Id, out visuals)
+            || visuals.Outline?.Transform.Transform(new System.Windows.Media.Media3D.Point3D(0, 0, 0)).X != 8)
+            throw new Exception("SelectionBox did not render its Model Adornee bounds.");
+        selectionBox.Adornee = selectionPart.Id;
+        renderer.UpdateNode(selectionBox, selectionProject);
+        selectionBox.LineThickness = 0;
+        renderer.UpdateNode(selectionBox, selectionProject);
+        if (!renderer.SelectionBoxVisuals.TryGetValue(selectionBox.Id, out visuals) || visuals.Outline is not null || visuals.Surface is null)
+            throw new Exception("SelectionBox LineThickness zero did not hide the outline.");
+        selectionBox.LineThickness = .2f;
+    }
+    catch (Exception exception) { selectionRenderError = exception; }
+});
+selectionRenderThread.SetApartmentState(ApartmentState.STA);
+selectionRenderThread.Start();
+selectionRenderThread.Join();
+if (selectionRenderError is not null) throw selectionRenderError;
+var clonedSelectionModel = GameProjectStore.CloneSubtree(selectionModel, out _) ?? throw new Exception("SelectionBox Model did not clone.");
+if (clonedSelectionModel.Children.Single(node => node.Type == "SelectionBox").Adornee != clonedSelectionModel.Children.Single(node => node.Type == "Part").Id)
+    throw new Exception("SelectionBox clone did not reconnect Adornee.");
+if (clonedSelectionModel.Children.Single(node => node.Type == "SelectionSphere").Adornee != clonedSelectionModel.Children.Single(node => node.Type == "Part").Id)
+    throw new Exception("SelectionSphere clone did not reconnect Adornee.");
+selectionModel.Children.Remove(selectionBox);
+selectionModel.Children.Insert(0, selectionBox);
+selectionModel.Children.Remove(selectionSphere);
+selectionModel.Children.Insert(0, selectionSphere);
+selectionProject.Workspace.Children.Remove(explicitHighlight);
+selectionProject.Workspace.Children.Insert(0, explicitHighlight);
+var restoredSelectionProject = JsonSerializer.Deserialize<GameProject>(
+    JsonSerializer.Serialize(selectionProject, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions)
+    ?? throw new Exception("SelectionBox project did not deserialize.");
+GameProjectStore.EnsureProject(restoredSelectionProject);
+var restoredSelectionOutput = new List<string>();
+var restoredSelectionRuntime = new LuaXRuntime(restoredSelectionProject, output: restoredSelectionOutput.Add);
+var restoredSelectionScript = new GameScript { Source = "print('selection-restored', workspace.SelectionModel.SelectionBox.Adornee == workspace.SelectionModel.TargetPart, workspace.SelectionModel.SelectionSphere.Adornee == workspace.SelectionModel.TargetPart, workspace.Highlight.Adornee == workspace.SelectionModel.TargetPart)" };
+restoredSelectionProject.Scripts.Add(restoredSelectionScript);
+restoredSelectionRuntime.Run(restoredSelectionScript.Id);
+if (!restoredSelectionOutput.Contains("selection-restored\ttrue\ttrue\ttrue"))
+    throw new Exception("SelectionBox Adornee reference was not restored before its target: " + string.Join(" | ", restoredSelectionOutput));
+var destroySelectionTarget = new GameScript { Source = "workspace.SelectionModel.TargetPart:Destroy(); print('selection-cleared', workspace.SelectionModel.SelectionBox.Adornee == nil, workspace.SelectionModel.SelectionSphere.Adornee == nil, workspace.Highlight.Adornee == nil)" };
+restoredSelectionProject.Scripts.Add(destroySelectionTarget);
+restoredSelectionRuntime.Run(destroySelectionTarget.Id);
+if (!restoredSelectionOutput.Contains("selection-cleared\ttrue\ttrue\ttrue"))
+    throw new Exception("Destroying a SelectionBox target did not clear Adornee: " + string.Join(" | ", restoredSelectionOutput));
 }
 
 {
