@@ -290,7 +290,6 @@ public sealed class PhysicsSimulationService
                     rocket.RocketPropulsionReachedTarget = true;
                     rocketReachedTarget?.Invoke(rocket);
                 }
-                continue;
             }
             if (distance < .0001f) continue;
             var mass = group.Sum(PartMass);

@@ -108,7 +108,7 @@ public sealed class LuaXRuntime
     }
     private static readonly HashSet<string> CreatableClasses = new(StringComparer.Ordinal)
     {
-        "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Model", "Folder", "Tool", "Accessory", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid",
+        "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Model", "Folder", "Tool", "Accessory", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue",
         "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Team",
         "Sky", "Atmosphere", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
@@ -155,6 +155,11 @@ public sealed class LuaXRuntime
         valueChangedCallbacks.Clear();
         equippedToolIds.Clear();
         activatedToolIds.Clear();
+        foreach (var rocket in KnownNodes().Where(node => node.Type == "RocketPropulsion"))
+        {
+            rocket.RocketPropulsionActive = false;
+            rocket.RocketPropulsionReachedTarget = false;
+        }
         bindableFunctionCallbacks.Clear();
         remoteFunctionCallbacks.Clear();
         explosionHitCallbacks.Clear();
@@ -1587,7 +1592,7 @@ public sealed class LuaXRuntime
             instance.Set("Changed", DynValue.NewTable(changed));
         }
         if (node.Type == "BindableEvent") InstallBindableEvent(node, instance);
-        if (node.Type == "RemoteEvent") InstallRemoteEvent(node, instance);
+        if (node.Type is "RemoteEvent" or "UnreliableRemoteEvent") InstallRemoteEvent(node, instance);
         if (node.Type == "BindableFunction")
         {
             var getCallback = DynValue.NewCallback((_, _) => bindableFunctionCallbacks.TryGetValue(node.Id, out var callback) && IsTaskOwnerActive(callback.GameScript) ? callback.Function : DynValue.Nil);
@@ -1887,7 +1892,7 @@ public sealed class LuaXRuntime
     private static bool IsReservedBindableMember(SceneNode node, string name) =>
         node.Type == "BindableFunction" && name is ("OnInvoke" or "Invoke")
         || node.Type == "BindableEvent" && name is ("Event" or "Fire")
-        || node.Type == "RemoteEvent" && name is ("OnServerEvent" or "OnClientEvent" or "FireServer" or "FireClient" or "FireAllClients")
+        || (node.Type is "RemoteEvent" or "UnreliableRemoteEvent") && name is ("OnServerEvent" or "OnClientEvent" or "FireServer" or "FireClient" or "FireAllClients")
         || node.Type == "RemoteFunction" && name is ("OnServerInvoke" or "OnClientInvoke" or "InvokeServer" or "InvokeClient");
 
     private void SetBindableFunctionCallback(SceneNode node, DynValue value)
@@ -3813,14 +3818,20 @@ public sealed class LuaXRuntime
                 var target = ReadNodeArgument(value);
                 if (value.Type == DataType.Nil) target = null;
                 else if (target is null || !SceneNodeTypes.IsBasePart(target)) return DynValue.Nil;
-                node.RocketPropulsionTarget = target?.Id ?? string.Empty;
+                var targetId = target?.Id ?? string.Empty;
+                if (node.RocketPropulsionTarget != targetId) node.RocketPropulsionReachedTarget = false;
+                node.RocketPropulsionTarget = targetId;
             }
             else if (normalized is "targetoffset" or "maxtorque")
             {
                 var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
                 if (value.Type != DataType.Table || vector.Length != 3 || !vector.All(float.IsFinite)) return DynValue.Nil;
                 vector = vector.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
-                if (normalized == "targetoffset") node.RocketPropulsionTargetOffset = vector;
+                if (normalized == "targetoffset")
+                {
+                    if (!node.RocketPropulsionTargetOffset.SequenceEqual(vector)) node.RocketPropulsionReachedTarget = false;
+                    node.RocketPropulsionTargetOffset = vector;
+                }
                 else node.RocketPropulsionMaxTorque = vector.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
             }
             else
@@ -6000,8 +6011,11 @@ public sealed class LuaXRuntime
     private static bool IsA(SceneNode node, string className) => className switch
     {
         "Instance" => true,
+        "BaseRemoteEvent" => node.Type is "RemoteEvent" or "UnreliableRemoteEvent",
+        "RemoteEvent" => node.Type == "RemoteEvent",
+        "UnreliableRemoteEvent" => node.Type == "UnreliableRemoteEvent",
         "Accoutrement" => node.Type == "Accessory",
-        "BodyMover" => node.Type is "BodyForce" or "BodyThrust" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity",
+        "BodyMover" => node.Type is "BodyForce" or "BodyThrust" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity" or "RocketPropulsion",
         "Constraint" => node.Type is "WeldConstraint" or "NoCollisionConstraint" or "VectorForce" or "LineForce" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity",
         "SlidingBallConstraint" => node.Type is "PrismaticConstraint" or "CylindricalConstraint",
         "BasePart" => IsBasePart(node),
@@ -6490,12 +6504,22 @@ public sealed class LuaXRuntime
             {
                 var target = ReadNodeArgument(instance.Get("Target"));
                 var targetId = target is { } targetPart && SceneNodeTypes.IsBasePart(targetPart) ? targetPart.Id : string.Empty;
-                if (node.RocketPropulsionTarget != targetId) { node.RocketPropulsionTarget = targetId; MarkChanged(node, "Target"); }
+                if (node.RocketPropulsionTarget != targetId)
+                {
+                    node.RocketPropulsionTarget = targetId;
+                    node.RocketPropulsionReachedTarget = false;
+                    MarkChanged(node, "Target");
+                }
                 var targetOffset = ReadVector(instance.Get("TargetOffset"), [float.NaN, float.NaN, float.NaN]);
                 if (targetOffset.Length == 3 && targetOffset.All(float.IsFinite))
                 {
                     var requested = targetOffset.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
-                    if (!node.RocketPropulsionTargetOffset.SequenceEqual(requested)) { node.RocketPropulsionTargetOffset = requested; MarkChanged(node, "TargetOffset"); }
+                    if (!node.RocketPropulsionTargetOffset.SequenceEqual(requested))
+                    {
+                        node.RocketPropulsionTargetOffset = requested;
+                        node.RocketPropulsionReachedTarget = false;
+                        MarkChanged(node, "TargetOffset");
+                    }
                 }
                 var maxTorque = ReadVector(instance.Get("MaxTorque"), [float.NaN, float.NaN, float.NaN]);
                 if (maxTorque.Length == 3 && maxTorque.All(float.IsFinite))

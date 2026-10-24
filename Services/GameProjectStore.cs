@@ -993,7 +993,7 @@ public static class GameProjectStore
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
         if (node.Type == "PitchShiftSoundEffect")
             return parentType is "Sound" or "SoundGroup" && node.Children.Count == 0;
-        if (node.Type is "RemoteEvent" or "RemoteFunction")
+        if (node.Type is "RemoteEvent" or "UnreliableRemoteEvent" or "RemoteFunction")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.Count == 0;
         if (node.Type == "Tool") return (parentType is "Workspace" or "Folder" or "Model" or "StarterPack" or "Backpack")
