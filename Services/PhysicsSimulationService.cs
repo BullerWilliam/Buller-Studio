@@ -7,16 +7,18 @@ public sealed class PhysicsSimulationService
 {
     private readonly GameProject project;
     private readonly Action<SceneNode> moved;
+    private readonly Action<SceneNode>? rocketReachedTarget;
     private readonly Dictionary<string, float[]> weldedVelocities = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, WeldedTransform>> weldedTransforms = new(StringComparer.Ordinal);
     private sealed record WeldedTransform(float[] Position, float[] Rotation);
     private sealed record VelocityTarget(SceneNode Constraint, Matrix4x4 Orientation, SceneNode? ReferencePart);
     private sealed record OrientationOwner(SceneNode Attachment, SceneNode Part);
 
-    public PhysicsSimulationService(GameProject project, Action<SceneNode> moved)
+    public PhysicsSimulationService(GameProject project, Action<SceneNode> moved, Action<SceneNode>? rocketReachedTarget = null)
     {
         this.project = project;
         this.moved = moved;
+        this.rocketReachedTarget = rocketReachedTarget;
     }
 
     public void Step(float elapsedSeconds)
@@ -44,6 +46,10 @@ public sealed class PhysicsSimulationService
                 stepForces[partId] = stepForces.GetValueOrDefault(partId) + force;
             foreach (var (partId, force) in BuildBodyMoverForceMap(parts))
                 stepForces[partId] = stepForces.GetValueOrDefault(partId) + force;
+            foreach (var (partId, force) in BuildBodyThrustForceMap(parts, weldedGroups))
+                stepForces[partId] = stepForces.GetValueOrDefault(partId) + force;
+            foreach (var (partId, force) in BuildRocketPropulsionForceMap(parts, weldedGroups))
+                stepForces[partId] = stepForces.GetValueOrDefault(partId) + force;
             foreach (var (partId, force) in BuildSpringForceMap(parts))
                 stepForces[partId] = stepForces.GetValueOrDefault(partId) + force;
             foreach (var (partId, force) in BuildBallSocketForceMap(parts))
@@ -56,6 +62,10 @@ public sealed class PhysicsSimulationService
                 stepForces[partId] = stepForces.GetValueOrDefault(partId) + force;
         SimulateStep(parts, weldedGroups, stepForces, velocityTargets, ignoredPairs, deltaTime);
             var appliedForceTorques = BuildVectorForceTorqueMap(parts, weldedGroups);
+            foreach (var (partId, torque) in BuildBodyThrustTorqueMap(parts, weldedGroups))
+                appliedForceTorques[partId] = appliedForceTorques.GetValueOrDefault(partId) + torque;
+            foreach (var (partId, torque) in BuildRocketPropulsionTorqueMap(parts, weldedGroups))
+                appliedForceTorques[partId] = appliedForceTorques.GetValueOrDefault(partId) + torque;
             foreach (var (partId, torque) in BuildBodyMoverTorqueMap(parts))
                 appliedForceTorques[partId] = appliedForceTorques.GetValueOrDefault(partId) + torque;
             foreach (var (partId, torque) in alignmentTorques)
@@ -208,6 +218,148 @@ public sealed class PhysicsSimulationService
             forces[part.Id] = forces.GetValueOrDefault(part.Id) + force;
         }
         return forces;
+    }
+
+    private static Dictionary<string, Vector3> BuildBodyThrustForceMap(SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups)
+    {
+        var forces = new Dictionary<string, Vector3>(StringComparer.Ordinal);
+        foreach (var part in parts)
+        foreach (var thrust in part.Children.Where(node => node.Type == "BodyThrust" && node.Enabled))
+        {
+            if (thrust.BodyThrustForce.Length < 3) continue;
+            var force = new Vector3(thrust.BodyThrustForce[0], thrust.BodyThrustForce[1], thrust.BodyThrustForce[2]);
+            if (!float.IsFinite(force.X) || !float.IsFinite(force.Y) || !float.IsFinite(force.Z)) continue;
+            var group = weldedGroups.GetValueOrDefault(part.Id) ?? [part];
+            force = Vector3.TransformNormal(force, RotationMath.FromDegrees(group[0].Rotation));
+            forces[part.Id] = forces.GetValueOrDefault(part.Id) + force;
+        }
+        return forces;
+    }
+
+    private Dictionary<string, Vector3> BuildBodyThrustTorqueMap(SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups)
+    {
+        var torques = new Dictionary<string, Vector3>(StringComparer.Ordinal);
+        foreach (var part in parts)
+        foreach (var thrust in part.Children.Where(node => node.Type == "BodyThrust" && node.Enabled))
+        {
+            if (thrust.BodyThrustForce.Length < 3 || thrust.BodyThrustLocation.Length < 3) continue;
+            var localForce = new Vector3(thrust.BodyThrustForce[0], thrust.BodyThrustForce[1], thrust.BodyThrustForce[2]);
+            var localLocation = new Vector3(thrust.BodyThrustLocation[0], thrust.BodyThrustLocation[1], thrust.BodyThrustLocation[2]);
+            if (!float.IsFinite(localForce.X) || !float.IsFinite(localForce.Y) || !float.IsFinite(localForce.Z)
+                || !float.IsFinite(localLocation.X) || !float.IsFinite(localLocation.Y) || !float.IsFinite(localLocation.Z)) continue;
+            var group = weldedGroups.GetValueOrDefault(part.Id) ?? [part];
+            var assemblyRoot = group[0];
+            var rotation = RotationMath.FromDegrees(assemblyRoot.Rotation);
+            var force = Vector3.TransformNormal(localForce, rotation);
+            var location = Vector3.TransformNormal(localLocation, rotation) + new Vector3(assemblyRoot.Position[0], assemblyRoot.Position[1], assemblyRoot.Position[2]);
+            if (group.Any(member => member.Anchored)) continue;
+            var totalMass = group.Sum(PartMass);
+            if (totalMass <= .000001f) continue;
+            var centerOfMass = group.Aggregate(Vector3.Zero,
+                (sum, member) => sum + new Vector3(member.Position[0], member.Position[1], member.Position[2]) * PartMass(member)) / totalMass;
+            var torque = Vector3.Cross(location - centerOfMass, force);
+            if (!float.IsFinite(torque.X) || !float.IsFinite(torque.Y) || !float.IsFinite(torque.Z)) continue;
+            torques[part.Id] = torques.GetValueOrDefault(part.Id) + torque;
+        }
+        return torques;
+    }
+
+    private Dictionary<string, Vector3> BuildRocketPropulsionForceMap(SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups)
+    {
+        var forces = new Dictionary<string, Vector3>(StringComparer.Ordinal);
+        var partsById = parts.ToDictionary(part => part.Id, StringComparer.Ordinal);
+        foreach (var part in parts)
+        foreach (var rocket in part.Children.Where(node => node.Type == "RocketPropulsion" && node.Enabled && node.RocketPropulsionActive))
+        {
+            var group = weldedGroups.GetValueOrDefault(part.Id) ?? [part];
+            if (group.Any(member => member.Anchored)) continue;
+            var root = group[0];
+            var target = partsById.GetValueOrDefault(rocket.RocketPropulsionTarget);
+            if (target is not null && group.Any(member => member.Id == target.Id)) continue;
+            var targetPosition = target is null
+                ? new Vector3(rocket.RocketPropulsionTargetOffset[0], rocket.RocketPropulsionTargetOffset[1], rocket.RocketPropulsionTargetOffset[2])
+                : new Vector3(target.Position[0] + rocket.RocketPropulsionTargetOffset[0], target.Position[1] + rocket.RocketPropulsionTargetOffset[1], target.Position[2] + rocket.RocketPropulsionTargetOffset[2]);
+            var position = new Vector3(root.Position[0], root.Position[1], root.Position[2]);
+            var delta = targetPosition - position;
+            var distance = delta.Length();
+            if (!float.IsFinite(distance)) continue;
+            if (distance <= rocket.RocketPropulsionTargetRadius)
+            {
+                if (!rocket.RocketPropulsionReachedTarget)
+                {
+                    rocket.RocketPropulsionReachedTarget = true;
+                    rocketReachedTarget?.Invoke(rocket);
+                }
+                continue;
+            }
+            if (distance < .0001f) continue;
+            var mass = group.Sum(PartMass);
+            if (!float.IsFinite(mass) || mass <= .000001f) continue;
+            var maxThrust = Math.Clamp(rocket.RocketPropulsionMaxThrust, 0, 1000000);
+            var maxSpeed = Math.Clamp(rocket.RocketPropulsionMaxSpeed, 0, 10000);
+            var brakingSpeed = MathF.Sqrt(2 * (maxThrust / mass) * distance);
+            var desiredSpeed = Math.Min(maxSpeed, brakingSpeed);
+            var targetVelocity = target is null ? Vector3.Zero : new Vector3(target.Velocity[0], target.Velocity[1], target.Velocity[2]);
+            var desiredVelocity = targetVelocity + delta / distance * desiredSpeed;
+            var currentVelocity = new Vector3(root.Velocity[0], root.Velocity[1], root.Velocity[2]);
+            var thrustP = Math.Clamp(rocket.RocketPropulsionThrustP, 0, 1000000);
+            var thrustD = Math.Clamp(rocket.RocketPropulsionThrustD, 0, 1000000);
+            var force = (desiredVelocity - currentVelocity) * thrustP - currentVelocity * thrustD;
+            if (!float.IsFinite(force.X) || !float.IsFinite(force.Y) || !float.IsFinite(force.Z)) continue;
+            var magnitude = force.Length();
+            if (magnitude > maxThrust && magnitude > .0001f) force *= maxThrust / magnitude;
+            forces[part.Id] = forces.GetValueOrDefault(part.Id) + force;
+        }
+        return forces;
+    }
+
+    private static Dictionary<string, Vector3> BuildRocketPropulsionTorqueMap(SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups)
+    {
+        var torques = new Dictionary<string, Vector3>(StringComparer.Ordinal);
+        var partsById = parts.ToDictionary(part => part.Id, StringComparer.Ordinal);
+        static float RotationError(float targetDegrees, float currentDegrees)
+        {
+            var delta = (targetDegrees - currentDegrees) % 360;
+            if (delta > 180) delta -= 360;
+            if (delta < -180) delta += 360;
+            return delta * (MathF.PI / 180);
+        }
+        foreach (var part in parts)
+        foreach (var rocket in part.Children.Where(node => node.Type == "RocketPropulsion" && node.Enabled && node.RocketPropulsionActive))
+        {
+            var group = weldedGroups.GetValueOrDefault(part.Id) ?? [part];
+            if (group.Any(member => member.Anchored)) continue;
+            var root = group[0];
+            var target = partsById.GetValueOrDefault(rocket.RocketPropulsionTarget);
+            if (target is not null && group.Any(member => member.Id == target.Id)) continue;
+            var targetPosition = target is null
+                ? new Vector3(rocket.RocketPropulsionTargetOffset[0], rocket.RocketPropulsionTargetOffset[1], rocket.RocketPropulsionTargetOffset[2])
+                : new Vector3(target.Position[0] + rocket.RocketPropulsionTargetOffset[0], target.Position[1] + rocket.RocketPropulsionTargetOffset[1], target.Position[2] + rocket.RocketPropulsionTargetOffset[2]);
+            var position = new Vector3(root.Position[0], root.Position[1], root.Position[2]);
+            var delta = targetPosition - position;
+            var distance = delta.Length();
+            if (!float.IsFinite(distance) || distance < .0001f) continue;
+            var pitch = MathF.Asin(Math.Clamp(delta.Y / distance, -1, 1)) * (180 / MathF.PI);
+            var yaw = delta.X * delta.X + delta.Z * delta.Z < .000001f ? 0 : MathF.Atan2(-delta.X, -delta.Z) * (180 / MathF.PI);
+            var currentRotation = root.Rotation;
+            var angularVelocity = root.AssemblyAngularVelocity;
+            var maximum = rocket.RocketPropulsionMaxTorque;
+            var cartoonFactor = Math.Clamp(rocket.RocketPropulsionCartoonFactor, 0, 1);
+            var turnP = Math.Clamp(rocket.RocketPropulsionTurnP, 0, 1000000) * cartoonFactor;
+            var turnD = Math.Clamp(rocket.RocketPropulsionTurnD, 0, 1000000);
+            var error = new Vector3(
+                RotationError(pitch, currentRotation[0]),
+                RotationError(yaw, currentRotation[1]),
+                RotationError(0, currentRotation[2]));
+            var torque = error * turnP - new Vector3(angularVelocity[0], angularVelocity[1], angularVelocity[2]) * turnD;
+            torque = new Vector3(
+                Math.Clamp(torque.X, -Math.Abs(maximum[0]), Math.Abs(maximum[0])),
+                Math.Clamp(torque.Y, -Math.Abs(maximum[1]), Math.Abs(maximum[1])),
+                Math.Clamp(torque.Z, -Math.Abs(maximum[2]), Math.Abs(maximum[2])));
+            if (!float.IsFinite(torque.X) || !float.IsFinite(torque.Y) || !float.IsFinite(torque.Z)) continue;
+            torques[part.Id] = torques.GetValueOrDefault(part.Id) + torque;
+        }
+        return torques;
     }
 
     private Dictionary<string, Vector3> BuildVectorForceTorqueMap(SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups)

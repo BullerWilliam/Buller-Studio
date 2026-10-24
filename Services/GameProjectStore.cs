@@ -471,7 +471,7 @@ public static class GameProjectStore
             node.Width1 = float.IsFinite(node.Width1) ? Math.Clamp(node.Width1, 0, 100) : .2f;
             node.Force = EnsureVector(node.Force, [0, 0, 0]);
             for (var axis = 0; axis < 3; axis++) node.Force[axis] = float.IsFinite(node.Force[axis]) ? Math.Clamp(node.Force[axis], -1000000, 1000000) : 0;
-            node.BodyThrustForce = EnsureVector(node.BodyThrustForce, [0, 0, 0]);
+            node.BodyThrustForce = EnsureVector(node.BodyThrustForce, [0, 1, 0]);
             node.BodyThrustLocation = EnsureVector(node.BodyThrustLocation, [0, 0, 0]);
             for (var axis = 0; axis < 3; axis++)
             {
@@ -512,6 +512,25 @@ public static class GameProjectStore
                 node.BodyAngularVelocityMaxTorque[axis] = float.IsFinite(node.BodyAngularVelocityMaxTorque[axis]) ? Math.Clamp(node.BodyAngularVelocityMaxTorque[axis], 0, 1000000) : 0;
             }
             node.BodyAngularVelocityP = float.IsFinite(node.BodyAngularVelocityP) ? Math.Clamp(node.BodyAngularVelocityP, 0, 1000000) : 1250;
+            node.RocketPropulsionTarget ??= string.Empty;
+            node.RocketPropulsionTargetOffset = EnsureVector(node.RocketPropulsionTargetOffset, [0, 0, 0]);
+            for (var axis = 0; axis < 3; axis++)
+            {
+                node.RocketPropulsionTargetOffset[axis] = float.IsFinite(node.RocketPropulsionTargetOffset[axis]) ? Math.Clamp(node.RocketPropulsionTargetOffset[axis], -1000000, 1000000) : 0;
+            }
+            node.RocketPropulsionTargetRadius = float.IsFinite(node.RocketPropulsionTargetRadius) ? Math.Clamp(node.RocketPropulsionTargetRadius, 0, 1000000) : 4;
+            node.RocketPropulsionCartoonFactor = float.IsFinite(node.RocketPropulsionCartoonFactor) ? Math.Clamp(node.RocketPropulsionCartoonFactor, 0, 1) : .7f;
+            node.RocketPropulsionMaxSpeed = float.IsFinite(node.RocketPropulsionMaxSpeed) ? Math.Clamp(node.RocketPropulsionMaxSpeed, 0, 10000) : 30;
+            node.RocketPropulsionMaxThrust = float.IsFinite(node.RocketPropulsionMaxThrust) ? Math.Clamp(node.RocketPropulsionMaxThrust, 0, 1000000) : 4000;
+            node.RocketPropulsionMaxTorque = EnsureVector(node.RocketPropulsionMaxTorque, [400000, 400000, 0]);
+            for (var axis = 0; axis < 3; axis++)
+            {
+                node.RocketPropulsionMaxTorque[axis] = float.IsFinite(node.RocketPropulsionMaxTorque[axis]) ? Math.Clamp(node.RocketPropulsionMaxTorque[axis], 0, 1000000) : 0;
+            }
+            node.RocketPropulsionThrustD = float.IsFinite(node.RocketPropulsionThrustD) ? Math.Clamp(node.RocketPropulsionThrustD, 0, 1000000) : .001f;
+            node.RocketPropulsionThrustP = float.IsFinite(node.RocketPropulsionThrustP) ? Math.Clamp(node.RocketPropulsionThrustP, 0, 1000000) : 5;
+            node.RocketPropulsionTurnD = float.IsFinite(node.RocketPropulsionTurnD) ? Math.Clamp(node.RocketPropulsionTurnD, 0, 1000000) : 500;
+            node.RocketPropulsionTurnP = float.IsFinite(node.RocketPropulsionTurnP) ? Math.Clamp(node.RocketPropulsionTurnP, 0, 1000000) : 3000;
             node.LineForceMagnitude = float.IsFinite(node.LineForceMagnitude) ? Math.Clamp(node.LineForceMagnitude, 0, 1000000) : 1000;
             node.LineForceMaxForce = float.IsFinite(node.LineForceMaxForce) ? Math.Clamp(node.LineForceMaxForce, 0, 1000000) : 1000000;
             if (node.Type is "AngularVelocity" or "Torque")
@@ -988,7 +1007,7 @@ public static class GameProjectStore
         if (node.Type == "Attachment")
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
-        if (node.Type is "BodyForce" or "BodyThrust" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity") return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
+        if (node.Type is "BodyForce" or "BodyThrust" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity" or "RocketPropulsion") return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.Count == 0;

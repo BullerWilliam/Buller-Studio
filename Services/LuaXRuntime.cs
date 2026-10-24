@@ -110,7 +110,7 @@ public sealed class LuaXRuntime
     {
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Model", "Folder", "Tool", "Accessory", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue",
-        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "BodyForce", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Team",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Team",
         "Sky", "Atmosphere", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"
     };
@@ -1261,6 +1261,11 @@ public sealed class LuaXRuntime
             }));
         }
         if (node.Type == "BodyForce") instance.Set("Force", VectorValue(node.Force));
+        if (node.Type == "BodyThrust")
+        {
+            instance.Set("Force", VectorValue(node.BodyThrustForce));
+            instance.Set("Location", VectorValue(node.BodyThrustLocation));
+        }
         if (node.Type == "BodyVelocity")
         {
             instance.Set("Velocity", VectorValue(node.BodyVelocityTarget));
@@ -1286,6 +1291,32 @@ public sealed class LuaXRuntime
             instance.Set("AngularVelocity", VectorValue(node.BodyAngularVelocityTarget));
             instance.Set("MaxTorque", VectorValue(node.BodyAngularVelocityMaxTorque));
             instance.Set("P", DynValue.NewNumber(node.BodyAngularVelocityP));
+        }
+        if (node.Type == "RocketPropulsion")
+        {
+            instance.Set("Target", GetPartReferenceValue(node.RocketPropulsionTarget));
+            instance.Set("TargetOffset", VectorValue(node.RocketPropulsionTargetOffset));
+            instance.Set("TargetRadius", DynValue.NewNumber(node.RocketPropulsionTargetRadius));
+            instance.Set("CartoonFactor", DynValue.NewNumber(node.RocketPropulsionCartoonFactor));
+            instance.Set("MaxSpeed", DynValue.NewNumber(node.RocketPropulsionMaxSpeed));
+            instance.Set("MaxThrust", DynValue.NewNumber(node.RocketPropulsionMaxThrust));
+            instance.Set("MaxTorque", VectorValue(node.RocketPropulsionMaxTorque));
+            instance.Set("ThrustD", DynValue.NewNumber(node.RocketPropulsionThrustD));
+            instance.Set("ThrustP", DynValue.NewNumber(node.RocketPropulsionThrustP));
+            instance.Set("TurnD", DynValue.NewNumber(node.RocketPropulsionTurnD));
+            instance.Set("TurnP", DynValue.NewNumber(node.RocketPropulsionTurnP));
+            instance.Set("ReachedTarget", DynValue.NewTable(CreateRemoteSignal(node, "ReachedTarget")));
+            instance.Set("Fire", DynValue.NewCallback((_, _) =>
+            {
+                node.RocketPropulsionReachedTarget = false;
+                node.RocketPropulsionActive = true;
+                return DynValue.Nil;
+            }));
+            instance.Set("Abort", DynValue.NewCallback((_, _) =>
+            {
+                node.RocketPropulsionActive = false;
+                return DynValue.Nil;
+            }));
         }
         if (node.Type == "VectorForce")
         {
@@ -2039,6 +2070,17 @@ public sealed class LuaXRuntime
             scheduledTasks.Add(new ScheduledTask(connection.Owner, script.CreateCoroutine(connection.Function), payload.ToArray(), 0, true));
         }
         return DynValue.Nil;
+    }
+
+    public void FireRocketReachedTarget(SceneNode node)
+    {
+        var key = RemoteSignalKey(node.Id, "ReachedTarget");
+        if (!bindableEventCallbacks.TryGetValue(key, out var listeners)) return;
+        foreach (var connection in listeners.ToArray())
+        {
+            if (!connection.Connected || !IsTaskOwnerActive(connection.Owner)) continue;
+            scheduledTasks.Add(new ScheduledTask(connection.Owner, script.CreateCoroutine(connection.Function), [], 0, true));
+        }
     }
 
     private static string RemoteSignalKey(string nodeId, string signalName) => $"{nodeId}::remote::{signalName}";
@@ -3764,6 +3806,50 @@ public sealed class LuaXRuntime
             propertyChanged?.Invoke(node, canonical, current);
             return DynValue.Nil;
         }
+        if (node.Type == "RocketPropulsion" && normalized is ("target" or "targetoffset" or "targetradius" or "cartoonfactor" or "maxspeed" or "maxthrust" or "maxtorque" or "thrustd" or "thrustp" or "turnd" or "turnp"))
+        {
+            if (normalized == "target")
+            {
+                var target = ReadNodeArgument(value);
+                if (value.Type == DataType.Nil) target = null;
+                else if (target is null || !SceneNodeTypes.IsBasePart(target)) return DynValue.Nil;
+                node.RocketPropulsionTarget = target?.Id ?? string.Empty;
+            }
+            else if (normalized is "targetoffset" or "maxtorque")
+            {
+                var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+                if (value.Type != DataType.Table || vector.Length != 3 || !vector.All(float.IsFinite)) return DynValue.Nil;
+                vector = vector.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+                if (normalized == "targetoffset") node.RocketPropulsionTargetOffset = vector;
+                else node.RocketPropulsionMaxTorque = vector.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)Math.Clamp(value.Number, 0, 1000000);
+                switch (normalized)
+                {
+                    case "targetradius": node.RocketPropulsionTargetRadius = number; break;
+                    case "cartoonfactor": node.RocketPropulsionCartoonFactor = Math.Clamp(number, 0, 1); break;
+                    case "maxspeed": node.RocketPropulsionMaxSpeed = Math.Min(number, 10000); break;
+                    case "maxthrust": node.RocketPropulsionMaxThrust = number; break;
+                    case "thrustd": node.RocketPropulsionThrustD = number; break;
+                    case "thrustp": node.RocketPropulsionThrustP = number; break;
+                    case "turnd": node.RocketPropulsionTurnD = number; break;
+                    case "turnp": node.RocketPropulsionTurnP = number; break;
+                }
+            }
+            var canonical = normalized switch
+            {
+                "target" => "Target", "targetoffset" => "TargetOffset", "targetradius" => "TargetRadius", "cartoonfactor" => "CartoonFactor",
+                "maxspeed" => "MaxSpeed", "maxthrust" => "MaxThrust", "maxtorque" => "MaxTorque", "thrustd" => "ThrustD",
+                "thrustp" => "ThrustP", "turnd" => "TurnD", _ => "TurnP"
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var rocketInstance)) rocketInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
         if (node.Type is "VectorForce" or "BodyForce" && normalized is ("force" or "relativeto"))
         {
             if (normalized == "force")
@@ -3781,6 +3867,18 @@ public sealed class LuaXRuntime
             var canonical = normalized == "force" ? "Force" : "RelativeTo";
             var current = GetPropertyValue(node, canonical);
             if (instances.TryGetValue(node.Id, out var forceInstance)) forceInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "BodyThrust" && normalized is ("force" or "location"))
+        {
+            var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+            if (value.Type != DataType.Table || vector.Length != 3 || !vector.All(float.IsFinite)) return DynValue.Nil;
+            vector = vector.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+            if (normalized == "force") node.BodyThrustForce = vector; else node.BodyThrustLocation = vector;
+            var canonical = normalized == "force" ? "Force" : "Location";
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var thrustInstance)) thrustInstance.Set(canonical, current);
             propertyChanged?.Invoke(node, canonical, current);
             return DynValue.Nil;
         }
@@ -5213,6 +5311,35 @@ public sealed class LuaXRuntime
             };
             if (forceValue.Type != DataType.Nil) return forceValue;
         }
+        if (node.Type == "BodyThrust")
+        {
+            var bodyThrustValue = property.ToLowerInvariant() switch
+            {
+                "force" => VectorValue(node.BodyThrustForce),
+                "location" => VectorValue(node.BodyThrustLocation),
+                _ => DynValue.Nil
+            };
+            if (bodyThrustValue.Type != DataType.Nil) return bodyThrustValue;
+        }
+        if (node.Type == "RocketPropulsion")
+        {
+            var rocketValue = property.ToLowerInvariant() switch
+            {
+                "target" => GetPartReferenceValue(node.RocketPropulsionTarget),
+                "targetoffset" => VectorValue(node.RocketPropulsionTargetOffset),
+                "targetradius" => DynValue.NewNumber(node.RocketPropulsionTargetRadius),
+                "cartoonfactor" => DynValue.NewNumber(node.RocketPropulsionCartoonFactor),
+                "maxspeed" => DynValue.NewNumber(node.RocketPropulsionMaxSpeed),
+                "maxthrust" => DynValue.NewNumber(node.RocketPropulsionMaxThrust),
+                "maxtorque" => VectorValue(node.RocketPropulsionMaxTorque),
+                "thrustd" => DynValue.NewNumber(node.RocketPropulsionThrustD),
+                "thrustp" => DynValue.NewNumber(node.RocketPropulsionThrustP),
+                "turnd" => DynValue.NewNumber(node.RocketPropulsionTurnD),
+                "turnp" => DynValue.NewNumber(node.RocketPropulsionTurnP),
+                _ => DynValue.Nil
+            };
+            if (property.Equals("Target", StringComparison.OrdinalIgnoreCase) || rocketValue.Type != DataType.Nil) return rocketValue;
+        }
         if (node.Type == "BodyVelocity")
         {
             var bodyVelocityValue = property.ToLowerInvariant() switch
@@ -5874,7 +6001,7 @@ public sealed class LuaXRuntime
     {
         "Instance" => true,
         "Accoutrement" => node.Type == "Accessory",
-        "BodyMover" => node.Type is "BodyForce" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity",
+        "BodyMover" => node.Type is "BodyForce" or "BodyThrust" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity",
         "Constraint" => node.Type is "WeldConstraint" or "NoCollisionConstraint" or "VectorForce" or "LineForce" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity",
         "SlidingBallConstraint" => node.Type is "PrismaticConstraint" or "CylindricalConstraint",
         "BasePart" => IsBasePart(node),
@@ -6343,6 +6470,47 @@ public sealed class LuaXRuntime
                     var requestedForce = force.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
                     if (!node.Force.SequenceEqual(requestedForce)) { node.Force = requestedForce; MarkChanged(node, "Force"); }
                 }
+            }
+            if (node.Type == "BodyThrust")
+            {
+                var force = ReadVector(instance.Get("Force"), [float.NaN, float.NaN, float.NaN]);
+                if (force.Length == 3 && force.All(float.IsFinite))
+                {
+                    var requested = force.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+                    if (!node.BodyThrustForce.SequenceEqual(requested)) { node.BodyThrustForce = requested; MarkChanged(node, "Force"); }
+                }
+                var location = ReadVector(instance.Get("Location"), [float.NaN, float.NaN, float.NaN]);
+                if (location.Length == 3 && location.All(float.IsFinite))
+                {
+                    var requested = location.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+                    if (!node.BodyThrustLocation.SequenceEqual(requested)) { node.BodyThrustLocation = requested; MarkChanged(node, "Location"); }
+                }
+            }
+            if (node.Type == "RocketPropulsion")
+            {
+                var target = ReadNodeArgument(instance.Get("Target"));
+                var targetId = target is { } targetPart && SceneNodeTypes.IsBasePart(targetPart) ? targetPart.Id : string.Empty;
+                if (node.RocketPropulsionTarget != targetId) { node.RocketPropulsionTarget = targetId; MarkChanged(node, "Target"); }
+                var targetOffset = ReadVector(instance.Get("TargetOffset"), [float.NaN, float.NaN, float.NaN]);
+                if (targetOffset.Length == 3 && targetOffset.All(float.IsFinite))
+                {
+                    var requested = targetOffset.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+                    if (!node.RocketPropulsionTargetOffset.SequenceEqual(requested)) { node.RocketPropulsionTargetOffset = requested; MarkChanged(node, "TargetOffset"); }
+                }
+                var maxTorque = ReadVector(instance.Get("MaxTorque"), [float.NaN, float.NaN, float.NaN]);
+                if (maxTorque.Length == 3 && maxTorque.All(float.IsFinite))
+                {
+                    var requested = maxTorque.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                    if (!node.RocketPropulsionMaxTorque.SequenceEqual(requested)) { node.RocketPropulsionMaxTorque = requested; MarkChanged(node, "MaxTorque"); }
+                }
+                if (instance.Get("TargetRadius").Type == DataType.Number && double.IsFinite(instance.Get("TargetRadius").Number)) Assign(node, "TargetRadius", node.RocketPropulsionTargetRadius, (float)Math.Clamp(instance.Get("TargetRadius").Number, 0, 1000000), value => node.RocketPropulsionTargetRadius = value);
+                if (instance.Get("CartoonFactor").Type == DataType.Number && double.IsFinite(instance.Get("CartoonFactor").Number)) Assign(node, "CartoonFactor", node.RocketPropulsionCartoonFactor, (float)Math.Clamp(instance.Get("CartoonFactor").Number, 0, 1), value => node.RocketPropulsionCartoonFactor = value);
+                if (instance.Get("MaxSpeed").Type == DataType.Number && double.IsFinite(instance.Get("MaxSpeed").Number)) Assign(node, "MaxSpeed", node.RocketPropulsionMaxSpeed, (float)Math.Clamp(instance.Get("MaxSpeed").Number, 0, 10000), value => node.RocketPropulsionMaxSpeed = value);
+                if (instance.Get("MaxThrust").Type == DataType.Number && double.IsFinite(instance.Get("MaxThrust").Number)) Assign(node, "MaxThrust", node.RocketPropulsionMaxThrust, (float)Math.Clamp(instance.Get("MaxThrust").Number, 0, 1000000), value => node.RocketPropulsionMaxThrust = value);
+                if (instance.Get("ThrustD").Type == DataType.Number && double.IsFinite(instance.Get("ThrustD").Number)) Assign(node, "ThrustD", node.RocketPropulsionThrustD, (float)Math.Clamp(instance.Get("ThrustD").Number, 0, 1000000), value => node.RocketPropulsionThrustD = value);
+                if (instance.Get("ThrustP").Type == DataType.Number && double.IsFinite(instance.Get("ThrustP").Number)) Assign(node, "ThrustP", node.RocketPropulsionThrustP, (float)Math.Clamp(instance.Get("ThrustP").Number, 0, 1000000), value => node.RocketPropulsionThrustP = value);
+                if (instance.Get("TurnD").Type == DataType.Number && double.IsFinite(instance.Get("TurnD").Number)) Assign(node, "TurnD", node.RocketPropulsionTurnD, (float)Math.Clamp(instance.Get("TurnD").Number, 0, 1000000), value => node.RocketPropulsionTurnD = value);
+                if (instance.Get("TurnP").Type == DataType.Number && double.IsFinite(instance.Get("TurnP").Number)) Assign(node, "TurnP", node.RocketPropulsionTurnP, (float)Math.Clamp(instance.Get("TurnP").Number, 0, 1000000), value => node.RocketPropulsionTurnP = value);
             }
             if (node.Type == "BodyVelocity")
             {

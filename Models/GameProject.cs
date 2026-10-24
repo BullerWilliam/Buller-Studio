@@ -144,7 +144,7 @@ public sealed class SceneNode
     public string Attachment0 { get; set; } = string.Empty;
     public string Attachment1 { get; set; } = string.Empty;
     public float[] Force { get; set; } = [0, 0, 0];
-    public float[] BodyThrustForce { get; set; } = [0, 0, 0];
+    public float[] BodyThrustForce { get; set; } = [0, 1, 0];
     public float[] BodyThrustLocation { get; set; } = [0, 0, 0];
     public float[] BodyVelocityTarget { get; set; } = [0, 0, 0];
     public float[] BodyVelocityMaxForce { get; set; } = [0, 0, 0];
@@ -160,6 +160,19 @@ public sealed class SceneNode
     public float[] BodyAngularVelocityTarget { get; set; } = [0, 0, 0];
     public float[] BodyAngularVelocityMaxTorque { get; set; } = [0, 0, 0];
     public float BodyAngularVelocityP { get; set; } = 1250;
+    public string RocketPropulsionTarget { get; set; } = string.Empty;
+    public float[] RocketPropulsionTargetOffset { get; set; } = [0, 0, 0];
+    public float RocketPropulsionTargetRadius { get; set; } = 4;
+    public float RocketPropulsionCartoonFactor { get; set; } = .7f;
+    public float RocketPropulsionMaxSpeed { get; set; } = 30;
+    public float RocketPropulsionMaxThrust { get; set; } = 4000;
+    public float[] RocketPropulsionMaxTorque { get; set; } = [400000, 400000, 0];
+    public float RocketPropulsionThrustD { get; set; } = .001f;
+    public float RocketPropulsionThrustP { get; set; } = 5;
+    public float RocketPropulsionTurnD { get; set; } = 500;
+    public float RocketPropulsionTurnP { get; set; } = 3000;
+    [JsonIgnore] public bool RocketPropulsionActive { get; set; }
+    [JsonIgnore] public bool RocketPropulsionReachedTarget { get; set; }
     public string RelativeTo { get; set; } = "World";
     public bool ApplyAtCenterOfMass { get; set; }
     public float LineForceMagnitude { get; set; } = 1000;

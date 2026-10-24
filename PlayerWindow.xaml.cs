@@ -142,7 +142,7 @@ public partial class PlayerWindow : Window
             runtime?.SynchronizeExternalProperty(node, "Velocity");
             renderer.UpdateNode(node, project);
             renderer.UpdateCamera(project);
-        });
+        }, rocketReachedTarget: node => runtime?.FireRocketReachedTarget(node));
         soundPlayback = new SoundPlaybackService(project, node => runtime?.SynchronizeExternalProperty(node, "Playing"));
         soundPlayback.Update(character?.Root.Position ?? camera.Position);
         RefreshGameGui();
