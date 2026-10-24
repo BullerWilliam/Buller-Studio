@@ -471,6 +471,13 @@ public static class GameProjectStore
             node.Width1 = float.IsFinite(node.Width1) ? Math.Clamp(node.Width1, 0, 100) : .2f;
             node.Force = EnsureVector(node.Force, [0, 0, 0]);
             for (var axis = 0; axis < 3; axis++) node.Force[axis] = float.IsFinite(node.Force[axis]) ? Math.Clamp(node.Force[axis], -1000000, 1000000) : 0;
+            node.BodyThrustForce = EnsureVector(node.BodyThrustForce, [0, 0, 0]);
+            node.BodyThrustLocation = EnsureVector(node.BodyThrustLocation, [0, 0, 0]);
+            for (var axis = 0; axis < 3; axis++)
+            {
+                node.BodyThrustForce[axis] = float.IsFinite(node.BodyThrustForce[axis]) ? Math.Clamp(node.BodyThrustForce[axis], -1000000, 1000000) : 0;
+                node.BodyThrustLocation[axis] = float.IsFinite(node.BodyThrustLocation[axis]) ? Math.Clamp(node.BodyThrustLocation[axis], -1000000, 1000000) : 0;
+            }
             node.BodyVelocityTarget = EnsureVector(node.BodyVelocityTarget, [0, 0, 0]);
             node.BodyVelocityMaxForce = EnsureVector(node.BodyVelocityMaxForce, [0, 0, 0]);
             for (var axis = 0; axis < 3; axis++)
@@ -981,7 +988,7 @@ public static class GameProjectStore
         if (node.Type == "Attachment")
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
-        if (node.Type is "BodyForce" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity") return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
+        if (node.Type is "BodyForce" or "BodyThrust" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity") return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.Count == 0;
