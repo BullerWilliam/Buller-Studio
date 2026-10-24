@@ -122,6 +122,11 @@ public static class GameProjectStore
         {
             UpdateReference(node, "Asset", node.Asset, newRelativePath);
             UpdateReference(node, "Texture", node.Texture, newAssetsRelativePath);
+            UpdateReference(node, "SurfaceAppearanceColorMap", node.SurfaceAppearanceColorMap, newAssetsRelativePath);
+            UpdateReference(node, "SurfaceAppearanceNormalMap", node.SurfaceAppearanceNormalMap, newAssetsRelativePath);
+            UpdateReference(node, "SurfaceAppearanceRoughnessMap", node.SurfaceAppearanceRoughnessMap, newAssetsRelativePath);
+            UpdateReference(node, "SurfaceAppearanceMetalnessMap", node.SurfaceAppearanceMetalnessMap, newAssetsRelativePath);
+            UpdateReference(node, "SurfaceAppearanceEmissiveMask", node.SurfaceAppearanceEmissiveMask, newAssetsRelativePath);
             UpdateReference(node, "SkyboxFront", node.SkyboxFront, newAssetsRelativePath);
             UpdateReference(node, "SkyboxBack", node.SkyboxBack, newAssetsRelativePath);
             UpdateReference(node, "SkyboxLeft", node.SkyboxLeft, newAssetsRelativePath);
@@ -159,6 +164,11 @@ public static class GameProjectStore
             {
                 case "Asset": node.Asset = value; break;
                 case "Texture": node.Texture = value; break;
+                case "SurfaceAppearanceColorMap": node.SurfaceAppearanceColorMap = value; break;
+                case "SurfaceAppearanceNormalMap": node.SurfaceAppearanceNormalMap = value; break;
+                case "SurfaceAppearanceRoughnessMap": node.SurfaceAppearanceRoughnessMap = value; break;
+                case "SurfaceAppearanceMetalnessMap": node.SurfaceAppearanceMetalnessMap = value; break;
+                case "SurfaceAppearanceEmissiveMask": node.SurfaceAppearanceEmissiveMask = value; break;
                 case "SkyboxFront": node.SkyboxFront = value; break;
                 case "SkyboxBack": node.SkyboxBack = value; break;
                 case "SkyboxLeft": node.SkyboxLeft = value; break;
@@ -409,7 +419,7 @@ public static class GameProjectStore
             node.Brightness = float.IsFinite(node.Brightness) ? Math.Clamp(node.Brightness, 0, 8) : 1;
             node.Range = float.IsFinite(node.Range) ? Math.Clamp(node.Range, 1, 1000) : 16;
             node.SecondaryColor ??= "#FFE69A";
-            node.EffectSize = float.IsFinite(node.EffectSize) ? Math.Clamp(node.EffectSize, node.Type == "Fire" ? 2 : .1f, node.Type == "Fire" ? 30 : 100) : node.Type == "Fire" ? 5 : 1;
+            node.EffectSize = float.IsFinite(node.EffectSize) ? Math.Clamp(node.EffectSize, node.Type == "Fire" ? 2 : node.Type == "BlurEffect" ? 0 : .1f, node.Type == "Fire" ? 30 : node.Type == "BlurEffect" ? 56 : 100) : node.Type == "Fire" ? 5 : 1;
             node.Heat = float.IsFinite(node.Heat) ? Math.Clamp(node.Heat, -25, 25) : 9;
             node.RiseVelocity = float.IsFinite(node.RiseVelocity) ? Math.Clamp(node.RiseVelocity, -25, 25) : 1;
             node.Opacity = float.IsFinite(node.Opacity) ? Math.Clamp(node.Opacity, 0, 1) : .5f;
@@ -774,6 +784,12 @@ public static class GameProjectStore
                 && !destinationParent.Children.Any(child => child.Type == "Humanoid" && child.Id != source.Id);
         if (source.Type == "Camera")
             return destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
+        if (SceneNodeTypes.IsSurfaceAppearance(source))
+            return destinationParent.Type == "MeshPart" && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => SceneNodeTypes.IsSurfaceAppearance(child) && child.Id != source.Id);
+        if (source.Type == "BlurEffect")
+            return source.Children.Count == 0 && (destinationParent.Id == project.Lighting.Id
+                || destinationParent.Type == "Camera" && project.Workspace.Children.Any(camera => camera.Id == destinationParent.Id && camera.Type == "Camera"));
         if (destinationParent.Id == project.Lighting.Id)
             return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == source.Type && child.Id != source.Id);
@@ -850,8 +866,13 @@ public static class GameProjectStore
             && IsWorkspaceSubtreeCompatible(source, "Backpack");
         if (destinationParent.Type == "Terrain") return SceneNodeTypes.IsBasePart(source)
             && IsWorkspaceSubtreeCompatible(source, "Terrain");
+        if (SceneNodeTypes.IsSurfaceAppearance(source))
+            return destinationParent.Type == "MeshPart" && source.Children.Count == 0
+                && !destinationParent.Children.Any(SceneNodeTypes.IsSurfaceAppearance);
         if (destinationParent.Type == "Team") return false;
-        if (destinationParent.Type == "Lighting") return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0 && destinationParent.Children.All(child => child.Type != source.Type);
+        if (destinationParent.Type == "Lighting") return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0 && destinationParent.Children.All(child => child.Type != source.Type)
+            || source.Type == "BlurEffect" && source.Children.Count == 0;
+        if (source.Type == "BlurEffect") return destinationParent.Type == "Camera" && source.Children.Count == 0;
         if (destinationParent.Type is "Sound" or "SoundGroup") return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
         if (source.Type is "Sky" or "Atmosphere") return false;
         if (destinationParent.Type == "PlayerGui") return source.Type == "LocalScript" && source.Children.Count == 0 || source.Type == "ScreenGui" && IsGuiSubtreeCompatible(source, true);
@@ -985,6 +1006,9 @@ public static class GameProjectStore
 
     private static bool IsWorkspaceSubtreeCompatible(SceneNode node, string? parentType)
     {
+        if (SceneNodeTypes.IsSurfaceAppearance(node)) return parentType == "MeshPart" && node.Children.Count == 0;
+        if (node.Type == "MeshPart" && node.Children.Count(SceneNodeTypes.IsSurfaceAppearance) > 1) return false;
+        if (node.Type == "BlurEffect") return parentType is "Lighting" or "Camera" && node.Children.Count == 0;
         if (node.Type == "Terrain") return parentType == "Workspace" && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Terrain"));
         if (parentType == "Terrain") return SceneNodeTypes.IsBasePart(node)
             && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));

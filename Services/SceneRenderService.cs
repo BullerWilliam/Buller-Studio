@@ -1,6 +1,8 @@
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
 using System.Windows.Media.Imaging;
+using System.Windows.Media.Effects;
 using System.IO;
 using HelixToolkit.Wpf.SharpDX;
 using HelixToolkit.SharpDX.Core;
@@ -39,6 +41,7 @@ public sealed class SceneRenderService
     private readonly Dictionary<string, (string Attachment0, string Attachment1)> trailReferences = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SceneNode> highlightSources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> renderedAssetSources = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (TextureModel Texture, MemoryStream Stream)> packedSurfaceMapCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Light3D> objectLights = [];
     private readonly List<(MeshGeometryModel3D Model, Vector3 Direction, float Pitch, float Yaw)> skyboxVisuals = [];
     private SceneNode cameraNode;
@@ -175,6 +178,7 @@ public sealed class SceneRenderService
         trailVisuals.Clear();
         viewport.IsShadowMappingEnabled = project.Settings.Shadows;
         RefreshLighting(project.Lighting);
+        RefreshPostEffects(project);
         foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type is not ("Decal" or "Texture" or "Attachment") || FindPartParent(project, node) is not null)))
         {
             var model = CreateVisual(node, project);
@@ -195,6 +199,21 @@ public sealed class SceneRenderService
 
     public void UpdateNode(SceneNode node, GameProject project)
     {
+        if (SceneNodeTypes.IsSurfaceAppearance(node))
+        {
+            if (FindPartParent(project, node) is { Type: "MeshPart" } meshPart && visuals.TryGetValue(meshPart.Id, out var meshVisual))
+            {
+                meshVisual.Material = MakeMaterial(meshPart);
+                ApplySurfaceAppearance(meshVisual, meshPart, project);
+                renderedAssetSources[meshPart.Id] = GetAssetSource(meshPart, project);
+            }
+            return;
+        }
+        if (SceneNodeTypes.IsPostEffect(node))
+        {
+            RefreshPostEffects(project);
+            return;
+        }
         if (node.Type is "Lighting" or "Sky" or "Atmosphere")
         {
             Refresh(project);
@@ -288,10 +307,12 @@ public sealed class SceneRenderService
         }
         model.Transform = node.Type is "Decal" or "Texture" && FindPartParent(project, node) is { } parent ? TransformFor(parent) : TransformFor(node);
         model.IsThrowingShadow = node.Type is not ("Decal" or "Texture") && node.CastShadow;
+        model.IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0;
         if (node.Type is "Decal" or "Texture" or "ImageLabel")
             model.Visibility = node.Visible && (node.Type is not ("Decal" or "Texture") || model.Material is PhongMaterial { DiffuseMap: not null })
                 ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
         if (node.Type is not ("ImageLabel" or "Decal" or "Texture") && !(node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture))) model.Material = MakeMaterial(node);
+        if (node.Type == "MeshPart") ApplySurfaceAppearance(model, node, project);
         if (SceneNodeTypes.IsBasePart(node))
         {
             if (hasSelectionAdornments && AffectsSelectionAdornment(node, project)) RefreshSelectionAdornments(project);
@@ -311,6 +332,148 @@ public sealed class SceneRenderService
         }
         if (refreshSelection) SetSelections(selectedIds, selectedId);
         UpdateCamera(project);
+    }
+
+    private void RefreshPostEffects(GameProject project)
+    {
+        var camera = project.Workspace.Children.FirstOrDefault(node => node.Type == "Camera");
+        var blur = project.Lighting.Children.Concat(camera?.Children ?? [])
+            .Where(node => SceneNodeTypes.IsPostEffect(node) && node.Enabled)
+            .OrderByDescending(node => node.EffectSize)
+            .FirstOrDefault();
+        viewport.Effect = blur is null || blur.EffectSize <= 0
+            ? null
+            : new BlurEffect { Radius = Math.Clamp(blur.EffectSize, 0, 56) };
+    }
+
+    private void ApplySurfaceAppearance(MeshGeometryModel3D visual, SceneNode meshPart, GameProject project)
+    {
+        var appearance = meshPart.Children.FirstOrDefault(SceneNodeTypes.IsSurfaceAppearance);
+        if (appearance is null) return;
+        var appearanceTint = ParseColor(appearance.SurfaceAppearanceColor);
+        var partTint = ParseColor(meshPart.Color);
+        var albedoColor = new Color4(
+            appearanceTint.R / 255f * partTint.R / 255f,
+            appearanceTint.G / 255f * partTint.G / 255f,
+            appearanceTint.B / 255f * partTint.B / 255f,
+            1 - EffectiveTransparency(meshPart));
+        var material = new PBRMaterial
+        {
+            AlbedoColor = albedoColor,
+            RoughnessFactor = 1,
+            MetallicFactor = 0,
+            EmissiveColor = new Color4(0, 0, 0, 1)
+        };
+        var colorMap = ResolveAsset(project, appearance.SurfaceAppearanceColorMap);
+        if (File.Exists(colorMap))
+        {
+            try
+            {
+                ValidateImageFile(colorMap);
+                material.AlbedoMap = TextureModel.Create(colorMap);
+                material.RenderAlbedoMap = true;
+            }
+            catch { }
+        }
+        var normalMap = ResolveAsset(project, appearance.SurfaceAppearanceNormalMap);
+        if (File.Exists(normalMap))
+        {
+            try
+            {
+                ValidateImageFile(normalMap);
+                material.NormalMap = TextureModel.Create(normalMap);
+                material.RenderNormalMap = true;
+            }
+            catch { }
+        }
+        var roughnessMap = ResolveAsset(project, appearance.SurfaceAppearanceRoughnessMap);
+        var metalnessMap = ResolveAsset(project, appearance.SurfaceAppearanceMetalnessMap);
+        if (GetPackedSurfaceMap(roughnessMap, metalnessMap) is { } packedMap)
+        {
+            material.RoughnessMetallicMap = packedMap;
+            material.AmbientOcculsionMap = packedMap;
+            material.MetallicFactor = string.IsNullOrEmpty(metalnessMap) ? 0 : 1;
+            material.RenderRoughnessMetallicMap = true;
+            material.RenderAmbientOcclusionMap = true;
+        }
+        var emissiveMask = ResolveAsset(project, appearance.SurfaceAppearanceEmissiveMask);
+        if (File.Exists(emissiveMask))
+        {
+            try
+            {
+                ValidateImageFile(emissiveMask);
+                var emissiveTint = ParseColor(appearance.SurfaceAppearanceEmissiveTint);
+                var emissiveStrength = Math.Clamp(appearance.SurfaceAppearanceEmissiveStrength, 0, 100);
+                material.EmissiveMap = TextureModel.Create(emissiveMask);
+                material.RenderEmissiveMap = true;
+                material.EmissiveColor = new Color4(
+                    emissiveTint.R / 255f * emissiveStrength,
+                    emissiveTint.G / 255f * emissiveStrength,
+                    emissiveTint.B / 255f * emissiveStrength,
+                    1);
+            }
+            catch { }
+        }
+        visual.Material = material;
+    }
+
+    private TextureModel? GetPackedSurfaceMap(string roughnessPath, string metalnessPath)
+    {
+        var hasRoughness = File.Exists(roughnessPath);
+        var hasMetalness = File.Exists(metalnessPath);
+        if (!hasRoughness && !hasMetalness) return null;
+        var roughnessModified = hasRoughness ? File.GetLastWriteTimeUtc(roughnessPath).Ticks : 0;
+        var metalnessModified = hasMetalness ? File.GetLastWriteTimeUtc(metalnessPath).Ticks : 0;
+        var cacheKey = $"{roughnessPath}|{roughnessModified}|{metalnessPath}|{metalnessModified}";
+        if (packedSurfaceMapCache.TryGetValue(cacheKey, out var cached)) return cached.Texture;
+
+        try
+        {
+            var roughness = hasRoughness ? ReadSurfaceMap(roughnessPath) : null;
+            var metalness = hasMetalness ? ReadSurfaceMap(metalnessPath) : null;
+            var width = Math.Clamp(Math.Max(roughness?.Width ?? 1, metalness?.Width ?? 1), 1, 2048);
+            var height = Math.Clamp(Math.Max(roughness?.Height ?? 1, metalness?.Height ?? 1), 1, 2048);
+            var pixels = new byte[width * height * 4];
+            for (var y = 0; y < height; y++)
+            for (var x = 0; x < width; x++)
+            {
+                var offset = (y * width + x) * 4;
+                pixels[offset] = ReadSurfaceChannel(metalness, x, y, width, height, 0);
+                pixels[offset + 1] = ReadSurfaceChannel(roughness, x, y, width, height, 255);
+                pixels[offset + 2] = 255;
+                pixels[offset + 3] = 255;
+            }
+            var bitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgra32, null);
+            bitmap.WritePixels(new Int32Rect(0, 0, width, height), pixels, width * 4, 0);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            var stream = new MemoryStream();
+            encoder.Save(stream);
+            stream.Position = 0;
+            var texture = TextureModel.Create(stream);
+            packedSurfaceMapCache[cacheKey] = (texture, stream);
+            return texture;
+        }
+        catch { return null; }
+    }
+
+    private static (int Width, int Height, byte[] Pixels)? ReadSurfaceMap(string path)
+    {
+        ValidateImageFile(path);
+        using var stream = File.OpenRead(path);
+        var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+        var converted = new FormatConvertedBitmap(decoder.Frames[0], PixelFormats.Bgra32, null, 0);
+        var pixels = new byte[converted.PixelWidth * converted.PixelHeight * 4];
+        converted.CopyPixels(pixels, converted.PixelWidth * 4, 0);
+        return (converted.PixelWidth, converted.PixelHeight, pixels);
+    }
+
+    private static byte ReadSurfaceChannel((int Width, int Height, byte[] Pixels)? image, int x, int y, int targetWidth, int targetHeight, byte fallback)
+    {
+        if (image is not { } source) return fallback;
+        var sourceX = Math.Min(source.Width - 1, (int)((x + .5) * source.Width / targetWidth));
+        var sourceY = Math.Min(source.Height - 1, (int)((y + .5) * source.Height / targetHeight));
+        return source.Pixels[(sourceY * source.Width + sourceX) * 4 + 2];
     }
 
     public void SetCameraOrbit(float yawDelta, float pitchDelta, float zoomDelta = 0, GameProject? project = null)
@@ -419,6 +582,7 @@ public sealed class SceneRenderService
         var geometry = builder.ToMeshGeometry3D();
         if (node.Type == "Texture" && decalParent is not null) ApplyTextureTiling(geometry, node, decalParent);
         var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = node.Type == "Attachment" ? AttachmentTransformFor(node, project) : node.Type == "Explosion" ? new TranslateTransform3D(node.Position[0], node.Position[1], node.Position[2]) : decalParent is null ? TransformFor(node) : TransformFor(decalParent), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment" or "Explosion") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture" or "Explosion"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel" or "Explosion") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
+        if (node.Type == "MeshPart") ApplySurfaceAppearance(visual, node, project);
         if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type is "Decal" or "Texture" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture)) LoadImageAsset(visual, ResolveTexture(project, node.Texture), node);
@@ -433,7 +597,7 @@ public sealed class SceneRenderService
         "ImageLabel" => ResolveAsset(project, node.Asset),
         "Decal" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
         "Texture" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency}|{node.StudsPerTileU}|{node.StudsPerTileV}|{node.OffsetStudsU}|{node.OffsetStudsV}|{string.Join(',', FindPartParent(project, node)?.Size ?? [])}",
-        "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}",
+        "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}|{string.Join('|', node.Children.Where(SceneNodeTypes.IsSurfaceAppearance).Select(surface => $"{ResolveAsset(project, surface.SurfaceAppearanceColorMap)}:{ResolveAsset(project, surface.SurfaceAppearanceNormalMap)}:{ResolveAsset(project, surface.SurfaceAppearanceRoughnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceMetalnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceEmissiveMask)}:{surface.SurfaceAppearanceColor}:{surface.SurfaceAppearanceEmissiveTint}:{surface.SurfaceAppearanceEmissiveStrength}"))}",
         "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}",
         "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat" or "VehicleSeat" => MaterialKey(node),
         _ => string.Empty
@@ -1456,6 +1620,12 @@ public sealed class SceneRenderService
             SpecularShininess = node.Material is "Metal" or "CorrodedMetal" or "DiamondPlate" or "Foil" or "Glass" or "Ice" or "Glacier" ? 100 : 24,
             EmissiveColor = node.Material == "Neon" ? new Color4(red * .5f, green * .5f, blue * .5f, 1) : new Color4(0, 0, 0, 1)
         };
+    }
+
+    private static System.Windows.Media.Color ParseColor(string value)
+    {
+        try { return (System.Windows.Media.Color)ColorConverter.ConvertFromString(value); }
+        catch { return Colors.White; }
     }
 
     private static Transform3D TransformFor(SceneNode node, bool includeScale = true)

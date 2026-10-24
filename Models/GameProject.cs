@@ -129,6 +129,7 @@ public sealed class SceneNode
     public string ObjectText { get; set; } = string.Empty;
     public float HoldDuration { get; set; }
     public float MaxActivationDistance { get; set; } = 10;
+    public bool RequiresLineOfSight { get; set; } = true;
     public float Volume { get; set; } = .5f;
     public float PlaybackSpeed { get; set; } = 1;
     public float SoundServiceVolume { get; set; } = 1;
@@ -375,6 +376,14 @@ public sealed class SceneNode
     public List<string> Tags { get; set; } = [];
     public string Asset { get; set; } = string.Empty;
     public string Texture { get; set; } = string.Empty;
+    public string SurfaceAppearanceColorMap { get; set; } = string.Empty;
+    public string SurfaceAppearanceNormalMap { get; set; } = string.Empty;
+    public string SurfaceAppearanceRoughnessMap { get; set; } = string.Empty;
+    public string SurfaceAppearanceMetalnessMap { get; set; } = string.Empty;
+    public string SurfaceAppearanceEmissiveMask { get; set; } = string.Empty;
+    public string SurfaceAppearanceEmissiveTint { get; set; } = "#FFFFFF";
+    public float SurfaceAppearanceEmissiveStrength { get; set; } = 1;
+    public string SurfaceAppearanceColor { get; set; } = "#FFFFFF";
     public string CameraMode { get; set; } = "Custom";
     public string Subject { get; set; } = string.Empty;
     public float FieldOfView { get; set; } = 55;

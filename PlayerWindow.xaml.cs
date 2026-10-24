@@ -21,6 +21,8 @@ public partial class PlayerWindow : Window
     private readonly SceneNode backpack;
     private readonly SceneNode playerGui;
     private readonly List<SceneNode> toolHotbar = [];
+    private readonly HashSet<Key> contextSunkKeys = [];
+    private readonly HashSet<MouseButton> contextSunkMouseButtons = [];
     private SceneNode? activeTool;
     private sealed record EquippedPartState(float[] LocalOffset, float[] RotationOffset, float[] Position, float[] Rotation, bool Anchored, bool CanCollide);
     private readonly Dictionary<string, EquippedPartState> equippedToolParts = new(StringComparer.Ordinal);
@@ -155,6 +157,9 @@ public partial class PlayerWindow : Window
         Deactivated += (_, _) =>
         {
             isDragging = false;
+            runtime?.ReleaseAllPressedKeys();
+            contextSunkKeys.Clear();
+            contextSunkMouseButtons.Clear();
             if (Mouse.Captured == GameViewport) Mouse.Capture(null);
         };
     }
@@ -166,8 +171,8 @@ public partial class PlayerWindow : Window
         lastUpdateTimestamp = now;
         UpdateSpawnProtection(elapsed);
         var canMove = IsActive && Keyboard.FocusedElement is not TextBox && Keyboard.FocusedElement is not Button;
-        var forward = canMove ? (Keyboard.IsKeyDown(Key.W) ? 1 : 0) - (Keyboard.IsKeyDown(Key.S) ? 1 : 0) : 0;
-        var strafe = canMove ? (Keyboard.IsKeyDown(Key.D) ? 1 : 0) - (Keyboard.IsKeyDown(Key.A) ? 1 : 0) : 0;
+        var forward = canMove ? (Keyboard.IsKeyDown(Key.W) && !contextSunkKeys.Contains(Key.W) ? 1 : 0) - (Keyboard.IsKeyDown(Key.S) && !contextSunkKeys.Contains(Key.S) ? 1 : 0) : 0;
+        var strafe = canMove ? (Keyboard.IsKeyDown(Key.D) && !contextSunkKeys.Contains(Key.D) ? 1 : 0) - (Keyboard.IsKeyDown(Key.A) && !contextSunkKeys.Contains(Key.A) ? 1 : 0) : 0;
         seats?.SetVehicleInput(forward, strafe);
         if (seats is not null)
             foreach (var node in seats.BeforePhysics(canMove && jumpRequested)) SyncSeatNode(node);
@@ -312,7 +317,15 @@ public partial class PlayerWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (Keyboard.FocusedElement is TextBox or Button) return;
+        var gameProcessed = Keyboard.FocusedElement is TextBox or Button;
+        var contextSunk = runtime?.FireUserInput(GetKeyCodeName(e.Key), true, gameProcessed, e.IsRepeat) == true;
+        if (contextSunk || contextSunkKeys.Contains(e.Key))
+        {
+            contextSunkKeys.Add(e.Key);
+            e.Handled = true;
+            return;
+        }
+        if (gameProcessed) return;
         var toolIndex = e.Key switch { >= Key.D1 and <= Key.D9 => e.Key - Key.D1, >= Key.NumPad1 and <= Key.NumPad9 => e.Key - Key.NumPad1, _ => -1 };
         foreach (var item in backpack.Children.Where(node => node.Type == "Tool"))
             if (!toolHotbar.Contains(item)) toolHotbar.Add(item);
@@ -350,10 +363,38 @@ public partial class PlayerWindow : Window
 
     private void Window_PreviewKeyUp(object sender, KeyEventArgs e)
     {
+        var wasContextSunk = contextSunkKeys.Remove(e.Key);
+        var contextSunk = runtime?.FireUserInput(GetKeyCodeName(e.Key), false, Keyboard.FocusedElement is TextBox or Button) == true;
+        if (wasContextSunk || contextSunk) e.Handled = true;
         if (e.Key != Key.E) return;
         promptKeyDown = false;
         ResetPromptHold();
     }
+
+    private static string GetKeyCodeName(Key key) => key switch
+    {
+        >= Key.D0 and <= Key.D9 => new[] { "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine" }[(int)key - (int)Key.D0],
+        Key.Return => "Enter",
+        Key.Back => "Backspace",
+        Key.LeftCtrl => "LeftControl",
+        Key.RightCtrl => "RightControl",
+        Key.LeftAlt => "LeftAlt",
+        Key.RightAlt => "RightAlt",
+        Key.LWin => "LeftWindows",
+        Key.RWin => "RightWindows",
+        Key.OemMinus => "Minus",
+        Key.OemPlus => "Equals",
+        Key.OemOpenBrackets => "LeftBracket",
+        Key.OemCloseBrackets => "RightBracket",
+        Key.OemBackslash => "BackSlash",
+        Key.OemSemicolon => "Semicolon",
+        Key.OemQuotes => "Quote",
+        Key.OemComma => "Comma",
+        Key.OemPeriod => "Period",
+        Key.OemQuestion => "Slash",
+        Key.Oem3 => "Backquote",
+        _ => key.ToString()
+    };
 
     private void ResetPromptHold()
     {
@@ -364,6 +405,22 @@ public partial class PlayerWindow : Window
 
     private void GameViewport_MouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton == MouseButton.Right) return;
+        var point = e.GetPosition(GameViewport);
+        var inputType = e.ChangedButton switch
+        {
+            MouseButton.Left => "MouseButton1",
+            MouseButton.Right => "MouseButton2",
+            MouseButton.Middle => "MouseButton3",
+            _ => string.Empty
+        };
+        var contextSunk = inputType.Length > 0 && runtime?.FireUserInput("Unknown", true, activeTool is { Enabled: true }, inputType: inputType, mouseX: (float)point.X, mouseY: (float)point.Y) == true;
+        if (contextSunk) contextSunkMouseButtons.Add(e.ChangedButton);
+        if (contextSunk || contextSunkMouseButtons.Contains(e.ChangedButton))
+        {
+            e.Handled = true;
+            return;
+        }
         if (e.ChangedButton == MouseButton.Left && activeTool is { Enabled: true } tool)
         {
             if (!tool.ManualActivationOnly) runtime?.InvokeToolActivated(tool.Id);
@@ -373,6 +430,22 @@ public partial class PlayerWindow : Window
 
     private void GameViewport_MouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton == MouseButton.Right) return;
+        var point = e.GetPosition(GameViewport);
+        var inputType = e.ChangedButton switch
+        {
+            MouseButton.Left => "MouseButton1",
+            MouseButton.Right => "MouseButton2",
+            MouseButton.Middle => "MouseButton3",
+            _ => string.Empty
+        };
+        var wasContextSunk = contextSunkMouseButtons.Remove(e.ChangedButton);
+        var contextSunk = inputType.Length > 0 && runtime?.FireUserInput("Unknown", false, false, inputType: inputType, mouseX: (float)point.X, mouseY: (float)point.Y) == true;
+        if (wasContextSunk || contextSunk)
+        {
+            e.Handled = true;
+            return;
+        }
         if (e.ChangedButton == MouseButton.Left && activeTool is { } tool) runtime?.DeactivateTool(tool.Id);
     }
 
@@ -548,8 +621,16 @@ public partial class PlayerWindow : Window
 
     private void Viewport_RightButtonDown(object sender, MouseButtonEventArgs e)
     {
+        var point = e.GetPosition(GameViewport);
+        var contextSunk = runtime?.FireUserInput("Unknown", true, activeTool is { Enabled: true }, inputType: "MouseButton2", mouseX: (float)point.X, mouseY: (float)point.Y) == true;
+        if (contextSunk) contextSunkMouseButtons.Add(MouseButton.Right);
+        if (contextSunk || contextSunkMouseButtons.Contains(MouseButton.Right))
+        {
+            e.Handled = true;
+            return;
+        }
         isDragging = true;
-        lastPointer = e.GetPosition(GameViewport);
+        lastPointer = point;
         Mouse.Capture(GameViewport);
         GameViewport.Focus();
         e.Handled = true;
@@ -557,19 +638,33 @@ public partial class PlayerWindow : Window
 
     private void Viewport_RightButtonUp(object sender, MouseButtonEventArgs e)
     {
+        var point = e.GetPosition(GameViewport);
+        var wasContextSunk = contextSunkMouseButtons.Remove(MouseButton.Right);
+        var contextSunk = runtime?.FireUserInput("Unknown", false, false, inputType: "MouseButton2", mouseX: (float)point.X, mouseY: (float)point.Y) == true;
         isDragging = false;
         Mouse.Capture(null);
+        if (wasContextSunk || contextSunk)
+        {
+            e.Handled = true;
+            return;
+        }
         e.Handled = true;
     }
 
     private void Viewport_MouseMove(object sender, MouseEventArgs e)
     {
+        var point = e.GetPosition(GameViewport);
+        if (runtime?.FireMouseMovement((float)point.X, (float)point.Y) == true)
+        {
+            if (isDragging) lastPointer = point;
+            e.Handled = true;
+            return;
+        }
         if (!isDragging)
         {
             GameViewport.Cursor = FindPointedClickDetector() is null ? Cursors.Arrow : Cursors.Hand;
             return;
         }
-        var point = e.GetPosition(GameViewport);
         renderer.SetCameraOrbit(-(float)(point.X - lastPointer.X) * .25f, -(float)(point.Y - lastPointer.Y) * .25f, 0, project);
         lastPointer = point;
         e.Handled = true;

@@ -11,6 +11,12 @@ public sealed class LuaXRuntime
 {
     private const float TerrainCellSize = 4;
     private const int MaxTerrainCells = 4096;
+    private static readonly string[] SupportedKeyCodes = [
+        "Unknown", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+        "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero", "Backspace", "Tab", "Clear", "Enter", "Escape", "Space", "PageUp", "PageDown", "End", "Home", "Left", "Up", "Right", "Down", "Insert", "Delete",
+        "LeftShift", "RightShift", "LeftControl", "RightControl", "LeftAlt", "RightAlt", "CapsLock", "NumLock", "ScrollLock", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+        "Minus", "Equals", "LeftBracket", "RightBracket", "BackSlash", "Semicolon", "Quote", "Comma", "Period", "Slash", "Backquote", "LeftWindows", "RightWindows", "Menu", "NumPad0", "NumPad1", "NumPad2", "NumPad3", "NumPad4", "NumPad5", "NumPad6", "NumPad7", "NumPad8", "NumPad9", "Multiply", "Add", "Subtract", "Decimal", "Divide", "Back"
+    ];
     private readonly GameProject project;
     private readonly Action<SceneNode, string, DynValue>? propertyChanged;
     private readonly Action<string>? output;
@@ -37,6 +43,10 @@ public sealed class LuaXRuntime
     private readonly Dictionary<(string Tag, bool Added), List<BindableConnection>> tagCallbacks = [];
     private readonly Dictionary<(string Tag, bool Added), Table> tagSignals = [];
     private readonly Dictionary<string, List<BindableConnection>> runServiceCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<BindableConnection>> userInputCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ContextActionBinding> contextActionBindings = new(StringComparer.Ordinal);
+    private readonly HashSet<string> pressedKeyCodes = new(StringComparer.Ordinal);
+    private float[] mouseLocation = [0, 0];
     private readonly List<TweenState> activeTweens = [];
     private readonly Dictionary<string, ScriptCallback> bindableFunctionCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<(string NodeId, string Callback), ScriptCallback> remoteFunctionCallbacks = [];
@@ -61,6 +71,7 @@ public sealed class LuaXRuntime
     private DynValue contextualRequireFactory = DynValue.Nil;
     private GameScript? currentGameScript;
     private Table vector3Metatable = null!;
+    private Table vector2Metatable = null!;
 
     private sealed record LuaXTypeTag(string Name);
     private sealed record ScriptCallback(GameScript GameScript, DynValue Function, string Name);
@@ -79,6 +90,7 @@ public sealed class LuaXRuntime
         }
     }
     private sealed record ScriptExecution(GameScript GameScript, Coroutine Coroutine, bool ReportFinished, string? CallbackName = null);
+    private sealed record ContextActionBinding(string Name, GameScript Owner, DynValue Callback, string[] Inputs, int Priority, bool CreateTouchButton);
     private sealed class DebrisItem(SceneNode node, float remaining)
     {
         public SceneNode Node { get; } = node;
@@ -111,7 +123,7 @@ public sealed class LuaXRuntime
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Model", "Folder", "Tool", "Accessory", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue",
         "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Team",
-        "Sky", "Atmosphere", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
+        "Sky", "Atmosphere", "BlurEffect", "SurfaceAppearance", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"
     };
 
@@ -142,6 +154,12 @@ public sealed class LuaXRuntime
         foreach (var callbacks in runServiceCallbacks.Values)
             foreach (var connection in callbacks) connection.Disconnect();
         runServiceCallbacks.Clear();
+        foreach (var callbacks in userInputCallbacks.Values)
+            foreach (var connection in callbacks) connection.Disconnect();
+        userInputCallbacks.Clear();
+        contextActionBindings.Clear();
+        pressedKeyCodes.Clear();
+        mouseLocation = [0, 0];
         touchedCallbacks.Clear();
         guiActivatedCallbacks.Clear();
         toolEquippedCallbacks.Clear();
@@ -473,6 +491,8 @@ public sealed class LuaXRuntime
         debris.Set("AddItem", DynValue.NewCallback((_, args) => AddDebrisItem(debris, args)));
         var collectionService = CreateCollectionService();
         var runService = CreateRunService();
+        var userInputService = CreateUserInputService();
+        var contextActionService = CreateContextActionService();
         tweenService = CreateTweenService();
         game.Set("Workspace", DynValue.NewTable(workspace));
         game.Set("Players", DynValue.NewTable(players));
@@ -489,6 +509,8 @@ public sealed class LuaXRuntime
         game.Set("Debris", DynValue.NewTable(debris));
         game.Set("CollectionService", DynValue.NewTable(collectionService));
         game.Set("RunService", DynValue.NewTable(runService));
+        game.Set("UserInputService", DynValue.NewTable(userInputService));
+        game.Set("ContextActionService", DynValue.NewTable(contextActionService));
         game.Set("TweenService", DynValue.NewTable(tweenService));
         game.Set("GetService", DynValue.NewCallback((_, args) =>
         {
@@ -510,6 +532,8 @@ public sealed class LuaXRuntime
                 "Debris" => DynValue.NewTable(debris),
                 "CollectionService" => DynValue.NewTable(collectionService),
                 "RunService" => DynValue.NewTable(runService),
+                "UserInputService" => DynValue.NewTable(userInputService),
+                "ContextActionService" => DynValue.NewTable(contextActionService),
                 "TweenService" => DynValue.NewTable(tweenService),
                 _ => DynValue.Nil
             };
@@ -528,6 +552,8 @@ public sealed class LuaXRuntime
         script.Globals.Set("Gui", DynValue.NewTable(gui));
         script.Globals.Set("StarterGui", DynValue.NewTable(gui));
         script.Globals.Set("TweenService", DynValue.NewTable(tweenService));
+        script.Globals.Set("UserInputService", DynValue.NewTable(userInputService));
+        script.Globals.Set("ContextActionService", DynValue.NewTable(contextActionService));
         var instanceLibrary = new Table(script);
         instanceLibrary.Set("new", DynValue.NewCallback((_, args) => NewInstance(args)));
         script.Globals.Set("Instance", DynValue.NewTable(instanceLibrary));
@@ -538,6 +564,20 @@ public sealed class LuaXRuntime
         layoutDirectionEnum.Set("Vertical", DynValue.NewString("Vertical"));
         layoutDirectionEnum.Set("Horizontal", DynValue.NewString("Horizontal"));
         var enumTable = new Table(script);
+        var keyCodeEnum = new Table(script);
+        foreach (var keyCode in SupportedKeyCodes) keyCodeEnum.Set(keyCode, DynValue.NewString(keyCode));
+        enumTable.Set("KeyCode", DynValue.NewTable(keyCodeEnum));
+        var userInputTypeEnum = new Table(script);
+        foreach (var inputType in new[] { "Keyboard", "MouseButton1", "MouseButton2", "MouseButton3", "MouseMovement", "Touch", "Gamepad1" })
+            userInputTypeEnum.Set(inputType, DynValue.NewString(inputType));
+        enumTable.Set("UserInputType", DynValue.NewTable(userInputTypeEnum));
+        var userInputStateEnum = new Table(script);
+        foreach (var inputState in new[] { "Begin", "Change", "End" }) userInputStateEnum.Set(inputState, DynValue.NewString(inputState));
+        enumTable.Set("UserInputState", DynValue.NewTable(userInputStateEnum));
+        var contextActionResultEnum = new Table(script);
+        contextActionResultEnum.Set("Pass", DynValue.NewString("Pass"));
+        contextActionResultEnum.Set("Sink", DynValue.NewString("Sink"));
+        enumTable.Set("ContextActionResult", DynValue.NewTable(contextActionResultEnum));
         enumTable.Set("CameraMode", DynValue.NewTable(cameraModeEnum));
         var easingStyleEnum = new Table(script);
         foreach (var style in new[] { "Linear", "Sine", "Quad", "Cubic", "Quart", "Quint", "Exponential", "Circular", "Back", "Bounce", "Elastic" }) easingStyleEnum.Set(style, DynValue.NewString(style));
@@ -601,6 +641,8 @@ public sealed class LuaXRuntime
         script.Globals.Set("Vector3", DynValue.NewTable(vector3));
         var vector2 = new Table(script);
         vector2.Set("new", DynValue.NewCallback((_, args) => Vector2Value([NumberArgument(args, 0), NumberArgument(args, 1)])));
+        vector2.Set("zero", Vector2Value([0, 0]));
+        vector2.Set("one", Vector2Value([1, 1]));
         script.Globals.Set("Vector2", DynValue.NewTable(vector2));
         script.Globals.Set("LookAtRotation", DynValue.NewCallback((_, args) => CreateLookAtRotation(args)));
         var color3 = new Table(script);
@@ -984,6 +1026,18 @@ public sealed class LuaXRuntime
 
     private void InstallVector3Metatable()
     {
+        vector2Metatable = new Table(script);
+        vector2Metatable.Set("__add", DynValue.NewCallback((_, args) => CombineVector2Values(args, (left, right) => left + right)));
+        vector2Metatable.Set("__sub", DynValue.NewCallback((_, args) => CombineVector2Values(args, (left, right) => left - right)));
+        vector2Metatable.Set("__mul", DynValue.NewCallback((_, args) => MultiplyVector2Values(args)));
+        vector2Metatable.Set("__div", DynValue.NewCallback((_, args) => DivideVector2Values(args)));
+        vector2Metatable.Set("__unm", DynValue.NewCallback((_, args) => args.Count > 0 && TryReadVector2(args[0], out var vector) ? Vector2Value(vector.Select(value => -value).ToArray()) : DynValue.Nil));
+        vector2Metatable.Set("__eq", DynValue.NewCallback((_, args) =>
+        {
+            return DynValue.NewBoolean(args.Count >= 2 && TryReadVector2(args[0], out var left) && TryReadVector2(args[1], out var right) && left.SequenceEqual(right));
+        }));
+        vector2Metatable.Set("__tostring", DynValue.NewCallback((_, args) =>
+            DynValue.NewString(args.Count > 0 && TryReadVector2(args[0], out var vector) ? $"{vector[0]}, {vector[1]}" : "Vector2")));
         vector3Metatable = new Table(script);
         vector3Metatable.Set("__add", DynValue.NewCallback((_, args) => args.Count >= 2 ? VectorValue(CombineVectors(args, (left, right) => left + right)) : DynValue.Nil));
         vector3Metatable.Set("__sub", DynValue.NewCallback((_, args) => args.Count >= 2 ? VectorValue(CombineVectors(args, (left, right) => left - right)) : DynValue.Nil));
@@ -1005,11 +1059,51 @@ public sealed class LuaXRuntime
         }));
     }
 
+    private DynValue CombineVector2Values(CallbackArguments args, Func<float, float, float> operation)
+    {
+        return args.Count >= 2 && TryReadVector2(args[0], out var left) && TryReadVector2(args[1], out var right)
+            ? Vector2Value([operation(left[0], right[0]), operation(left[1], right[1])]) : DynValue.Nil;
+    }
+
+    private DynValue MultiplyVector2Values(CallbackArguments args)
+    {
+        if (args.Count < 2) return DynValue.Nil;
+        var hasLeft = TryReadVector2(args[0], out var left);
+        var hasRight = TryReadVector2(args[1], out var right);
+        if (hasLeft && hasRight)
+            return Vector2Value([left[0] * right[0], left[1] * right[1]]);
+        var vectorIndex = hasLeft ? 0 : hasRight ? 1 : -1;
+        var scalarIndex = vectorIndex == 0 ? 1 : 0;
+        if (vectorIndex < 0 || args[scalarIndex].Type != DataType.Number || !double.IsFinite(args[scalarIndex].Number)) return DynValue.Nil;
+        var vector = vectorIndex == 0 ? left : right;
+        var scalar = (float)args[scalarIndex].Number;
+        return Vector2Value([vector[0] * scalar, vector[1] * scalar]);
+    }
+
+    private DynValue DivideVector2Values(CallbackArguments args)
+    {
+        if (args.Count < 2 || !TryReadVector2(args[0], out var left)) return DynValue.Nil;
+        if (TryReadVector2(args[1], out var right))
+            return Vector2Value([right[0] == 0 ? 0 : left[0] / right[0], right[1] == 0 ? 0 : left[1] / right[1]]);
+        if (args[1].Type != DataType.Number || !double.IsFinite(args[1].Number) || args[1].Number == 0) return DynValue.Nil;
+        var divisor = (float)args[1].Number;
+        return Vector2Value([left[0] / divisor, left[1] / divisor]);
+    }
+
     private float[] CombineVectors(CallbackArguments args, Func<float, float, float> operation)
     {
         var left = ReadVector(args[0], [0, 0, 0]);
         var right = ReadVector(args[1], [0, 0, 0]);
         return [operation(left[0], right[0]), operation(left[1], right[1]), operation(left[2], right[2])];
+    }
+
+    private DynValue Vector3ComponentExtremum(Table receiver, CallbackArguments args, Func<float, float, float> operation)
+    {
+        var index = GetVectorMethodArgumentIndex(receiver, args);
+        if (args.Count <= index) return DynValue.Nil;
+        var left = ReadVector(DynValue.NewTable(receiver), [0, 0, 0]);
+        var right = ReadVector(args[index], [0, 0, 0]);
+        return VectorValue(Enumerable.Range(0, 3).Select(axis => operation(left[axis], right[axis])).ToArray());
     }
 
     private DynValue MultiplyVectors(CallbackArguments args)
@@ -1042,16 +1136,19 @@ public sealed class LuaXRuntime
         instance.Set("Archivable", DynValue.NewBoolean(node.Archivable));
         instance.Set("Id", DynValue.NewString(node.Id));
         instance.Set("ClassName", DynValue.NewString(node.Type));
-        instance.Set("Position", IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Type == "Model" ? SceneModelService.GetPivot(node) : node.Position));
+        if (HasPositionProperty(node)) instance.Set("Position", IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Type == "Model" ? SceneModelService.GetPivot(node) : node.Position));
         if (IsGuiObject(node)) instance.Set("AnchorPoint", Vector2Value(node.AnchorPoint));
         if (IsGuiObject(node)) instance.Set("BackgroundColor3", ColorValue(node.Color));
-        instance.Set("Rotation", VectorValue(node.Rotation));
-        instance.Set("Size", node.Type == "Sparkles" ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) || node.Type == "BillboardGui" ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size));
+        if (HasRotationProperty(node)) instance.Set("Rotation", VectorValue(node.Type == "AlignOrientation" ? node.AlignOrientationRotation : node.Rotation));
+        if (HasSizeProperty(node)) instance.Set("Size", SceneNodeTypes.IsSizedParticleEffect(node) || SceneNodeTypes.IsPostEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) || node.Type == "BillboardGui" ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size));
         instance.Set("Color", ColorValue(node.Color));
-        instance.Set("SparkleColor", ColorValue(node.Color));
-        instance.Set("SecondaryColor", ColorValue(node.SecondaryColor));
-        instance.Set("FillColor", ColorValue(node.FillColor));
-        instance.Set("OutlineColor", ColorValue(node.OutlineColor));
+        if (node.Type == "Sparkles") instance.Set("SparkleColor", ColorValue(node.Color));
+        if (node.Type == "Fire") instance.Set("SecondaryColor", ColorValue(node.SecondaryColor));
+        if (node.Type == "Highlight")
+        {
+            instance.Set("FillColor", ColorValue(node.FillColor));
+            instance.Set("OutlineColor", ColorValue(node.OutlineColor));
+        }
         if (node.Type is "SelectionBox" or "SelectionSphere" or "Highlight" or "BillboardGui" or "SurfaceGui") instance.Set("Adornee", GetObjectValueReference(node.Adornee));
         if (node.Type is "SelectionBox" or "SelectionSphere")
         {
@@ -1060,97 +1157,162 @@ public sealed class LuaXRuntime
             instance.Set("SurfaceTransparency", DynValue.NewNumber(node.SurfaceTransparency));
             if (node.Type == "SelectionBox") instance.Set("LineThickness", DynValue.NewNumber(node.LineThickness));
         }
-        instance.Set("StartColor", ColorValue(node.StartColor));
-        instance.Set("EndColor", ColorValue(node.EndColor));
-        instance.Set("PaddingLeft", CreateUDim(node.PaddingLeft[0], node.PaddingLeft[1]));
-        instance.Set("PaddingTop", CreateUDim(node.PaddingTop[0], node.PaddingTop[1]));
-        instance.Set("PaddingRight", CreateUDim(node.PaddingRight[0], node.PaddingRight[1]));
-        instance.Set("PaddingBottom", CreateUDim(node.PaddingBottom[0], node.PaddingBottom[1]));
-        instance.Set("Scale", DynValue.NewNumber(node.Scale));
-        instance.Set("MinSize", Vector2Value(node.MinSize));
-        instance.Set("MaxSize", Vector2Value(node.MaxSize));
-        instance.Set("CellSize", CreateUDim2Value(node.CellSizeScale, node.CellSize));
-        instance.Set("CellPadding", CreateUDim2Value(node.CellPaddingScale, node.CellPadding));
-        instance.Set("FillDirection", DynValue.NewString(node.Type == "UIListLayout" ? node.LayoutDirection : node.FillDirection));
-        instance.Set("FillDirectionMaxCells", DynValue.NewNumber(node.FillDirectionMaxCells));
-        instance.Set("FillTransparency", DynValue.NewNumber(node.FillTransparency));
-        instance.Set("OutlineTransparency", DynValue.NewNumber(node.OutlineTransparency));
-        instance.Set("Shape", DynValue.NewString(node.Shape));
-        instance.Set("Face", DynValue.NewString(node.Face));
-        instance.Set("StudsPerTileU", DynValue.NewNumber(node.StudsPerTileU));
-        instance.Set("StudsPerTileV", DynValue.NewNumber(node.StudsPerTileV));
-        instance.Set("OffsetStudsU", DynValue.NewNumber(node.OffsetStudsU));
-        instance.Set("OffsetStudsV", DynValue.NewNumber(node.OffsetStudsV));
-        instance.Set("Material", DynValue.NewString(node.Material));
-        instance.Set("Transparency", DynValue.NewNumber(node.Transparency));
-        instance.Set("BackgroundTransparency", DynValue.NewNumber(node.BackgroundTransparency));
-        instance.Set("TextTransparency", DynValue.NewNumber(node.TextTransparency));
-        instance.Set("ImageTransparency", DynValue.NewNumber(node.ImageTransparency));
+        if (node.Type == "UIGradient")
+        {
+            instance.Set("StartColor", ColorValue(node.StartColor));
+            instance.Set("EndColor", ColorValue(node.EndColor));
+        }
+        if (node.Type == "UIPadding")
+        {
+            instance.Set("PaddingLeft", CreateUDim(node.PaddingLeft[0], node.PaddingLeft[1]));
+            instance.Set("PaddingTop", CreateUDim(node.PaddingTop[0], node.PaddingTop[1]));
+            instance.Set("PaddingRight", CreateUDim(node.PaddingRight[0], node.PaddingRight[1]));
+            instance.Set("PaddingBottom", CreateUDim(node.PaddingBottom[0], node.PaddingBottom[1]));
+        }
+        if (node.Type == "UIScale") instance.Set("Scale", DynValue.NewNumber(node.Scale));
+        if (node.Type == "UISizeConstraint")
+        {
+            instance.Set("MinSize", Vector2Value(node.MinSize));
+            instance.Set("MaxSize", Vector2Value(node.MaxSize));
+        }
+        if (node.Type == "UIGridLayout")
+        {
+            instance.Set("CellSize", CreateUDim2Value(node.CellSizeScale, node.CellSize));
+            instance.Set("CellPadding", CreateUDim2Value(node.CellPaddingScale, node.CellPadding));
+            instance.Set("FillDirection", DynValue.NewString(node.FillDirection));
+            instance.Set("FillDirectionMaxCells", DynValue.NewNumber(node.FillDirectionMaxCells));
+        }
+        if (node.Type == "UIListLayout") instance.Set("FillDirection", DynValue.NewString(node.LayoutDirection));
+        if (node.Type == "Highlight")
+        {
+            instance.Set("FillTransparency", DynValue.NewNumber(node.FillTransparency));
+            instance.Set("OutlineTransparency", DynValue.NewNumber(node.OutlineTransparency));
+        }
+        if (SceneNodeTypes.IsBasePart(node))
+        {
+            instance.Set("Shape", DynValue.NewString(node.Shape));
+            instance.Set("Material", DynValue.NewString(node.Material));
+        }
+        if (node.Type is "Decal" or "Texture" or "SurfaceLight" or "SurfaceGui") instance.Set("Face", DynValue.NewString(node.Face));
+        if (node.Type == "Texture")
+        {
+            instance.Set("StudsPerTileU", DynValue.NewNumber(node.StudsPerTileU));
+            instance.Set("StudsPerTileV", DynValue.NewNumber(node.StudsPerTileV));
+            instance.Set("OffsetStudsU", DynValue.NewNumber(node.OffsetStudsU));
+            instance.Set("OffsetStudsV", DynValue.NewNumber(node.OffsetStudsV));
+        }
+        if (IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam" or "SelectionBox" or "SelectionSphere" or "UIShadow")
+            instance.Set("Transparency", DynValue.NewNumber(node.Transparency));
+        if (IsGuiObject(node)) instance.Set("BackgroundTransparency", DynValue.NewNumber(node.BackgroundTransparency));
+        if (node.Type is "TextLabel" or "TextButton" or "TextBox") instance.Set("TextTransparency", DynValue.NewNumber(node.TextTransparency));
+        if (node.Type is "ImageLabel" or "ImageButton") instance.Set("ImageTransparency", DynValue.NewNumber(node.ImageTransparency));
         instance.Set("Enabled", DynValue.NewBoolean(node.Enabled));
-        instance.Set("AlwaysOnTop", DynValue.NewBoolean(node.AlwaysOnTop));
-        instance.Set("MaxDistance", DynValue.NewNumber(node.MaxDistance));
-        instance.Set("PixelsPerStud", DynValue.NewNumber(node.PixelsPerStud));
-        instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
-        instance.Set("Range", DynValue.NewNumber(node.Range));
-        instance.Set("Heat", DynValue.NewNumber(node.Heat));
-        instance.Set("RiseVelocity", DynValue.NewNumber(node.RiseVelocity));
-        instance.Set("Opacity", DynValue.NewNumber(node.Opacity));
-        instance.Set("TimeScale", DynValue.NewNumber(node.TimeScale));
-        instance.Set("BlastRadius", DynValue.NewNumber(node.BlastRadius));
-        instance.Set("BlastPressure", DynValue.NewNumber(node.BlastPressure));
-        instance.Set("DestroyJointRadiusPercent", DynValue.NewNumber(node.DestroyJointRadiusPercent));
-        instance.Set("Angle", DynValue.NewNumber(node.Angle));
-        instance.Set("ActionText", DynValue.NewString(node.ActionText));
-        instance.Set("ObjectText", DynValue.NewString(node.ObjectText));
-        instance.Set("HoldDuration", DynValue.NewNumber(node.HoldDuration));
-        instance.Set("MaxActivationDistance", DynValue.NewNumber(node.MaxActivationDistance));
-        instance.Set("Volume", DynValue.NewNumber(node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume));
-        instance.Set("Octave", DynValue.NewNumber(node.PitchShiftOctave));
-        instance.Set("PlaybackSpeed", DynValue.NewNumber(node.PlaybackSpeed));
-        instance.Set("Looped", DynValue.NewBoolean(node.Looped));
-        instance.Set("Playing", DynValue.NewBoolean(node.Playing));
-        instance.Set("RollOffMinDistance", DynValue.NewNumber(node.RollOffMinDistance));
-        instance.Set("RollOffMaxDistance", DynValue.NewNumber(node.RollOffMaxDistance));
-        instance.Set("Part0", node.Type is "WeldConstraint" or "NoCollisionConstraint" ? GetPartReferenceValue(node.Part0) : DynValue.NewString(node.Part0));
-        instance.Set("Part1", node.Type is "WeldConstraint" or "NoCollisionConstraint" ? GetPartReferenceValue(node.Part1) : DynValue.NewString(node.Part1));
+        if (node.Type == "ProximityPrompt") instance.Set("RequiresLineOfSight", DynValue.NewBoolean(node.RequiresLineOfSight));
+        if (node.Type is "BillboardGui" or "SurfaceGui")
+        {
+            instance.Set("AlwaysOnTop", DynValue.NewBoolean(node.AlwaysOnTop));
+            instance.Set("MaxDistance", DynValue.NewNumber(node.MaxDistance));
+        }
+        if (node.Type == "SurfaceGui") instance.Set("PixelsPerStud", DynValue.NewNumber(node.PixelsPerStud));
+        if (node.Type == "Lighting" || SceneNodeTypes.IsLight(node)) instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
+        if (SceneNodeTypes.IsLight(node)) instance.Set("Range", DynValue.NewNumber(node.Range));
+        if (node.Type == "Fire") instance.Set("Heat", DynValue.NewNumber(node.Heat));
+        if (node.Type == "Smoke")
+        {
+            instance.Set("RiseVelocity", DynValue.NewNumber(node.RiseVelocity));
+            instance.Set("Opacity", DynValue.NewNumber(node.Opacity));
+        }
+        if (SceneNodeTypes.IsParticleEffect(node)) instance.Set("TimeScale", DynValue.NewNumber(node.TimeScale));
+        if (node.Type == "Explosion")
+        {
+            instance.Set("BlastRadius", DynValue.NewNumber(node.BlastRadius));
+            instance.Set("BlastPressure", DynValue.NewNumber(node.BlastPressure));
+            instance.Set("DestroyJointRadiusPercent", DynValue.NewNumber(node.DestroyJointRadiusPercent));
+        }
+        if (node.Type is "SpotLight" or "SurfaceLight") instance.Set("Angle", DynValue.NewNumber(node.Angle));
+        if (node.Type == "ProximityPrompt")
+        {
+            instance.Set("ActionText", DynValue.NewString(node.ActionText));
+            instance.Set("ObjectText", DynValue.NewString(node.ObjectText));
+            instance.Set("HoldDuration", DynValue.NewNumber(node.HoldDuration));
+        }
+        if (node.Type is "ProximityPrompt" or "ClickDetector") instance.Set("MaxActivationDistance", DynValue.NewNumber(node.MaxActivationDistance));
+        if (node.Type is "Sound" or "SoundGroup" or "SoundService")
+            instance.Set("Volume", DynValue.NewNumber(node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume));
+        if (node.Type == "PitchShiftSoundEffect") instance.Set("Octave", DynValue.NewNumber(node.PitchShiftOctave));
+        if (node.Type == "Sound")
+        {
+            instance.Set("PlaybackSpeed", DynValue.NewNumber(node.PlaybackSpeed));
+            instance.Set("Looped", DynValue.NewBoolean(node.Looped));
+            instance.Set("Playing", DynValue.NewBoolean(node.Playing));
+            instance.Set("RollOffMinDistance", DynValue.NewNumber(node.RollOffMinDistance));
+            instance.Set("RollOffMaxDistance", DynValue.NewNumber(node.RollOffMaxDistance));
+        }
+        if (node.Type is "WeldConstraint" or "NoCollisionConstraint")
+        {
+            instance.Set("Part0", GetPartReferenceValue(node.Part0));
+            instance.Set("Part1", GetPartReferenceValue(node.Part1));
+        }
         if (node.Type == "Model") instance.Set("PrimaryPart", GetModelPrimaryPartReference(node));
-        instance.Set("Attachment0", DynValue.NewString(node.Attachment0));
-        instance.Set("Attachment1", DynValue.NewString(node.Attachment1));
-        instance.Set("Width0", DynValue.NewNumber(node.Width0));
-        instance.Set("Width1", DynValue.NewNumber(node.Width1));
-        instance.Set("Texture", DynValue.NewString(node.Texture));
-        instance.Set("Text", DynValue.NewString(node.Text));
-        instance.Set("PlaceholderText", DynValue.NewString(node.PlaceholderText));
-        instance.Set("TextColor", DynValue.NewString(node.TextColor));
-        instance.Set("Visible", DynValue.NewBoolean(node.Visible));
-        instance.Set("ZIndex", DynValue.NewNumber(node.ZIndex));
-        instance.Set("DisplayOrder", DynValue.NewNumber(node.DisplayOrder));
-        instance.Set("LayoutOrder", DynValue.NewNumber(node.LayoutOrder));
+        if (node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")
+        {
+            instance.Set("Attachment0", DynValue.NewString(node.Attachment0));
+            instance.Set("Attachment1", DynValue.NewString(node.Attachment1));
+        }
+        if (node.Type == "Beam")
+        {
+            instance.Set("Width0", DynValue.NewNumber(node.Width0));
+            instance.Set("Width1", DynValue.NewNumber(node.Width1));
+        }
+        if (node.Type is "Part" or "ParticleEmitter" or "Trail" or "Decal" or "Texture") instance.Set("Texture", DynValue.NewString(node.Texture));
+        if (node.Type is "TextLabel" or "TextButton" or "TextBox") instance.Set("Text", DynValue.NewString(node.Text));
+        if (node.Type == "TextBox") instance.Set("PlaceholderText", DynValue.NewString(node.PlaceholderText));
+        if (node.Type is "TextLabel" or "TextButton" or "TextBox") instance.Set("TextColor", DynValue.NewString(node.TextColor));
+        if (IsGuiObject(node)) instance.Set("Visible", DynValue.NewBoolean(node.Visible));
+        if (IsGuiObject(node) || node.Type == "UIShadow") instance.Set("ZIndex", DynValue.NewNumber(node.ZIndex));
+        if (node.Type == "ScreenGui") instance.Set("DisplayOrder", DynValue.NewNumber(node.DisplayOrder));
+        if (IsGuiObject(node)) instance.Set("LayoutOrder", DynValue.NewNumber(node.LayoutOrder));
         if (node.Type == "UICorner") SetCornerInstanceProperties(node, instance);
         if (node.Type == "UIShadow") SetShadowInstanceProperties(node, instance);
-        instance.Set("StrokeColor", DynValue.NewString(node.StrokeColor));
-        instance.Set("StrokeThickness", DynValue.NewNumber(node.StrokeThickness));
-        instance.Set("TextSize", DynValue.NewNumber(node.TextSize));
-        instance.Set("TextScaled", DynValue.NewBoolean(node.TextScaled));
-        instance.Set("MultiLine", DynValue.NewBoolean(node.MultiLine));
-        instance.Set("TextEditable", DynValue.NewBoolean(node.TextEditable));
-        instance.Set("ClearTextOnFocus", DynValue.NewBoolean(node.ClearTextOnFocus));
-        instance.Set("MinTextSize", DynValue.NewNumber(node.MinTextSize));
-        instance.Set("MaxTextSize", DynValue.NewNumber(node.MaxTextSize));
-        instance.Set("LayoutSpacing", DynValue.NewNumber(node.LayoutSpacing));
+        if (node.Type is "TextLabel" or "TextButton" or "TextBox")
+        {
+            instance.Set("TextSize", DynValue.NewNumber(node.TextSize));
+            instance.Set("TextScaled", DynValue.NewBoolean(node.TextScaled));
+        }
+        if (node.Type == "TextBox")
+        {
+            instance.Set("MultiLine", DynValue.NewBoolean(node.MultiLine));
+            instance.Set("TextEditable", DynValue.NewBoolean(node.TextEditable));
+            instance.Set("ClearTextOnFocus", DynValue.NewBoolean(node.ClearTextOnFocus));
+        }
+        if (node.Type == "UITextSizeConstraint")
+        {
+            instance.Set("MinTextSize", DynValue.NewNumber(node.MinTextSize));
+            instance.Set("MaxTextSize", DynValue.NewNumber(node.MaxTextSize));
+        }
+        if (node.Type is "UIListLayout" or "UITableLayout") instance.Set("LayoutSpacing", DynValue.NewNumber(node.LayoutSpacing));
+        if (node.Type == "UITableLayout") instance.Set("TableColumns", DynValue.NewNumber(node.TableColumns));
         if (node.Type == "UIListLayout") instance.Set("Padding", CreateUDim(node.ListPaddingScale, node.LayoutSpacing));
-        instance.Set("TableColumns", DynValue.NewNumber(node.TableColumns));
-        instance.Set("AspectRatio", DynValue.NewNumber(node.AspectRatio));
-        instance.Set("AspectType", DynValue.NewString(node.AspectType));
-        instance.Set("DominantAxis", DynValue.NewString(node.DominantAxis));
-        instance.Set("LayoutDirection", DynValue.NewString(node.LayoutDirection));
-        instance.Set("HorizontalAlignment", DynValue.NewString(node.HorizontalAlignment));
-        instance.Set("VerticalAlignment", DynValue.NewString(node.VerticalAlignment));
-        instance.Set("SortOrder", DynValue.NewString(node.SortOrder));
-        instance.Set("FlexMode", DynValue.NewString(node.FlexMode));
-        instance.Set("GrowRatio", DynValue.NewNumber(node.GrowRatio));
-        instance.Set("ShrinkRatio", DynValue.NewNumber(node.ShrinkRatio));
-        instance.Set("ItemLineAlignment", DynValue.NewString(node.ItemLineAlignment));
+        if (node.Type is "UIAspectRatio" or "UIAspectRatioConstraint") instance.Set("AspectRatio", DynValue.NewNumber(node.AspectRatio));
+        if (node.Type == "UIAspectRatioConstraint")
+        {
+            instance.Set("AspectType", DynValue.NewString(node.AspectType));
+            instance.Set("DominantAxis", DynValue.NewString(node.DominantAxis));
+        }
+        if (node.Type == "UIListLayout")
+        {
+            instance.Set("LayoutDirection", DynValue.NewString(node.LayoutDirection));
+            instance.Set("HorizontalAlignment", DynValue.NewString(node.HorizontalAlignment));
+            instance.Set("VerticalAlignment", DynValue.NewString(node.VerticalAlignment));
+            instance.Set("SortOrder", DynValue.NewString(node.SortOrder));
+        }
+        if (node.Type == "UIFlexItem")
+        {
+            instance.Set("FlexMode", DynValue.NewString(node.FlexMode));
+            instance.Set("GrowRatio", DynValue.NewNumber(node.GrowRatio));
+            instance.Set("ShrinkRatio", DynValue.NewNumber(node.ShrinkRatio));
+            instance.Set("ItemLineAlignment", DynValue.NewString(node.ItemLineAlignment));
+        }
         instance.Set("SkyboxFront", DynValue.NewString(node.SkyboxFront));
         instance.Set("SkyboxBack", DynValue.NewString(node.SkyboxBack));
         instance.Set("SkyboxLeft", DynValue.NewString(node.SkyboxLeft));
@@ -1174,27 +1336,82 @@ public sealed class LuaXRuntime
             instance.Set("Glare", DynValue.NewNumber(node.Glare));
             instance.Set("Offset", DynValue.NewNumber(node.Offset));
         }
-        instance.Set("Anchored", DynValue.NewBoolean(node.Anchored));
-        instance.Set("CanCollide", DynValue.NewBoolean(node.CanCollide));
-        instance.Set("CanTouch", DynValue.NewBoolean(node.CanTouch));
-        instance.Set("CanQuery", DynValue.NewBoolean(node.CanQuery));
-        instance.Set("Velocity", VectorValue(node.Velocity));
-        instance.Set("AssemblyLinearVelocity", VectorValue(node.Velocity));
-        instance.Set("AssemblyAngularVelocity", VectorValue(node.AssemblyAngularVelocity));
-        instance.Set("CastShadow", DynValue.NewBoolean(node.CastShadow));
-        instance.Set("Gravity", DynValue.NewNumber(node.Gravity));
-        instance.Set("Ambient", ColorValue(node.Ambient));
-        instance.Set("ClockTime", DynValue.NewNumber(node.ClockTime));
-        instance.Set("GlobalShadows", DynValue.NewBoolean(project.Settings.Shadows));
-        instance.Set("AutoManageCharacter", DynValue.NewBoolean(node.AutoManageCharacter));
-        instance.Set("Character", GetCharacterValue(node));
-        instance.Set("Team", GetTeamValue(node));
-        instance.Set("TeamColor", ColorValue(node.Type == "Player" ? FindNode(node.Team)?.TeamColor ?? "#FFFFFF" : node.TeamColor));
-        instance.Set("AutoAssignable", DynValue.NewBoolean(node.AutoAssignable));
-        instance.Set("Neutral", DynValue.NewBoolean(node.Neutral));
-        instance.Set("AllowTeamChangeOnTouch", DynValue.NewBoolean(node.AllowTeamChangeOnTouch));
-        instance.Set("Duration", DynValue.NewNumber(node.Duration));
-        instance.Set("Occupant", GetOccupantValue(node));
+        if (SceneNodeTypes.IsSurfaceAppearance(node))
+        {
+            instance.Set("Color", ColorValue(node.SurfaceAppearanceColor));
+            instance.Set("ColorMap", DynValue.NewString(node.SurfaceAppearanceColorMap));
+            instance.Set("NormalMap", DynValue.NewString(node.SurfaceAppearanceNormalMap));
+            instance.Set("RoughnessMap", DynValue.NewString(node.SurfaceAppearanceRoughnessMap));
+            instance.Set("MetalnessMap", DynValue.NewString(node.SurfaceAppearanceMetalnessMap));
+            instance.Set("EmissiveMaskContent", DynValue.NewString(node.SurfaceAppearanceEmissiveMask));
+            instance.Set("EmissiveTint", ColorValue(node.SurfaceAppearanceEmissiveTint));
+            instance.Set("EmissiveStrength", DynValue.NewNumber(node.SurfaceAppearanceEmissiveStrength));
+        }
+        if (SceneNodeTypes.IsBasePart(node))
+        {
+            instance.Set("Anchored", DynValue.NewBoolean(node.Anchored));
+            instance.Set("CanCollide", DynValue.NewBoolean(node.CanCollide));
+            instance.Set("CanTouch", DynValue.NewBoolean(node.CanTouch));
+            instance.Set("CanQuery", DynValue.NewBoolean(node.CanQuery));
+            instance.Set("Velocity", VectorValue(node.Velocity));
+            instance.Set("AssemblyLinearVelocity", VectorValue(node.Velocity));
+            instance.Set("AssemblyAngularVelocity", VectorValue(node.AssemblyAngularVelocity));
+            instance.Set("CastShadow", DynValue.NewBoolean(node.CastShadow));
+        }
+        if (node.Type == "Workspace")
+        {
+            instance.Set("Gravity", DynValue.NewNumber(node.Gravity));
+            instance.Set("AutoManageCharacter", DynValue.NewBoolean(node.AutoManageCharacter));
+            instance.Set("CurrentCamera", GetCurrentCameraReference());
+        }
+        if (node.Type == "Lighting")
+        {
+            instance.Set("Ambient", ColorValue(node.Ambient));
+            instance.Set("ClockTime", DynValue.NewNumber(node.ClockTime));
+            instance.Set("GlobalShadows", DynValue.NewBoolean(project.Settings.Shadows));
+        }
+        if (node.Type == "Player")
+        {
+            instance.Set("Character", GetCharacterValue(node));
+            instance.Set("CharacterAdded", DynValue.NewTable(CreateRemoteSignal(node, "CharacterAdded")));
+            instance.Set("CharacterRemoving", DynValue.NewTable(CreateRemoteSignal(node, "CharacterRemoving")));
+            instance.Set("Team", GetTeamValue(node));
+            instance.Set("TeamColor", ColorValue(FindNode(node.Team)?.TeamColor ?? "#FFFFFF"));
+        }
+        if (node.Type == "Players")
+        {
+            instance.Set("GetPlayers", DynValue.NewCallback((_, args) =>
+            {
+                var index = GetInstanceMethodArgumentIndex(node, args);
+                if (index != args.Count) return DynValue.Nil;
+                var result = new Table(script);
+                var playerIndex = 1;
+                foreach (var player in project.Players.Children.Where(child => child.Type == "Player"))
+                    if (instances.TryGetValue(player.Id, out var playerInstance)) result.Set(playerIndex++, DynValue.NewTable(playerInstance));
+                return DynValue.NewTable(result);
+            }));
+            instance.Set("GetPlayerFromCharacter", DynValue.NewCallback((_, args) =>
+            {
+                var index = GetInstanceMethodArgumentIndex(node, args);
+                if (index + 1 != args.Count || ReadNodeArgument(args[index]) is not { Type: "Model" } model) return DynValue.Nil;
+                var player = project.Players.Children.FirstOrDefault(child => child.Type == "Player" && child.Character == model.Id);
+                return player is not null && instances.TryGetValue(player.Id, out var playerInstance)
+                    ? DynValue.NewTable(playerInstance) : DynValue.Nil;
+            }));
+        }
+        if (node.Type == "Team")
+        {
+            instance.Set("TeamColor", ColorValue(node.TeamColor));
+            instance.Set("AutoAssignable", DynValue.NewBoolean(node.AutoAssignable));
+        }
+        if (node.Type == "SpawnLocation")
+        {
+            instance.Set("TeamColor", ColorValue(node.TeamColor));
+            instance.Set("Neutral", DynValue.NewBoolean(node.Neutral));
+            instance.Set("AllowTeamChangeOnTouch", DynValue.NewBoolean(node.AllowTeamChangeOnTouch));
+            instance.Set("Duration", DynValue.NewNumber(node.Duration));
+        }
+        if (node.Type is "Seat" or "VehicleSeat") instance.Set("Occupant", GetOccupantValue(node));
         if (node.Type == "VehicleSeat")
         {
             instance.Set("Disabled", DynValue.NewBoolean(node.VehicleSeatDisabled));
@@ -1206,10 +1423,13 @@ public sealed class LuaXRuntime
             instance.Set("SteerFloat", DynValue.NewNumber(node.VehicleSeatSteerFloat));
             instance.Set("AreHingesDetected", DynValue.NewNumber(node.VehicleSeatAreHingesDetected));
         }
-        instance.Set("Health", DynValue.NewNumber(node.Health));
-        instance.Set("MaxHealth", DynValue.NewNumber(node.MaxHealth));
-        instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
-        instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
+        if (node.Type == "Humanoid")
+        {
+            instance.Set("Health", DynValue.NewNumber(node.Health));
+            instance.Set("MaxHealth", DynValue.NewNumber(node.MaxHealth));
+            instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
+            instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
+        }
         if (SceneNodeTypes.IsValueObject(node)) instance.Set("Value", GetValueObjectValue(node));
         instance.Set("Asset", DynValue.NewString(node.Asset));
         instance.Set("CameraMode", DynValue.NewString(node.CameraMode));
@@ -1554,18 +1774,68 @@ public sealed class LuaXRuntime
             var index = GetInstanceMethodArgumentIndex(node, args);
             return args.Count > index ? GetPropertyValue(node, args[index].CastToString() ?? string.Empty) : DynValue.Nil;
         }));
-        instance.Set("WaitForChild", DynValue.NewCallback((_, args) =>
-        {
-            var index = GetInstanceMethodArgumentIndex(node, args);
-            return args.Count > index && args[index].CastToString() is { } name ? FindChild(instance, name) : DynValue.Nil;
-        }));
-        instance.Set("waitforchild", DynValue.NewCallback((_, args) =>
-        {
-            var index = GetInstanceMethodArgumentIndex(node, args);
-            return args.Count > index && args[index].CastToString() is { } name ? FindChild(instance, name) : DynValue.Nil;
-        }));
+        instance.Set("WaitForChild", script.Globals.Get("WaitForChild"));
+        instance.Set("waitforchild", script.Globals.Get("waitforchild"));
         instance.Set("FindFirstChild", DynValue.NewCallback((_, args) => FindFirstChild(node, args)));
+        instance.Set("FindFirstChildWhichIsA", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            var className = args.Count > index ? args[index].CastToString() : null;
+            var recursive = args.Count > index + 1 && args[index + 1].CastToBool();
+            if (className is null) return DynValue.Nil;
+            var candidates = recursive ? GameProjectStore.Flatten(node.Children) : node.Children;
+            var child = candidates.FirstOrDefault(candidate => IsA(candidate, className));
+            return child is not null && instances.TryGetValue(child.Id, out var childInstance) ? DynValue.NewTable(childInstance) : DynValue.Nil;
+        }));
         instance.Set("GetChildren", DynValue.NewCallback((_, _) => GetChildren(node)));
+        instance.Set("FindFirstChildOfClass", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            var className = args.Count > index ? args[index].CastToString() : null;
+            var child = className is null ? null : node.Children.FirstOrDefault(candidate => IsA(candidate, className));
+            return child is not null && instances.TryGetValue(child.Id, out var childInstance) ? DynValue.NewTable(childInstance) : DynValue.Nil;
+        }));
+        instance.Set("GetDescendants", DynValue.NewCallback((_, _) =>
+        {
+            var descendants = new Table(script);
+            var descendantIndex = 1;
+            foreach (var descendant in GameProjectStore.Flatten(node.Children))
+                if (instances.TryGetValue(descendant.Id, out var descendantInstance)) descendants.Set(descendantIndex++, DynValue.NewTable(descendantInstance));
+            return DynValue.NewTable(descendants);
+        }));
+        instance.Set("FindFirstAncestor", DynValue.NewCallback((_, args) => FindFirstAncestorByName(node, args)));
+        instance.Set("FindFirstAncestorOfClass", DynValue.NewCallback((_, args) => FindFirstAncestorByClass(node, args, false)));
+        instance.Set("FindFirstAncestorWhichIsA", DynValue.NewCallback((_, args) => FindFirstAncestorByClass(node, args, true)));
+        instance.Set("IsDescendantOf", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(node, args);
+            var ancestor = args.Count > index ? ReadNodeArgument(args[index]) : null;
+            var parent = FindParentNode(node);
+            while (parent is not null)
+            {
+                if (ancestor is not null && parent.Id == ancestor.Id) return DynValue.NewBoolean(true);
+                parent = FindParentNode(parent);
+            }
+            return DynValue.NewBoolean(false);
+        }));
+        instance.Set("GetFullName", DynValue.NewCallback((_, _) =>
+        {
+            var names = new List<string> { node.Name };
+            var parent = FindParentNode(node);
+            while (parent is not null)
+            {
+                names.Add(parent.Name);
+                parent = FindParentNode(parent);
+            }
+            names.Add("game");
+            names.Reverse();
+            return DynValue.NewString(string.Join('.', names));
+        }));
+        instance.Set("ClearAllChildren", DynValue.NewCallback((_, _) =>
+        {
+            foreach (var child in node.Children.ToArray()) DestroyInstance(child);
+            return DynValue.Nil;
+        }));
         instance.Set("IsA", DynValue.NewCallback((_, args) =>
         {
             var index = GetInstanceMethodArgumentIndex(node, args);
@@ -1574,6 +1844,21 @@ public sealed class LuaXRuntime
         }));
         instance.Set("Destroy", DynValue.NewCallback((_, _) => DestroyInstance(node)));
         instance.Set("Clone", DynValue.NewCallback((_, _) => CloneInstance(node)));
+        if (node.Type == "Model")
+        {
+            instance.Set("MoveTo", DynValue.NewCallback((_, args) =>
+            {
+                var index = GetInstanceMethodArgumentIndex(node, args);
+                if (index + 1 != args.Count) return DynValue.Nil;
+                return SetPropertyValue(node, "Position", args[index]);
+            }));
+            instance.Set("RotateTo", DynValue.NewCallback((_, args) =>
+            {
+                var index = GetInstanceMethodArgumentIndex(node, args);
+                if (index + 1 != args.Count) return DynValue.Nil;
+                return SetPropertyValue(node, "Rotation", args[index]);
+            }));
+        }
         InstallAttributeApi(node, instance);
         InstallTagApi(node, instance);
         if (node.Type == "Workspace") instance.Set("Raycast", DynValue.NewCallback((_, args) => Raycast(node, args)));
@@ -2077,6 +2362,20 @@ public sealed class LuaXRuntime
         return DynValue.Nil;
     }
 
+    private void FirePlayerCharacterSignal(SceneNode player, string signalName, string characterId)
+    {
+        if (player.Type != "Player" || string.IsNullOrEmpty(characterId)
+            || !instances.TryGetValue(characterId, out var characterInstance)) return;
+        var key = RemoteSignalKey(player.Id, signalName);
+        if (!bindableEventCallbacks.TryGetValue(key, out var listeners)) return;
+        var argument = DynValue.NewTable(characterInstance);
+        foreach (var connection in listeners.ToArray())
+        {
+            if (!connection.Connected || !IsTaskOwnerActive(connection.Owner)) continue;
+            scheduledTasks.Add(new ScheduledTask(connection.Owner, script.CreateCoroutine(connection.Function), [argument], 0, true));
+        }
+    }
+
     public void FireRocketReachedTarget(SceneNode node)
     {
         var key = RemoteSignalKey(node.Id, "ReachedTarget");
@@ -2269,6 +2568,215 @@ public sealed class LuaXRuntime
             service.Set(eventName, DynValue.NewTable(signal));
         }
         return service;
+    }
+
+    private Table CreateUserInputService()
+    {
+        var service = new Table(script);
+        runtimeTypeTags.Add(service, new LuaXTypeTag("UserInputService"));
+        service.Set("Name", DynValue.NewString("UserInputService"));
+        service.Set("ClassName", DynValue.NewString("UserInputService"));
+        service.Set("InputBegan", DynValue.NewTable(CreateUserInputSignal("InputBegan")));
+        service.Set("InputEnded", DynValue.NewTable(CreateUserInputSignal("InputEnded")));
+        service.Set("InputChanged", DynValue.NewTable(CreateUserInputSignal("InputChanged")));
+        service.Set("MouseEnabled", DynValue.NewBoolean(true));
+        service.Set("KeyboardEnabled", DynValue.NewBoolean(true));
+        service.Set("TouchEnabled", DynValue.NewBoolean(false));
+        service.Set("GamepadEnabled", DynValue.NewBoolean(false));
+        service.Set("GetMouseLocation", DynValue.NewCallback((_, _) => Vector2Value(mouseLocation)));
+        service.Set("IsKeyDown", DynValue.NewCallback((_, args) =>
+        {
+            var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, service) ? 1 : 0;
+            var keyCode = args.Count > index ? args[index].CastToString() : null;
+            return DynValue.NewBoolean(keyCode is not null && pressedKeyCodes.Contains(keyCode));
+        }));
+        service.Set("GetKeysPressed", DynValue.NewCallback((_, _) =>
+        {
+            var keys = new Table(script);
+            var index = 1;
+            foreach (var keyCode in pressedKeyCodes.OrderBy(code => code, StringComparer.Ordinal))
+                keys.Set(index++, DynValue.NewTable(CreateInputObject(keyCode, "Begin")));
+            return DynValue.NewTable(keys);
+        }));
+        return service;
+    }
+
+    private Table CreateContextActionService()
+    {
+        var service = new Table(script);
+        runtimeTypeTags.Add(service, new LuaXTypeTag("ContextActionService"));
+        service.Set("Name", DynValue.NewString("ContextActionService"));
+        service.Set("ClassName", DynValue.NewString("ContextActionService"));
+        service.Set("BindAction", DynValue.NewCallback((_, args) => BindContextAction(service, args, false)));
+        service.Set("BindActionAtPriority", DynValue.NewCallback((_, args) => BindContextAction(service, args, true)));
+        service.Set("UnbindAction", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetServiceMethodArgumentIndex(service, args);
+            if (args.Count > index && args[index].CastToString() is { Length: > 0 } actionName) contextActionBindings.Remove(actionName);
+            return DynValue.Nil;
+        }));
+        service.Set("UnbindAllActions", DynValue.NewCallback((_, _) =>
+        {
+            contextActionBindings.Clear();
+            return DynValue.Nil;
+        }));
+        service.Set("GetBoundActionInfo", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetServiceMethodArgumentIndex(service, args);
+            return args.Count > index && args[index].CastToString() is { } actionName && contextActionBindings.TryGetValue(actionName, out var binding)
+                ? DynValue.NewTable(CreateBoundActionInfo(binding)) : DynValue.Nil;
+        }));
+        service.Set("GetAllBoundActionInfo", DynValue.NewCallback((_, _) =>
+        {
+            var result = new Table(script);
+            foreach (var binding in contextActionBindings.Values) result.Set(binding.Name, DynValue.NewTable(CreateBoundActionInfo(binding)));
+            return DynValue.NewTable(result);
+        }));
+        return service;
+    }
+
+    private int GetServiceMethodArgumentIndex(Table service, CallbackArguments args) =>
+        args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, service) ? 1 : 0;
+
+    private DynValue BindContextAction(Table service, CallbackArguments args, bool hasPriority)
+    {
+        var index = GetServiceMethodArgumentIndex(service, args);
+        var priorityIndex = index + 3;
+        var firstInputIndex = hasPriority ? index + 4 : index + 3;
+        if (args.Count <= index + 2 || args[index].CastToString() is not { Length: > 0 } actionName || args[index + 1].Type != DataType.Function
+            || currentGameScript is not { } owner) return DynValue.Nil;
+        var priority = hasPriority && args.Count > priorityIndex && args[priorityIndex].Type == DataType.Number && double.IsFinite(args[priorityIndex].Number)
+            ? (int)Math.Clamp(Math.Truncate(args[priorityIndex].Number), int.MinValue, int.MaxValue) : 2000;
+        var inputs = Enumerable.Range(firstInputIndex, Math.Max(0, args.Count - firstInputIndex))
+            .Select(inputIndex => args[inputIndex].CastToString()).Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal).ToArray();
+        contextActionBindings[actionName] = new ContextActionBinding(actionName, owner, args[index + 1], inputs, priority, args[index + 2].CastToBool());
+        return DynValue.Nil;
+    }
+
+    private Table CreateBoundActionInfo(ContextActionBinding binding)
+    {
+        var info = new Table(script);
+        runtimeTypeTags.Add(info, new LuaXTypeTag("BoundActionInfo"));
+        info.Set("Name", DynValue.NewString(binding.Name));
+        info.Set("PriorityLevel", DynValue.NewNumber(binding.Priority));
+        info.Set("CreateTouchButton", DynValue.NewBoolean(binding.CreateTouchButton));
+        var inputs = new Table(script);
+        for (var index = 0; index < binding.Inputs.Length; index++) inputs.Set(index + 1, DynValue.NewString(binding.Inputs[index]));
+        info.Set("InputTypes", DynValue.NewTable(inputs));
+        return info;
+    }
+
+    private Table CreateUserInputSignal(string eventName)
+    {
+        var signal = new Table(script);
+        runtimeTypeTags.Add(signal, new LuaXTypeTag("RBXScriptSignal"));
+        signal.Set("Connect", DynValue.NewCallback((_, args) =>
+        {
+            var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, signal) ? 1 : 0;
+            if (currentGameScript is not { } owner || args.Count <= index || args[index].Type != DataType.Function) return DynValue.Nil;
+            var connectionTable = new Table(script);
+            runtimeTypeTags.Add(connectionTable, new LuaXTypeTag("RBXScriptConnection"));
+            var connection = new BindableConnection(owner, args[index], connectionTable);
+            connectionTable.Set("Connected", DynValue.NewBoolean(true));
+            connectionTable.Set("Disconnect", DynValue.NewCallback((_, _) =>
+            {
+                connection.Disconnect();
+                if (userInputCallbacks.TryGetValue(eventName, out var current)) current.Remove(connection);
+                return DynValue.Nil;
+            }));
+            if (!userInputCallbacks.TryGetValue(eventName, out var callbacks)) userInputCallbacks[eventName] = callbacks = [];
+            callbacks.Add(connection);
+            return DynValue.NewTable(connectionTable);
+        }));
+        return signal;
+    }
+
+    private Table CreateInputObject(string keyCode, string state, string inputType = "Keyboard", float[]? position = null, float[]? delta = null)
+    {
+        var input = new Table(script);
+        runtimeTypeTags.Add(input, new LuaXTypeTag("InputObject"));
+        input.Set("KeyCode", DynValue.NewString(keyCode));
+        input.Set("UserInputType", DynValue.NewString(inputType));
+        input.Set("UserInputState", DynValue.NewString(state));
+        input.Set("Position", VectorValue(position is { Length: >= 3 } ? position : inputType == "Keyboard" ? [0, 0, 0] : [mouseLocation[0], mouseLocation[1], 0]));
+        input.Set("Delta", VectorValue(delta is { Length: >= 3 } ? delta : [0, 0, 0]));
+        return input;
+    }
+
+    public bool FireUserInput(string keyCode, bool isDown, bool gameProcessed, bool isRepeat = false, string inputType = "Keyboard", float? mouseX = null, float? mouseY = null)
+    {
+        if (inputType != "Keyboard" && mouseX is { } x && mouseY is { } y && float.IsFinite(x) && float.IsFinite(y)) mouseLocation = [x, y];
+        if (inputType == "Keyboard")
+        {
+            if (!SupportedKeyCodes.Contains(keyCode, StringComparer.Ordinal)) keyCode = "Unknown";
+            var wasDown = pressedKeyCodes.Contains(keyCode);
+            if (isDown) pressedKeyCodes.Add(keyCode);
+            else pressedKeyCodes.Remove(keyCode);
+            if (isRepeat || isDown == wasDown) return false;
+        }
+        var eventName = isDown ? "InputBegan" : "InputEnded";
+        return QueueUserInputEvent(eventName, CreateInputObject(keyCode, isDown ? "Begin" : "End", inputType), gameProcessed);
+    }
+
+    public bool FireMouseMovement(float x, float y)
+    {
+        if (!float.IsFinite(x) || !float.IsFinite(y)) return false;
+        var delta = new[] { x - mouseLocation[0], y - mouseLocation[1], 0f };
+        if (delta[0] == 0 && delta[1] == 0) return false;
+        mouseLocation = [x, y];
+        return QueueUserInputEvent("InputChanged", CreateInputObject("Unknown", "Change", "MouseMovement", [x, y, 0], delta), false);
+    }
+
+    private bool QueueUserInputEvent(string eventName, Table input, bool gameProcessed)
+    {
+        if (userInputCallbacks.TryGetValue(eventName, out var listeners))
+        {
+            var arguments = new DynValue[] { DynValue.NewTable(input), DynValue.NewBoolean(gameProcessed) };
+            foreach (var connection in listeners.ToArray())
+            {
+                if (!connection.Connected || !IsTaskOwnerActive(connection.Owner)) continue;
+                scheduledTasks.Add(new ScheduledTask(connection.Owner, script.CreateCoroutine(connection.Function), arguments, 0, true));
+            }
+        }
+        var keyCode = input.Get("KeyCode").CastToString() ?? "Unknown";
+        var inputType = input.Get("UserInputType").CastToString() ?? "Unknown";
+        var inputState = DynValue.NewString(input.Get("UserInputState").CastToString() ?? "Begin");
+        if (gameProcessed) return false;
+        foreach (var binding in contextActionBindings.Values.OrderByDescending(binding => binding.Priority).ToArray())
+        {
+            if (!IsTaskOwnerActive(binding.Owner) || !binding.Inputs.Contains(keyCode, StringComparer.Ordinal) && !binding.Inputs.Contains(inputType, StringComparer.Ordinal)) continue;
+            var arguments = new DynValue[] { DynValue.NewString(binding.Name), inputState, DynValue.NewTable(input) };
+            if (RunContextAction(binding, arguments)) return true;
+        }
+        return false;
+    }
+
+    private bool RunContextAction(ContextActionBinding binding, DynValue[] arguments)
+    {
+        var previousScript = currentGameScript;
+        BindCurrentScript(binding.Owner);
+        try
+        {
+            var coroutine = script.CreateCoroutine(binding.Callback).Coroutine;
+            var result = coroutine.Resume(arguments);
+            SynchronizeInstances();
+            if (coroutine.State != CoroutineState.Dead && IsTaskOwnerActive(binding.Owner))
+                activeScripts.Add(new ScriptExecution(binding.Owner, coroutine, false, $"ContextActionService.{binding.Name}"));
+            return coroutine.State == CoroutineState.Dead && result.CastToString() == "Sink";
+        }
+        catch (Exception exception)
+        {
+            output?.Invoke($"{binding.Owner.Name} ContextActionService.{binding.Name} callback: {exception.Message}");
+            SynchronizeInstances();
+            return false;
+        }
+        finally { currentGameScript = previousScript; }
+    }
+
+    public void ReleaseAllPressedKeys()
+    {
+        foreach (var keyCode in pressedKeyCodes.ToArray()) FireUserInput(keyCode, false, false);
     }
 
     private Table CreateTweenService()
@@ -2946,6 +3454,7 @@ public sealed class LuaXRuntime
         var node = new SceneNode { Type = className, Name = className };
         if (SceneNodeTypes.IsBasePart(node)) node.Position = [0, 1, 0];
         if (className == "Atmosphere") { node.Color = "#C6D9FF"; node.AtmosphereDecay = "#607080"; }
+        if (className == "BlurEffect") node.EffectSize = 0;
         if (className == "SpawnLocation") { node.Size = [6, 1, 6]; node.Position = [0, .5f, 0]; node.Color = "#72BF9D"; node.Material = "Metal"; }
         if (className is "Seat" or "VehicleSeat") { node.Size = [2, 1, 2]; node.Position = [0, .5f, 0]; node.Color = "#596B89"; node.Material = "Metal"; }
         if (className == "Fire") { node.Color = "#FF6A00"; node.EffectSize = 5; }
@@ -3072,6 +3581,15 @@ public sealed class LuaXRuntime
         if (oldParent is not null && refreshParent) RefreshParentChildren(oldParent);
         if (instances.TryGetValue(node.Id, out var removedInstance)) removedInstance.Set("Parent", DynValue.Nil);
         var removedNodes = new[] { node }.Concat(GameProjectStore.Flatten(node.Children)).ToArray();
+        var removedIds = removedNodes.Select(removed => removed.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var player in KnownNodes().Where(item => item.Type == "Player" && removedIds.Contains(item.Character)))
+        {
+            var oldCharacter = player.Character;
+            FirePlayerCharacterSignal(player, "CharacterRemoving", oldCharacter);
+            player.Character = string.Empty;
+            if (instances.TryGetValue(player.Id, out var playerInstance)) playerInstance.Set("Character", DynValue.Nil);
+            propertyChanged?.Invoke(player, "Character", DynValue.Nil);
+        }
         var removedScriptIds = removedNodes.Where(SceneNodeTypes.IsBaseScript).Select(removed => removed.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var removed in removedNodes)
         {
@@ -3103,7 +3621,6 @@ public sealed class LuaXRuntime
             startedScriptIds.Remove(removed.Id);
             project.Scripts.RemoveAll(script => script.Id == removed.Id);
         }
-        var removedIds = removedNodes.Select(removed => removed.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var player in KnownNodes().Where(item => item.Type == "Player" && removedIds.Contains(item.Team)))
         {
             player.Team = string.Empty;
@@ -3557,6 +4074,13 @@ public sealed class LuaXRuntime
             "rolloffmindistance" => "RollOffMinDistance",
             "rolloffmaxdistance" => "RollOffMaxDistance",
             "texture" => "Texture",
+            "colormap" => "ColorMap",
+            "normalmap" => "NormalMap",
+            "roughnessmap" => "RoughnessMap",
+            "metalnessmap" => "MetalnessMap",
+            "emissivemaskcontent" => "EmissiveMaskContent",
+            "emissivetint" => "EmissiveTint",
+            "emissivestrength" => "EmissiveStrength",
             "text" => "Text",
             "placeholdertext" => "PlaceholderText",
             "textcolor" => "TextColor",
@@ -4391,7 +4915,10 @@ public sealed class LuaXRuntime
         {
             switch (normalized)
             {
-                case "position": SetPositionProperty(node, value); break;
+                case "position":
+                    if (!HasPositionProperty(node)) return DynValue.Nil;
+                    SetPositionProperty(node, value);
+                    break;
                 case "tooltip":
                     if (node.Type != "Tool" || value.Type != DataType.String) return DynValue.Nil;
                     node.ToolTip = value.String;
@@ -4402,16 +4929,30 @@ public sealed class LuaXRuntime
                 case "gripposition": if (node.Type != "Tool" || value.Type != DataType.Table) return DynValue.Nil; node.GripPosition = ReadVector(value, node.GripPosition); break;
                 case "griprotation": if (node.Type != "Tool" || value.Type != DataType.Table) return DynValue.Nil; node.GripRotation = ReadVector(value, node.GripRotation).Select(component => Math.Clamp(component, -360000, 360000)).ToArray(); break;
                 case "rotation":
-                    if (node.Type == "AlignOrientation") node.AlignOrientationRotation = ReadVector(value, node.AlignOrientationRotation).Select(component => Math.Clamp(component, -360000, 360000)).ToArray();
+                    if (!HasRotationProperty(node)) return DynValue.Nil;
+                    if (node.Type == "AlignOrientation") node.AlignOrientationRotation = LimitVector(ReadVector(value, node.AlignOrientationRotation), -360000, 360000);
                     else if (node.Type == "Model")
                     {
                         var pending = CapturePendingModelDescendantWrites(node);
-                        if (SceneModelService.RotateTo(node, ReadVector(value, node.Rotation))) UpdateModelDescendantInstances(node, true, pending, (child, propertyName) => propertyChanged?.Invoke(child, propertyName, GetPropertyValue(child, propertyName)));
+                        if (SceneModelService.RotateTo(node, LimitVector(ReadVector(value, node.Rotation), -360000, 360000))) UpdateModelDescendantInstances(node, true, pending, (child, propertyName) => propertyChanged?.Invoke(child, propertyName, GetPropertyValue(child, propertyName)));
                     }
-                    else node.Rotation = ReadVector(value, node.Rotation);
+                    else node.Rotation = LimitVector(ReadVector(value, node.Rotation), -360000, 360000);
                     break;
-                case "size": SetSizeProperty(node, value); break;
-                case "color": node.Color = ReadColor(value, node.Color); break;
+                case "size":
+                    if (!HasSizeProperty(node)) return DynValue.Nil;
+                    SetSizeProperty(node, value);
+                    break;
+                case "color":
+                    if (SceneNodeTypes.IsSurfaceAppearance(node)) node.SurfaceAppearanceColor = ReadColor(value, node.SurfaceAppearanceColor);
+                    else node.Color = ReadColor(value, node.Color);
+                    break;
+                case "colormap": if (!SceneNodeTypes.IsSurfaceAppearance(node) || value.Type != DataType.String) return DynValue.Nil; node.SurfaceAppearanceColorMap = value.String; break;
+                case "normalmap": if (!SceneNodeTypes.IsSurfaceAppearance(node) || value.Type != DataType.String) return DynValue.Nil; node.SurfaceAppearanceNormalMap = value.String; break;
+                case "roughnessmap": if (!SceneNodeTypes.IsSurfaceAppearance(node) || value.Type != DataType.String) return DynValue.Nil; node.SurfaceAppearanceRoughnessMap = value.String; break;
+                case "metalnessmap": if (!SceneNodeTypes.IsSurfaceAppearance(node) || value.Type != DataType.String) return DynValue.Nil; node.SurfaceAppearanceMetalnessMap = value.String; break;
+                case "emissivemaskcontent": if (!SceneNodeTypes.IsSurfaceAppearance(node) || value.Type != DataType.String) return DynValue.Nil; node.SurfaceAppearanceEmissiveMask = value.String; break;
+                case "emissivetint": if (!SceneNodeTypes.IsSurfaceAppearance(node)) return DynValue.Nil; node.SurfaceAppearanceEmissiveTint = ReadColor(value, node.SurfaceAppearanceEmissiveTint); break;
+                case "emissivestrength": if (!SceneNodeTypes.IsSurfaceAppearance(node) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.SurfaceAppearanceEmissiveStrength = (float)Math.Clamp(value.Number, 0, 100); break;
                 case "backgroundcolor3":
                     if (!IsGuiObject(node) || !IsTypedValue(value, "Color3")) return DynValue.Nil;
                     node.Color = ReadColor(value, node.Color);
@@ -4609,6 +5150,10 @@ public sealed class LuaXRuntime
                         else StopScripts([node.Id]);
                     }
                     break;
+                case "requireslineofsight":
+                    if (node.Type != "ProximityPrompt" || value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.RequiresLineOfSight = value.Boolean;
+                    break;
                 case "disabled": if (node.Type != "VehicleSeat" || value.Type != DataType.Boolean) return DynValue.Nil; node.VehicleSeatDisabled = value.Boolean; break;
                 case "headsupdisplay": if (node.Type != "VehicleSeat" || value.Type != DataType.Boolean) return DynValue.Nil; node.VehicleSeatHeadsUpDisplay = value.Boolean; break;
                 case "maxspeed": if (node.Type != "VehicleSeat" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.VehicleSeatMaxSpeed = (float)Math.Clamp(value.Number, 0, 10000); break;
@@ -4617,8 +5162,8 @@ public sealed class LuaXRuntime
                     if (node.Type is not ("BillboardGui" or "SurfaceGui") || value.Type != DataType.Boolean) return DynValue.Nil;
                     node.AlwaysOnTop = value.Boolean;
                     break;
-                case "brightness": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Brightness = (float)Math.Clamp(value.Number, 0, 8); break;
-                case "range": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Range = (float)Math.Clamp(value.Number, 1, 1000); break;
+                case "brightness": if ((node.Type != "Lighting" && !SceneNodeTypes.IsLight(node)) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Brightness = (float)Math.Clamp(value.Number, 0, 8); break;
+                case "range": if (!SceneNodeTypes.IsLight(node) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Range = (float)Math.Clamp(value.Number, 1, 1000); break;
                 case "heat": if (node.Type != "Fire" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Heat = (float)Math.Clamp(value.Number, -25, 25); break;
                 case "risevelocity": if (node.Type != "Smoke" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.RiseVelocity = (float)Math.Clamp(value.Number, -25, 25); break;
                 case "opacity": if (node.Type != "Smoke" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Opacity = (float)Math.Clamp(value.Number, 0, 1); break;
@@ -4626,7 +5171,7 @@ public sealed class LuaXRuntime
                 case "blastradius": if (node.Type != "Explosion" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.BlastRadius = (float)Math.Clamp(value.Number, 0, 100); break;
                 case "blastpressure": if (node.Type != "Explosion" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.BlastPressure = (float)Math.Clamp(value.Number, 0, 1000000); break;
                 case "destroyjointradiuspercent": if (node.Type != "Explosion" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.DestroyJointRadiusPercent = (float)Math.Clamp(value.Number, 0, 1); break;
-                case "angle": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Angle = (float)Math.Clamp(value.Number, 1, 175); break;
+                case "angle": if (node.Type is not ("SpotLight" or "SurfaceLight") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Angle = (float)Math.Clamp(value.Number, 1, 175); break;
                 case "actiontext": if (node.Type != "ProximityPrompt") return DynValue.Nil; node.ActionText = value.CastToString() ?? node.ActionText; break;
                 case "objecttext": if (node.Type != "ProximityPrompt") return DynValue.Nil; node.ObjectText = value.CastToString() ?? node.ObjectText; break;
                 case "holdduration":
@@ -4678,11 +5223,23 @@ public sealed class LuaXRuntime
                     node.SoundGroupId = requestedSoundGroup?.Id ?? string.Empty;
                     break;
                 }
-                case "texture": node.Texture = value.CastToString() ?? string.Empty; break;
-                case "text": node.Text = value.CastToString() ?? node.Text; break;
+                case "texture":
+                    if (node.Type is not ("Part" or "ParticleEmitter" or "Trail" or "Decal" or "Texture")) return DynValue.Nil;
+                    node.Texture = value.CastToString() ?? string.Empty;
+                    break;
+                case "text":
+                    if (node.Type is not ("TextLabel" or "TextButton" or "TextBox")) return DynValue.Nil;
+                    node.Text = value.CastToString() ?? node.Text;
+                    break;
                 case "placeholdertext": if (node.Type != "TextBox") return DynValue.Nil; node.PlaceholderText = value.CastToString() ?? string.Empty; break;
-                case "textcolor": node.TextColor = value.CastToString() ?? node.TextColor; break;
-                case "visible": node.Visible = value.CastToBool(); break;
+                case "textcolor":
+                    if (node.Type is not ("TextLabel" or "TextButton" or "TextBox")) return DynValue.Nil;
+                    node.TextColor = value.CastToString() ?? node.TextColor;
+                    break;
+                case "visible":
+                    if (!IsGuiObject(node) || value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.Visible = value.Boolean;
+                    break;
                 case "zindex":
                     if (!(IsGuiObject(node) || node.Type == "UIShadow") || value.Type != DataType.Number || !double.IsFinite(value.Number)
                         || value.Number != Math.Truncate(value.Number) || value.Number < int.MinValue || value.Number > int.MaxValue) return DynValue.Nil;
@@ -4698,9 +5255,9 @@ public sealed class LuaXRuntime
                         || value.Number != Math.Truncate(value.Number) || value.Number < int.MinValue || value.Number > int.MaxValue) return DynValue.Nil;
                     node.DisplayOrder = (int)value.Number;
                     break;
-                case "anchored": node.Anchored = value.CastToBool(); break;
-                case "cancollide": node.CanCollide = value.CastToBool(); break;
-                case "cantouch": node.CanTouch = value.CastToBool(); break;
+                case "anchored": if (!IsBasePart(node)) return DynValue.Nil; node.Anchored = value.CastToBool(); break;
+                case "cancollide": if (!IsBasePart(node)) return DynValue.Nil; node.CanCollide = value.CastToBool(); break;
+                case "cantouch": if (!IsBasePart(node)) return DynValue.Nil; node.CanTouch = value.CastToBool(); break;
                 case "canquery": if (!IsBasePart(node) || value.Type != DataType.Boolean) return DynValue.Nil; node.CanQuery = value.Boolean; break;
                 case "velocity":
                 case "assemblylinearvelocity":
@@ -4711,7 +5268,7 @@ public sealed class LuaXRuntime
                     if (!IsBasePart(node) || value.Type != DataType.Table) return DynValue.Nil;
                     node.AssemblyAngularVelocity = ReadVector(value, node.AssemblyAngularVelocity).Select(component => Math.Clamp(component, -1000, 1000)).ToArray();
                     break;
-                case "castshadow": node.CastShadow = value.CastToBool(); break;
+                case "castshadow": if (!IsBasePart(node)) return DynValue.Nil; node.CastShadow = value.CastToBool(); break;
                 case "gravity":
                     if (node.Type != "Workspace" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.Gravity = (float)Math.Clamp(value.Number, 0, 1000);
@@ -4736,7 +5293,13 @@ public sealed class LuaXRuntime
                     if (node.Type != "Player") return DynValue.Nil;
                     var assignedCharacter = ReadNodeArgument(value);
                     if (value.Type != DataType.Nil && assignedCharacter?.Type != "Model") return DynValue.Nil;
+                    var previousCharacter = node.Character;
                     node.Character = assignedCharacter?.Id ?? string.Empty;
+                    if (previousCharacter != node.Character)
+                    {
+                        FirePlayerCharacterSignal(node, "CharacterRemoving", previousCharacter);
+                        FirePlayerCharacterSignal(node, "CharacterAdded", node.Character);
+                    }
                     break;
                 case "team":
                     if (node.Type != "Player") return DynValue.Nil;
@@ -4863,7 +5426,10 @@ public sealed class LuaXRuntime
                     if (normalized == "width0") node.Width0 = (float)Math.Clamp(value.Number, 0, 100);
                     else node.Width1 = (float)Math.Clamp(value.Number, 0, 100);
                     break;
-                case "fieldofview": node.FieldOfView = (float)Math.Clamp(value.Number, 10, 120); break;
+                case "fieldofview":
+                    if (node.Type != "Camera" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.FieldOfView = (float)Math.Clamp(value.Number, 10, 120);
+                    break;
                 case "cornerradius":
                 case "topleftradius":
                 case "toprightradius":
@@ -4906,7 +5472,10 @@ public sealed class LuaXRuntime
                     if (node.Type is not ("UIListLayout" or "UITableLayout") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.LayoutSpacing = (float)Math.Clamp(value.Number, 0, 1000000);
                     break;
-                case "tablecolumns": node.TableColumns = (int)Math.Clamp(value.Number, 1, 24); break;
+                case "tablecolumns":
+                    if (node.Type != "UITableLayout" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.TableColumns = (int)Math.Clamp(value.Number, 1, 24);
+                    break;
                 case "aspectratio":
                     if (node.Type is not ("UIAspectRatio" or "UIAspectRatioConstraint") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.AspectRatio = (float)Math.Clamp(value.Number, .001, 1000);
@@ -5042,7 +5611,7 @@ public sealed class LuaXRuntime
         if (node.Type == "Model")
         {
             var pending = CapturePendingModelDescendantWrites(node);
-            if (SceneModelService.MoveTo(node, ReadVector(value, SceneModelService.GetPivot(node))))
+            if (SceneModelService.MoveTo(node, LimitVector(ReadVector(value, SceneModelService.GetPivot(node)), -1000000, 1000000)))
                 UpdateModelDescendantInstances(node, false, pending, (child, propertyName) => propertyChanged?.Invoke(child, propertyName, GetPropertyValue(child, propertyName)));
             return;
         }
@@ -5052,7 +5621,7 @@ public sealed class LuaXRuntime
             node.Position = [offset[0], offset[1], node.Position[2]];
             return;
         }
-        node.Position = ReadVector(value, node.Position);
+        node.Position = LimitVector(ReadVector(value, node.Position), -1000000, 1000000);
         if (IsGuiObject(node)) node.PositionScale = [0, 0];
     }
 
@@ -5095,10 +5664,10 @@ public sealed class LuaXRuntime
     private void SetSizeProperty(SceneNode node, DynValue value)
     {
         if (node.Type == "Sparkles") return;
-        if (SceneNodeTypes.IsSizedParticleEffect(node))
+        if (SceneNodeTypes.IsSizedParticleEffect(node) || SceneNodeTypes.IsPostEffect(node))
         {
             if (value.Type == DataType.Number && double.IsFinite(value.Number))
-                node.EffectSize = (float)Math.Clamp(value.Number, node.Type == "Fire" ? 2 : .1f, node.Type == "Fire" ? 30 : 100);
+                node.EffectSize = (float)Math.Clamp(value.Number, node.Type == "Fire" ? 2 : SceneNodeTypes.IsPostEffect(node) ? 0 : .1f, node.Type == "Fire" ? 30 : SceneNodeTypes.IsPostEffect(node) ? 56 : 100);
             return;
         }
         if (IsGuiObject(node) && TryReadUDim2(value, out var scale, out var offset))
@@ -5113,7 +5682,7 @@ public sealed class LuaXRuntime
             node.Size = [billboardOffset[0], billboardOffset[1], node.Size[2]];
             return;
         }
-        node.Size = ReadVector(value, node.Size);
+        node.Size = LimitVector(ReadVector(value, node.Size), .001f, 1000000);
         if (IsGuiObject(node)) node.SizeScale = [0, 0];
     }
 
@@ -5131,6 +5700,12 @@ public sealed class LuaXRuntime
 
     private DynValue GetModelPrimaryPartReference(SceneNode model) =>
         SceneModelService.ContainsPrimaryPart(model, model.PrimaryPart) ? GetPartReferenceValue(model.PrimaryPart) : DynValue.Nil;
+
+    private DynValue GetCurrentCameraReference()
+    {
+        var camera = project.Workspace.Children.FirstOrDefault(child => child.Type == "Camera");
+        return camera is not null && instances.TryGetValue(camera.Id, out var cameraInstance) ? DynValue.NewTable(cameraInstance) : DynValue.Nil;
+    }
 
     private DynValue GetAttachmentReferenceValue(string id) =>
         !string.IsNullOrEmpty(id) && FindNode(id) is { Type: "Attachment" } attachment && instances.TryGetValue(attachment.Id, out var instance)
@@ -5687,11 +6262,12 @@ public sealed class LuaXRuntime
             var pending = valueInstance.Get("Value");
             if (IsValidValueObjectValue(node, pending)) return pending;
         }
-        return property.ToLowerInvariant() switch
+        var normalizedProperty = property.ToLowerInvariant();
+        return normalizedProperty switch
         {
         "id" => DynValue.NewString(node.Id),
         "classname" or "type" => DynValue.NewString(node.Type),
-        "position" => IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Type == "Model" ? SceneModelService.GetPivot(node) : node.Position),
+        "position" => HasPositionProperty(node) ? IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Type == "Model" ? SceneModelService.GetPivot(node) : node.Position) : DynValue.Nil,
         "tooltip" => node.Type == "Tool" ? DynValue.NewString(node.ToolTip) : DynValue.Nil,
         "requireshandle" => node.Type == "Tool" ? DynValue.NewBoolean(node.RequiresHandle) : DynValue.Nil,
         "canbedropped" => node.Type == "Tool" ? DynValue.NewBoolean(node.CanBeDropped) : DynValue.Nil,
@@ -5699,9 +6275,16 @@ public sealed class LuaXRuntime
         "gripposition" => node.Type == "Tool" ? VectorValue(node.GripPosition) : DynValue.Nil,
         "griprotation" => node.Type == "Tool" ? VectorValue(node.GripRotation) : DynValue.Nil,
         "anchorpoint" => IsGuiObject(node) ? Vector2Value(node.AnchorPoint) : DynValue.Nil,
-        "rotation" => VectorValue(node.Type == "AlignOrientation" ? node.AlignOrientationRotation : node.Rotation),
-        "size" => node.Type == "Sparkles" ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) || node.Type == "BillboardGui" ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
-        "color" => ColorValue(node.Color),
+        "rotation" => HasRotationProperty(node) ? VectorValue(node.Type == "AlignOrientation" ? node.AlignOrientationRotation : node.Rotation) : DynValue.Nil,
+        "size" => !HasSizeProperty(node) ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) || SceneNodeTypes.IsPostEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) || node.Type == "BillboardGui" ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
+        "color" => ColorValue(SceneNodeTypes.IsSurfaceAppearance(node) ? node.SurfaceAppearanceColor : node.Color),
+        "colormap" => SceneNodeTypes.IsSurfaceAppearance(node) ? DynValue.NewString(node.SurfaceAppearanceColorMap) : DynValue.Nil,
+        "normalmap" => SceneNodeTypes.IsSurfaceAppearance(node) ? DynValue.NewString(node.SurfaceAppearanceNormalMap) : DynValue.Nil,
+        "roughnessmap" => SceneNodeTypes.IsSurfaceAppearance(node) ? DynValue.NewString(node.SurfaceAppearanceRoughnessMap) : DynValue.Nil,
+        "metalnessmap" => SceneNodeTypes.IsSurfaceAppearance(node) ? DynValue.NewString(node.SurfaceAppearanceMetalnessMap) : DynValue.Nil,
+        "emissivemaskcontent" => SceneNodeTypes.IsSurfaceAppearance(node) ? DynValue.NewString(node.SurfaceAppearanceEmissiveMask) : DynValue.Nil,
+        "emissivetint" => SceneNodeTypes.IsSurfaceAppearance(node) ? ColorValue(node.SurfaceAppearanceEmissiveTint) : DynValue.Nil,
+        "emissivestrength" => SceneNodeTypes.IsSurfaceAppearance(node) ? DynValue.NewNumber(node.SurfaceAppearanceEmissiveStrength) : DynValue.Nil,
         "backgroundcolor3" => IsGuiObject(node) ? ColorValue(node.Color) : DynValue.Nil,
         "color3" => node.Type is ("SelectionBox" or "SelectionSphere") ? ColorValue(node.Color) : DynValue.Nil,
         "surfacecolor3" => node.Type is ("SelectionBox" or "SelectionSphere") ? ColorValue(node.SurfaceColor3) : DynValue.Nil,
@@ -5714,8 +6297,8 @@ public sealed class LuaXRuntime
         "density" => node.Type == "Atmosphere" ? DynValue.NewNumber(node.Density) : DynValue.Nil,
         "haze" => node.Type == "Atmosphere" ? DynValue.NewNumber(node.Haze) : DynValue.Nil,
         "glare" => node.Type == "Atmosphere" ? DynValue.NewNumber(node.Glare) : DynValue.Nil,
-        "fillcolor" => ColorValue(node.FillColor),
-        "outlinecolor" => ColorValue(node.OutlineColor),
+        "fillcolor" => node.Type == "Highlight" ? ColorValue(node.FillColor) : DynValue.Nil,
+        "outlinecolor" => node.Type == "Highlight" ? ColorValue(node.OutlineColor) : DynValue.Nil,
         "startcolor" => node.Type == "UIGradient" ? ColorValue(node.StartColor) : DynValue.Nil,
         "endcolor" => node.Type == "UIGradient" ? ColorValue(node.EndColor) : DynValue.Nil,
         "paddingleft" => node.Type == "UIPadding" ? CreateUDim(node.PaddingLeft[0], node.PaddingLeft[1]) : DynValue.Nil,
@@ -5728,16 +6311,15 @@ public sealed class LuaXRuntime
         "cellpadding" => node.Type == "UIGridLayout" ? CreateUDim2Value(node.CellPaddingScale, node.CellPadding) : DynValue.Nil,
         "filldirection" => node.Type == "UIListLayout" ? DynValue.NewString(node.LayoutDirection) : node.Type == "UIGridLayout" ? DynValue.NewString(node.FillDirection) : DynValue.Nil,
         "filldirectionmaxcells" => node.Type == "UIGridLayout" ? DynValue.NewNumber(node.FillDirectionMaxCells) : DynValue.Nil,
-        "filltransparency" => DynValue.NewNumber(node.FillTransparency),
-        "outlinetransparency" => DynValue.NewNumber(node.OutlineTransparency),
-        "shape" => DynValue.NewString(node.Shape),
-        "face" => DynValue.NewString(node.Face),
-        "studspertileu" => DynValue.NewNumber(node.StudsPerTileU),
-        "studspertilev" => DynValue.NewNumber(node.StudsPerTileV),
-        "offsetstudsu" => DynValue.NewNumber(node.OffsetStudsU),
-        "offsetstudsv" => DynValue.NewNumber(node.OffsetStudsV),
-        "material" => DynValue.NewString(node.Material),
-        "transparency" => DynValue.NewNumber(node.Transparency),
+        "filltransparency" or "outlinetransparency" => node.Type == "Highlight" ? DynValue.NewNumber(normalizedProperty == "filltransparency" ? node.FillTransparency : node.OutlineTransparency) : DynValue.Nil,
+        "shape" => node.Type == "Part" ? DynValue.NewString(node.Shape) : DynValue.Nil,
+        "face" => node.Type is "Decal" or "Texture" or "SurfaceLight" or "SurfaceGui" ? DynValue.NewString(node.Face) : DynValue.Nil,
+        "studspertileu" => node.Type == "Texture" ? DynValue.NewNumber(node.StudsPerTileU) : DynValue.Nil,
+        "studspertilev" => node.Type == "Texture" ? DynValue.NewNumber(node.StudsPerTileV) : DynValue.Nil,
+        "offsetstudsu" => node.Type == "Texture" ? DynValue.NewNumber(node.OffsetStudsU) : DynValue.Nil,
+        "offsetstudsv" => node.Type == "Texture" ? DynValue.NewNumber(node.OffsetStudsV) : DynValue.Nil,
+        "material" => IsBasePart(node) ? DynValue.NewString(node.Material) : DynValue.Nil,
+        "transparency" => IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam" or "SelectionBox" or "SelectionSphere" or "UIShadow" ? DynValue.NewNumber(node.Transparency) : DynValue.Nil,
         "backgroundtransparency" => IsGuiObject(node) ? DynValue.NewNumber(node.BackgroundTransparency) : DynValue.Nil,
         "texttransparency" => node.Type is "TextLabel" or "TextButton" or "TextBox" ? DynValue.NewNumber(node.TextTransparency) : DynValue.Nil,
         "imagetransparency" => IsGuiObject(node) && node.Type is "ImageLabel" or "ImageButton" ? DynValue.NewNumber(node.ImageTransparency) : DynValue.Nil,
@@ -5755,8 +6337,8 @@ public sealed class LuaXRuntime
         "alwaystop" => node.Type is "BillboardGui" or "SurfaceGui" ? DynValue.NewBoolean(node.AlwaysOnTop) : DynValue.Nil,
         "maxdistance" => node.Type is "BillboardGui" or "SurfaceGui" ? DynValue.NewNumber(node.MaxDistance) : DynValue.Nil,
         "pixelsperstud" => node.Type == "SurfaceGui" ? DynValue.NewNumber(node.PixelsPerStud) : DynValue.Nil,
-        "brightness" => DynValue.NewNumber(node.Brightness),
-        "range" => DynValue.NewNumber(node.Range),
+        "brightness" => node.Type == "Lighting" || SceneNodeTypes.IsLight(node) ? DynValue.NewNumber(node.Brightness) : DynValue.Nil,
+        "range" => SceneNodeTypes.IsLight(node) ? DynValue.NewNumber(node.Range) : DynValue.Nil,
         "heat" => node.Type == "Fire" ? DynValue.NewNumber(node.Heat) : DynValue.Nil,
         "risevelocity" => node.Type == "Smoke" ? DynValue.NewNumber(node.RiseVelocity) : DynValue.Nil,
         "opacity" => node.Type == "Smoke" ? DynValue.NewNumber(node.Opacity) : DynValue.Nil,
@@ -5764,39 +6346,41 @@ public sealed class LuaXRuntime
         "blastradius" => node.Type == "Explosion" ? DynValue.NewNumber(node.BlastRadius) : DynValue.Nil,
         "blastpressure" => node.Type == "Explosion" ? DynValue.NewNumber(node.BlastPressure) : DynValue.Nil,
         "destroyjointradiuspercent" => node.Type == "Explosion" ? DynValue.NewNumber(node.DestroyJointRadiusPercent) : DynValue.Nil,
-        "angle" => DynValue.NewNumber(node.Angle),
-        "actiontext" => DynValue.NewString(node.ActionText),
-        "objecttext" => DynValue.NewString(node.ObjectText),
+        "angle" => node.Type is "SpotLight" or "SurfaceLight" ? DynValue.NewNumber(node.Angle) : DynValue.Nil,
+        "actiontext" => node.Type == "ProximityPrompt" ? DynValue.NewString(node.ActionText) : DynValue.Nil,
+        "objecttext" => node.Type == "ProximityPrompt" ? DynValue.NewString(node.ObjectText) : DynValue.Nil,
         "holdduration" => node.Type == "ProximityPrompt" ? DynValue.NewNumber(node.HoldDuration) : DynValue.Nil,
-        "maxactivationdistance" => DynValue.NewNumber(node.MaxActivationDistance),
-        "volume" => DynValue.NewNumber(node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume),
+        "requireslineofsight" => node.Type == "ProximityPrompt" ? DynValue.NewBoolean(node.RequiresLineOfSight) : DynValue.Nil,
+        "maxactivationdistance" => node.Type is "ProximityPrompt" or "ClickDetector" ? DynValue.NewNumber(node.MaxActivationDistance) : DynValue.Nil,
+        "volume" => node.Type is "Sound" or "SoundGroup" or "SoundService" ? DynValue.NewNumber(node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume) : DynValue.Nil,
         "playbackspeed" => node.Type == "Sound" ? DynValue.NewNumber(node.PlaybackSpeed) : DynValue.Nil,
         "octave" => node.Type == "PitchShiftSoundEffect" ? DynValue.NewNumber(node.PitchShiftOctave) : DynValue.Nil,
         "soundgroup" => node.Type == "Sound" ? GetSoundGroupReferenceValue(node.SoundGroupId) : DynValue.Nil,
-        "looped" => DynValue.NewBoolean(node.Looped),
-        "playing" => DynValue.NewBoolean(node.Playing),
-        "rolloffmindistance" => DynValue.NewNumber(node.RollOffMinDistance),
-        "rolloffmaxdistance" => DynValue.NewNumber(node.RollOffMaxDistance),
-        "texture" => DynValue.NewString(node.Texture),
-        "text" => DynValue.NewString(node.Text),
+        "looped" => node.Type == "Sound" ? DynValue.NewBoolean(node.Looped) : DynValue.Nil,
+        "playing" => node.Type == "Sound" ? DynValue.NewBoolean(node.Playing) : DynValue.Nil,
+        "rolloffmindistance" => node.Type == "Sound" ? DynValue.NewNumber(node.RollOffMinDistance) : DynValue.Nil,
+        "rolloffmaxdistance" => node.Type == "Sound" ? DynValue.NewNumber(node.RollOffMaxDistance) : DynValue.Nil,
+        "texture" => node.Type is "Part" or "ParticleEmitter" or "Trail" or "Decal" or "Texture" ? DynValue.NewString(node.Texture) : DynValue.Nil,
+        "text" => node.Type is "TextLabel" or "TextButton" or "TextBox" ? DynValue.NewString(node.Text) : DynValue.Nil,
         "placeholdertext" => node.Type == "TextBox" ? DynValue.NewString(node.PlaceholderText) : DynValue.Nil,
-        "textcolor" => DynValue.NewString(node.TextColor),
-        "visible" => DynValue.NewBoolean(node.Visible),
+        "textcolor" => node.Type is "TextLabel" or "TextButton" or "TextBox" ? DynValue.NewString(node.TextColor) : DynValue.Nil,
+        "visible" => IsGuiObject(node) ? DynValue.NewBoolean(node.Visible) : DynValue.Nil,
         "displayorder" => node.Type == "ScreenGui" ? DynValue.NewNumber(node.DisplayOrder) : DynValue.Nil,
         "zindex" => IsGuiObject(node) || node.Type == "UIShadow" ? DynValue.NewNumber(node.ZIndex) : DynValue.Nil,
         "layoutorder" => IsGuiObject(node) ? DynValue.NewNumber(node.LayoutOrder) : DynValue.Nil,
-        "anchored" => DynValue.NewBoolean(node.Anchored),
-        "cancollide" => DynValue.NewBoolean(node.CanCollide),
-        "cantouch" => DynValue.NewBoolean(node.CanTouch),
+        "anchored" => IsBasePart(node) ? DynValue.NewBoolean(node.Anchored) : DynValue.Nil,
+        "cancollide" => IsBasePart(node) ? DynValue.NewBoolean(node.CanCollide) : DynValue.Nil,
+        "cantouch" => IsBasePart(node) ? DynValue.NewBoolean(node.CanTouch) : DynValue.Nil,
         "canquery" => IsBasePart(node) ? DynValue.NewBoolean(node.CanQuery) : DynValue.Nil,
-        "velocity" or "assemblylinearvelocity" => VectorValue(node.Velocity),
+        "velocity" or "assemblylinearvelocity" => IsBasePart(node) ? VectorValue(node.Velocity) : DynValue.Nil,
         "assemblyangularvelocity" => IsBasePart(node) ? VectorValue(node.AssemblyAngularVelocity) : DynValue.Nil,
-        "castshadow" => DynValue.NewBoolean(node.CastShadow),
-        "gravity" => DynValue.NewNumber(node.Gravity),
-        "ambient" => ColorValue(node.Ambient),
-        "clocktime" => DynValue.NewNumber(node.ClockTime),
-        "globalshadows" => DynValue.NewBoolean(project.Settings.Shadows),
-        "automanagecharacter" => DynValue.NewBoolean(node.AutoManageCharacter),
+        "castshadow" => IsBasePart(node) ? DynValue.NewBoolean(node.CastShadow) : DynValue.Nil,
+        "gravity" => node.Type == "Workspace" ? DynValue.NewNumber(node.Gravity) : DynValue.Nil,
+        "currentcamera" => node.Type == "Workspace" ? GetCurrentCameraReference() : DynValue.Nil,
+        "ambient" => node.Type == "Lighting" ? ColorValue(node.Ambient) : DynValue.Nil,
+        "clocktime" => node.Type == "Lighting" ? DynValue.NewNumber(node.ClockTime) : DynValue.Nil,
+        "globalshadows" => node.Type == "Lighting" ? DynValue.NewBoolean(project.Settings.Shadows) : DynValue.Nil,
+        "automanagecharacter" => node.Type == "Workspace" ? DynValue.NewBoolean(node.AutoManageCharacter) : DynValue.Nil,
         "character" => GetCharacterValue(node),
         "team" => GetTeamValue(node),
         "teamcolor" => node.Type is "Team" or "SpawnLocation" ? ColorValue(node.TeamColor) : node.Type == "Player" ? ColorValue(FindNode(node.Team)?.TeamColor ?? "#FFFFFF") : DynValue.Nil,
@@ -5804,7 +6388,7 @@ public sealed class LuaXRuntime
         "neutral" => node.Type == "SpawnLocation" ? DynValue.NewBoolean(node.Neutral) : DynValue.Nil,
         "allowteamchangeontouch" => node.Type == "SpawnLocation" ? DynValue.NewBoolean(node.AllowTeamChangeOnTouch) : DynValue.Nil,
         "duration" => node.Type == "SpawnLocation" ? DynValue.NewNumber(node.Duration) : DynValue.Nil,
-        "occupant" => GetOccupantValue(node),
+        "occupant" => node.Type is "Seat" or "VehicleSeat" ? GetOccupantValue(node) : DynValue.Nil,
         "disabled" => node.Type == "VehicleSeat" ? DynValue.NewBoolean(node.VehicleSeatDisabled) : DynValue.Nil,
         "headsupdisplay" => node.Type == "VehicleSeat" ? DynValue.NewBoolean(node.VehicleSeatHeadsUpDisplay) : DynValue.Nil,
         "maxspeed" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatMaxSpeed) : DynValue.Nil,
@@ -5813,10 +6397,10 @@ public sealed class LuaXRuntime
         "throttlefloat" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatThrottleFloat) : DynValue.Nil,
         "steerfloat" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatSteerFloat) : DynValue.Nil,
         "arehingesdetected" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatAreHingesDetected) : DynValue.Nil,
-        "health" => DynValue.NewNumber(node.Health),
-        "maxhealth" => DynValue.NewNumber(node.MaxHealth),
-        "walkspeed" => DynValue.NewNumber(node.WalkSpeed),
-        "jumppower" => DynValue.NewNumber(node.JumpPower),
+        "health" => node.Type == "Humanoid" ? DynValue.NewNumber(node.Health) : DynValue.Nil,
+        "maxhealth" => node.Type == "Humanoid" ? DynValue.NewNumber(node.MaxHealth) : DynValue.Nil,
+        "walkspeed" => node.Type == "Humanoid" ? DynValue.NewNumber(node.WalkSpeed) : DynValue.Nil,
+        "jumppower" => node.Type == "Humanoid" ? DynValue.NewNumber(node.JumpPower) : DynValue.Nil,
         "value" => SceneNodeTypes.IsValueObject(node) ? GetValueObjectValue(node) : DynValue.Nil,
         "asset" => DynValue.NewString(node.Asset),
         "archivable" => DynValue.NewBoolean(node.Archivable),
@@ -5826,13 +6410,10 @@ public sealed class LuaXRuntime
         "cameramode" or "mode" => DynValue.NewString(node.Type == "UIShadow" ? node.ShadowMode : node.CameraMode),
         "subject" => FindNode(node.Subject) is { } subjectNode && IsBasePart(subjectNode) && instances.TryGetValue(subjectNode.Id, out var subject) ? DynValue.NewTable(subject) : DynValue.Nil,
         "primarypart" => node.Type == "Model" ? GetModelPrimaryPartReference(node) : DynValue.Nil,
-        "part0" => GetPartReferenceValue(node.Part0),
-        "part1" => GetPartReferenceValue(node.Part1),
-        "attachment0" => GetAttachmentReferenceValue(node.Attachment0),
-        "attachment1" => GetAttachmentReferenceValue(node.Attachment1),
-        "width0" => DynValue.NewNumber(node.Width0),
-        "width1" => DynValue.NewNumber(node.Width1),
-        "fieldofview" => DynValue.NewNumber(node.FieldOfView),
+        "part0" or "part1" => node.Type is "WeldConstraint" or "NoCollisionConstraint" ? GetPartReferenceValue(normalizedProperty == "part0" ? node.Part0 : node.Part1) : DynValue.Nil,
+        "attachment0" or "attachment1" => node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" ? GetAttachmentReferenceValue(normalizedProperty == "attachment0" ? node.Attachment0 : node.Attachment1) : DynValue.Nil,
+        "width0" or "width1" => node.Type == "Beam" ? DynValue.NewNumber(normalizedProperty == "width0" ? node.Width0 : node.Width1) : DynValue.Nil,
+        "fieldofview" => node.Type == "Camera" ? DynValue.NewNumber(node.FieldOfView) : DynValue.Nil,
         "cornerradius" => node.Type == "UICorner" ? CornerUDim(node, "CornerRadius") : DynValue.Nil,
         "topleftradius" => node.Type == "UICorner" ? CornerUDim(node, "TopLeftRadius") : DynValue.Nil,
         "toprightradius" => node.Type == "UICorner" ? CornerUDim(node, "TopRightRadius") : DynValue.Nil,
@@ -5845,11 +6426,11 @@ public sealed class LuaXRuntime
         "showbehindparent" => node.Type == "UIShadow" ? DynValue.NewBoolean(node.ShadowShowBehindParent) : DynValue.Nil,
         "strokecolor" => DynValue.NewString(node.StrokeColor),
         "strokethickness" => DynValue.NewNumber(node.StrokeThickness),
-        "textsize" => DynValue.NewNumber(node.TextSize),
-        "layoutspacing" => DynValue.NewNumber(node.LayoutSpacing),
-        "tablecolumns" => DynValue.NewNumber(node.TableColumns),
-        "aspectratio" => DynValue.NewNumber(node.AspectRatio),
-        "layoutdirection" => DynValue.NewString(node.LayoutDirection),
+        "textsize" => node.Type is "TextLabel" or "TextButton" or "TextBox" ? DynValue.NewNumber(node.TextSize) : DynValue.Nil,
+        "layoutspacing" => node.Type is "UIListLayout" or "UITableLayout" ? DynValue.NewNumber(node.LayoutSpacing) : DynValue.Nil,
+        "tablecolumns" => node.Type == "UITableLayout" ? DynValue.NewNumber(node.TableColumns) : DynValue.Nil,
+        "aspectratio" => node.Type is "UIAspectRatio" or "UIAspectRatioConstraint" ? DynValue.NewNumber(node.AspectRatio) : DynValue.Nil,
+        "layoutdirection" => node.Type == "UIListLayout" ? DynValue.NewString(node.LayoutDirection) : DynValue.Nil,
         "horizontalalignment" => node.Type == "UIListLayout" ? DynValue.NewString(node.HorizontalAlignment) : DynValue.Nil,
         "verticalalignment" => node.Type == "UIListLayout" ? DynValue.NewString(node.VerticalAlignment) : DynValue.Nil,
         "sortorder" => node.Type == "UIListLayout" ? DynValue.NewString(node.SortOrder) : DynValue.Nil,
@@ -5976,13 +6557,6 @@ public sealed class LuaXRuntime
         return node is not null && instances.TryGetValue(node.Id, out var instance) ? DynValue.NewTable(instance) : DynValue.Nil;
     }
 
-    private DynValue FindChild(Table parent, string name)
-    {
-        var node = FindNode(parent.Get("Id").CastToString() ?? string.Empty) ?? project.Workspace;
-        var child = (node?.Children ?? project.Workspace.Children).FirstOrDefault(item => item.Name == name || item.Id == name);
-        return child is not null && instances.TryGetValue(child.Id, out var instance) ? DynValue.NewTable(instance) : DynValue.Nil;
-    }
-
     private int GetInstanceMethodArgumentIndex(SceneNode node, CallbackArguments args) =>
         args.Count > 0 && ReadNodeArgument(args[0])?.Id == node.Id ? 1 : 0;
 
@@ -5994,6 +6568,27 @@ public sealed class LuaXRuntime
         var candidates = recursive ? GameProjectStore.Flatten(parent.Children) : parent.Children;
         var child = candidates.FirstOrDefault(node => node.Name == name || node.Id == name);
         return child is not null && instances.TryGetValue(child.Id, out var instance) ? DynValue.NewTable(instance) : DynValue.Nil;
+    }
+
+    private DynValue FindFirstAncestorByName(SceneNode node, CallbackArguments args)
+    {
+        var index = GetInstanceMethodArgumentIndex(node, args);
+        var name = args.Count > index ? args[index].CastToString() : null;
+        if (name is null) return DynValue.Nil;
+        for (var parent = FindParentNode(node); parent is not null; parent = FindParentNode(parent))
+            if (parent.Name == name && instances.TryGetValue(parent.Id, out var instance)) return DynValue.NewTable(instance);
+        return DynValue.Nil;
+    }
+
+    private DynValue FindFirstAncestorByClass(SceneNode node, CallbackArguments args, bool whichIsA)
+    {
+        var index = GetInstanceMethodArgumentIndex(node, args);
+        var className = args.Count > index ? args[index].CastToString() : null;
+        if (className is null) return DynValue.Nil;
+        for (var parent = FindParentNode(node); parent is not null; parent = FindParentNode(parent))
+            if ((whichIsA ? IsA(parent, className) : parent.Type == className) && instances.TryGetValue(parent.Id, out var instance))
+                return DynValue.NewTable(instance);
+        return DynValue.Nil;
     }
 
     private DynValue GetChildren(SceneNode node)
@@ -6020,6 +6615,7 @@ public sealed class LuaXRuntime
         "SlidingBallConstraint" => node.Type is "PrismaticConstraint" or "CylindricalConstraint",
         "BasePart" => IsBasePart(node),
         "Light" => SceneNodeTypes.IsLight(node),
+        "PostEffect" => SceneNodeTypes.IsPostEffect(node),
         "SoundEffect" => node.Type == "PitchShiftSoundEffect",
         "ValueBase" => SceneNodeTypes.IsValueObject(node),
         "GuiBase3d" => node.Type is "SelectionBox" or "SelectionSphere",
@@ -6038,6 +6634,19 @@ public sealed class LuaXRuntime
     };
 
     private static bool IsBasePart(SceneNode? node) => SceneNodeTypes.IsBasePart(node);
+
+    private bool HasPositionProperty(SceneNode node) =>
+        IsBasePart(node) || node.Type is "Attachment" or "Model" or "Camera" || IsGuiObject(node);
+
+    private bool HasRotationProperty(SceneNode node) =>
+        IsBasePart(node) || node.Type is "Attachment" or "Model" or "Camera" or "AlignOrientation" || IsGuiObject(node);
+
+    private bool HasSizeProperty(SceneNode node) =>
+        IsBasePart(node) || node.Type is "BillboardGui" or "ParticleEmitter" or "PrismaticConstraint" or "CylindricalConstraint"
+        || IsGuiObject(node) || SceneNodeTypes.IsSizedParticleEffect(node) || SceneNodeTypes.IsPostEffect(node);
+
+    private static float[] LimitVector(float[] vector, float minimum, float maximum) =>
+        vector.Select(component => Math.Clamp(float.IsFinite(component) ? component : 0, minimum, maximum)).ToArray();
 
     private DynValue GetAssetPath(CallbackArguments args)
     {
@@ -6152,8 +6761,8 @@ public sealed class LuaXRuntime
                 {
                     var priorPivot = SceneModelService.GetPivot(node);
                     var priorRotation = (float[])node.Rotation.Clone();
-                    var requestedPosition = ReadVector(instance.Get("Position"), priorPivot);
-                    var requestedRotation = ReadVector(instance.Get("Rotation"), priorRotation);
+                    var requestedPosition = LimitVector(ReadVector(instance.Get("Position"), priorPivot), -1000000, 1000000);
+                    var requestedRotation = LimitVector(ReadVector(instance.Get("Rotation"), priorRotation), -360000, 360000);
                     var positionWasSet = !requestedPosition.SequenceEqual(priorPivot);
                     var rotationWasSet = !requestedRotation.SequenceEqual(priorRotation);
                     var pending = CapturePendingModelDescendantWrites(node);
@@ -6183,11 +6792,11 @@ public sealed class LuaXRuntime
                 if (!node.AnchorPoint.SequenceEqual(anchorPoint)) { node.AnchorPoint = anchorPoint; MarkChanged(node, "AnchorPoint"); }
                 instance.Set("AnchorPoint", Vector2Value(node.AnchorPoint));
             }
-            if (instance.Get("Position").Type == DataType.Table)
+            if (HasPositionProperty(node) && instance.Get("Position").Type == DataType.Table)
             {
                 if (node.Type == "Model")
                 {
-                    var position = ReadVector(instance.Get("Position"), SceneModelService.GetPivot(node));
+                    var position = LimitVector(ReadVector(instance.Get("Position"), SceneModelService.GetPivot(node)), -1000000, 1000000);
                     var pending = CapturePendingModelDescendantWrites(node);
                     if (SceneModelService.MoveTo(node, position))
                     {
@@ -6206,13 +6815,13 @@ public sealed class LuaXRuntime
                 }
                 else
                 {
-                    var position = ReadVector(instance.Get("Position"), node.Position);
+                    var position = LimitVector(ReadVector(instance.Get("Position"), node.Position), -1000000, 1000000);
                     if (!node.Position.SequenceEqual(position)) { node.Position = position; MarkChanged(node, "Position"); }
                 }
             }
-            if (instance.Get("Rotation").Type == DataType.Table)
+            if (HasRotationProperty(node) && instance.Get("Rotation").Type == DataType.Table)
             {
-                var rotation = ReadVector(instance.Get("Rotation"), node.Rotation);
+                var rotation = LimitVector(ReadVector(instance.Get("Rotation"), node.Rotation), -360000, 360000);
                 if (node.Type == "AlignOrientation")
                 {
                     rotation = rotation.Select(component => Math.Clamp(component, -360000, 360000)).ToArray();
@@ -6239,9 +6848,9 @@ public sealed class LuaXRuntime
                     MarkChanged(node, "Size");
                 }
             }
-            else if (SceneNodeTypes.IsSizedParticleEffect(node) && instance.Get("Size").Type == DataType.Number && double.IsFinite(instance.Get("Size").Number))
-                Assign(node, "Size", node.EffectSize, (float)Math.Clamp(instance.Get("Size").Number, node.Type == "Fire" ? 2 : .1f, node.Type == "Fire" ? 30 : 100), value => node.EffectSize = value);
-            else if (instance.Get("Size").Type == DataType.Table && !SceneNodeTypes.IsSizedParticleEffect(node) && node.Type != "ParticleEmitter")
+            else if ((SceneNodeTypes.IsSizedParticleEffect(node) || SceneNodeTypes.IsPostEffect(node)) && instance.Get("Size").Type == DataType.Number && double.IsFinite(instance.Get("Size").Number))
+                Assign(node, "Size", node.EffectSize, (float)Math.Clamp(instance.Get("Size").Number, node.Type == "Fire" ? 2 : SceneNodeTypes.IsPostEffect(node) ? 0 : .1f, node.Type == "Fire" ? 30 : SceneNodeTypes.IsPostEffect(node) ? 56 : 100), value => node.EffectSize = value);
+            else if (HasSizeProperty(node) && instance.Get("Size").Type == DataType.Table && !SceneNodeTypes.IsSizedParticleEffect(node) && node.Type != "ParticleEmitter")
             {
                 if ((IsGuiObject(node) || node.Type == "BillboardGui") && TryReadUDim2(instance.Get("Size"), out var sizeScale, out var sizeOffset))
                 {
@@ -6254,7 +6863,7 @@ public sealed class LuaXRuntime
                 }
                 else
                 {
-                    var size = ReadVector(instance.Get("Size"), node.Size);
+                    var size = LimitVector(ReadVector(instance.Get("Size"), node.Size), .001f, 1000000);
                     if (!node.Size.SequenceEqual(size)) { node.Size = size; MarkChanged(node, "Size"); }
                 }
             }
@@ -6279,7 +6888,19 @@ public sealed class LuaXRuntime
                     }
                 }
             }
+            else if (SceneNodeTypes.IsSurfaceAppearance(node)) Assign(node, "Color", node.SurfaceAppearanceColor, ReadColor(instance.Get("Color"), node.SurfaceAppearanceColor), value => node.SurfaceAppearanceColor = value);
             else if (node.Type is not ("SelectionBox" or "SelectionSphere")) Assign(node, "Color", node.Color, ReadColor(instance.Get("Color"), node.Color), value => node.Color = value);
+            if (SceneNodeTypes.IsSurfaceAppearance(node))
+            {
+                Assign(node, "ColorMap", node.SurfaceAppearanceColorMap, instance.Get("ColorMap").CastToString() ?? string.Empty, value => node.SurfaceAppearanceColorMap = value);
+                Assign(node, "NormalMap", node.SurfaceAppearanceNormalMap, instance.Get("NormalMap").CastToString() ?? string.Empty, value => node.SurfaceAppearanceNormalMap = value);
+                Assign(node, "RoughnessMap", node.SurfaceAppearanceRoughnessMap, instance.Get("RoughnessMap").CastToString() ?? string.Empty, value => node.SurfaceAppearanceRoughnessMap = value);
+                Assign(node, "MetalnessMap", node.SurfaceAppearanceMetalnessMap, instance.Get("MetalnessMap").CastToString() ?? string.Empty, value => node.SurfaceAppearanceMetalnessMap = value);
+                Assign(node, "EmissiveMaskContent", node.SurfaceAppearanceEmissiveMask, instance.Get("EmissiveMaskContent").CastToString() ?? string.Empty, value => node.SurfaceAppearanceEmissiveMask = value);
+                Assign(node, "EmissiveTint", node.SurfaceAppearanceEmissiveTint, ReadColor(instance.Get("EmissiveTint"), node.SurfaceAppearanceEmissiveTint), value => node.SurfaceAppearanceEmissiveTint = value);
+                if (instance.Get("EmissiveStrength").Type == DataType.Number && double.IsFinite(instance.Get("EmissiveStrength").Number))
+                    Assign(node, "EmissiveStrength", node.SurfaceAppearanceEmissiveStrength, (float)Math.Clamp(instance.Get("EmissiveStrength").Number, 0, 100), value => node.SurfaceAppearanceEmissiveStrength = value);
+            }
             if (node.Type == "Fire") Assign(node, "SecondaryColor", node.SecondaryColor, ReadColor(instance.Get("SecondaryColor"), node.SecondaryColor), value => node.SecondaryColor = value);
             if (node.Type == "UIGradient")
             {
@@ -6371,7 +6992,7 @@ public sealed class LuaXRuntime
                     else StopScripts([node.Id]);
                 }
             }
-            if (instance.Get("Brightness").Type == DataType.Number && double.IsFinite(instance.Get("Brightness").Number)) Assign(node, "Brightness", node.Brightness, (float)Math.Clamp(instance.Get("Brightness").Number, 0, 8), value => node.Brightness = value);
+            if ((node.Type == "Lighting" || SceneNodeTypes.IsLight(node)) && instance.Get("Brightness").Type == DataType.Number && double.IsFinite(instance.Get("Brightness").Number)) Assign(node, "Brightness", node.Brightness, (float)Math.Clamp(instance.Get("Brightness").Number, 0, 8), value => node.Brightness = value);
             if (node.Type == "Lighting")
             {
                 Assign(node, "Ambient", node.Ambient, ReadColor(instance.Get("Ambient"), node.Ambient), value => node.Ambient = value);
@@ -6380,7 +7001,7 @@ public sealed class LuaXRuntime
                 if (instance.Get("GlobalShadows").Type == DataType.Boolean)
                     Assign(node, "GlobalShadows", project.Settings.Shadows, instance.Get("GlobalShadows").Boolean, value => project.Settings.Shadows = value);
             }
-            if (instance.Get("Range").Type == DataType.Number && double.IsFinite(instance.Get("Range").Number)) Assign(node, "Range", node.Range, (float)Math.Clamp(instance.Get("Range").Number, 1, 1000), value => node.Range = value);
+            if (SceneNodeTypes.IsLight(node) && instance.Get("Range").Type == DataType.Number && double.IsFinite(instance.Get("Range").Number)) Assign(node, "Range", node.Range, (float)Math.Clamp(instance.Get("Range").Number, 1, 1000), value => node.Range = value);
             if (SceneNodeTypes.IsParticleEffect(node))
             {
                 if (instance.Get("TimeScale").Type == DataType.Number && double.IsFinite(instance.Get("TimeScale").Number))
@@ -6423,13 +7044,15 @@ public sealed class LuaXRuntime
                 if (instance.Get("BlastPressure").Type == DataType.Number && double.IsFinite(instance.Get("BlastPressure").Number)) Assign(node, "BlastPressure", node.BlastPressure, (float)Math.Clamp(instance.Get("BlastPressure").Number, 0, 1000000), value => node.BlastPressure = value);
                 if (instance.Get("DestroyJointRadiusPercent").Type == DataType.Number && double.IsFinite(instance.Get("DestroyJointRadiusPercent").Number)) Assign(node, "DestroyJointRadiusPercent", node.DestroyJointRadiusPercent, (float)Math.Clamp(instance.Get("DestroyJointRadiusPercent").Number, 0, 1), value => node.DestroyJointRadiusPercent = value);
             }
-            if (instance.Get("Angle").Type == DataType.Number && double.IsFinite(instance.Get("Angle").Number)) Assign(node, "Angle", node.Angle, (float)Math.Clamp(instance.Get("Angle").Number, 1, 175), value => node.Angle = value);
+            if ((node.Type is "SpotLight" or "SurfaceLight") && instance.Get("Angle").Type == DataType.Number && double.IsFinite(instance.Get("Angle").Number)) Assign(node, "Angle", node.Angle, (float)Math.Clamp(instance.Get("Angle").Number, 1, 175), value => node.Angle = value);
             if (node.Type == "ProximityPrompt")
             {
                 if (instance.Get("ActionText").CastToString() is { } actionText) Assign(node, "ActionText", node.ActionText, actionText, value => node.ActionText = value);
                 if (instance.Get("ObjectText").CastToString() is { } objectText) Assign(node, "ObjectText", node.ObjectText, objectText, value => node.ObjectText = value);
                 if (instance.Get("HoldDuration").Type == DataType.Number && double.IsFinite(instance.Get("HoldDuration").Number))
                     Assign(node, "HoldDuration", node.HoldDuration, (float)Math.Clamp(instance.Get("HoldDuration").Number, 0, 60), value => node.HoldDuration = value);
+                if (instance.Get("RequiresLineOfSight").Type == DataType.Boolean)
+                    Assign(node, "RequiresLineOfSight", node.RequiresLineOfSight, instance.Get("RequiresLineOfSight").Boolean, value => node.RequiresLineOfSight = value);
             }
             if (node.Type is "ProximityPrompt" or "ClickDetector"
                 && instance.Get("MaxActivationDistance").Type == DataType.Number && double.IsFinite(instance.Get("MaxActivationDistance").Number))
@@ -7341,7 +7964,16 @@ public sealed class LuaXRuntime
                 var characterValue = instance.Get("Character");
                 var characterNode = ReadNodeArgument(characterValue);
                 if (characterValue.Type == DataType.Nil || characterNode?.Type == "Model")
-                    Assign(node, "Character", node.Character, characterNode?.Id ?? string.Empty, value => node.Character = value);
+                {
+                    var previousCharacter = node.Character;
+                    var nextCharacter = characterNode?.Id ?? string.Empty;
+                    if (previousCharacter != nextCharacter)
+                    {
+                        FirePlayerCharacterSignal(node, "CharacterRemoving", previousCharacter);
+                        Assign(node, "Character", previousCharacter, nextCharacter, value => node.Character = value);
+                        FirePlayerCharacterSignal(node, "CharacterAdded", nextCharacter);
+                    }
+                }
                 var teamValue = instance.Get("Team");
                 var teamNode = ReadNodeArgument(teamValue);
                 if (teamValue.Type == DataType.Nil || teamNode?.Type == "Team" && project.Teams.Children.Contains(teamNode))
@@ -7398,6 +8030,7 @@ public sealed class LuaXRuntime
             else instance.Set("Archivable", DynValue.NewBoolean(node.Archivable));
             if (node.Type == "Workspace")
             {
+                instance.Set("CurrentCamera", GetCurrentCameraReference());
                 if (instance.Get("SkyboxFront").CastToString() is { } skyboxFront) Assign(node, "SkyboxFront", node.SkyboxFront, skyboxFront, value => node.SkyboxFront = value);
                 if (instance.Get("SkyboxBack").CastToString() is { } skyboxBack) Assign(node, "SkyboxBack", node.SkyboxBack, skyboxBack, value => node.SkyboxBack = value);
                 if (instance.Get("SkyboxLeft").CastToString() is { } skyboxLeft) Assign(node, "SkyboxLeft", node.SkyboxLeft, skyboxLeft, value => node.SkyboxLeft = value);
@@ -7476,6 +8109,87 @@ public sealed class LuaXRuntime
         runtimeTypeTags.Add(table, new LuaXTypeTag("Vector2"));
         table.Set("X", DynValue.NewNumber(values[0]));
         table.Set("Y", DynValue.NewNumber(values[1]));
+        table.Set(1, DynValue.NewNumber(values[0]));
+        table.Set(2, DynValue.NewNumber(values[1]));
+        var magnitude = (float)Math.Sqrt(values[0] * values[0] + values[1] * values[1]);
+        table.Set("Magnitude", DynValue.NewNumber(magnitude));
+        var divisor = magnitude > 0 ? magnitude : 1;
+        table.Set("Unit", Vector2ValueWithoutDerivedProperties([values[0] / divisor, values[1] / divisor]));
+        table.Set("Perpendicular", Vector2ValueWithoutDerivedProperties([-values[1], values[0]]));
+        table.Set("Dot", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(table, args);
+            if (args.Count <= index || !TryReadVector2(args[index], out var other)) return DynValue.Nil;
+            return DynValue.NewNumber(values[0] * other[0] + values[1] * other[1]);
+        }));
+        table.Set("Lerp", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(table, args);
+            if (args.Count <= index + 1 || args[index + 1].Type != DataType.Number || !double.IsFinite(args[index + 1].Number)
+                || !TryReadVector2(args[index], out var other)) return DynValue.Nil;
+            var alpha = (float)args[index + 1].Number;
+            return Vector2Value([values[0] + (other[0] - values[0]) * alpha, values[1] + (other[1] - values[1]) * alpha]);
+        }));
+        table.Set("Cross", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(table, args);
+            return args.Count > index && TryReadVector2(args[index], out var other)
+                ? DynValue.NewNumber(values[0] * other[1] - values[1] * other[0]) : DynValue.Nil;
+        }));
+        table.Set("Angle", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(table, args);
+            if (args.Count <= index || !TryReadVector2(args[index], out var other)) return DynValue.Nil;
+            var otherMagnitude = Math.Sqrt(other[0] * other[0] + other[1] * other[1]);
+            return DynValue.NewNumber(magnitude == 0 || otherMagnitude == 0 ? 0
+                : Math.Acos(Math.Clamp((values[0] * other[0] + values[1] * other[1]) / (magnitude * otherMagnitude), -1, 1)));
+        }));
+        table.Set("FuzzyEq", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(table, args);
+            if (args.Count <= index || !TryReadVector2(args[index], out var other)) return DynValue.NewBoolean(false);
+            var epsilon = args.Count > index + 1 && args[index + 1].Type == DataType.Number && double.IsFinite(args[index + 1].Number)
+                ? (float)Math.Clamp(args[index + 1].Number, 0, 1000000) : 0.00001f;
+            return DynValue.NewBoolean(Math.Abs(values[0] - other[0]) <= epsilon && Math.Abs(values[1] - other[1]) <= epsilon);
+        }));
+        table.Set("Abs", DynValue.NewCallback((_, _) => Vector2Value([Math.Abs(values[0]), Math.Abs(values[1])])));
+        table.Set("Ceil", DynValue.NewCallback((_, _) => Vector2Value([MathF.Ceiling(values[0]), MathF.Ceiling(values[1])])));
+        table.Set("Floor", DynValue.NewCallback((_, _) => Vector2Value([MathF.Floor(values[0]), MathF.Floor(values[1])])));
+        table.Set("Sign", DynValue.NewCallback((_, _) => Vector2Value([MathF.Sign(values[0]), MathF.Sign(values[1])])));
+        table.Set("Min", DynValue.NewCallback((_, args) => Vector2ComponentExtremum(table, args, Math.Min)));
+        table.Set("Max", DynValue.NewCallback((_, args) => Vector2ComponentExtremum(table, args, Math.Max)));
+        table.Set("ClampMagnitude", DynValue.NewCallback((_, args) =>
+        {
+            var maxMagnitude = GetVectorMethodArgumentIndex(table, args);
+            if (args.Count <= maxMagnitude || args[maxMagnitude].Type != DataType.Number || !double.IsFinite(args[maxMagnitude].Number)) return DynValue.Nil;
+            var limit = Math.Max(0, args[maxMagnitude].Number);
+            return magnitude <= limit || magnitude == 0 ? Vector2Value(values)
+                : Vector2Value([values[0] / magnitude * (float)limit, values[1] / magnitude * (float)limit]);
+        }));
+        table.MetaTable = vector2Metatable;
+        table.ReadOnly = true;
+        return DynValue.NewTable(table);
+    }
+
+    private DynValue Vector2ComponentExtremum(Table receiver, CallbackArguments args, Func<float, float, float> operation)
+    {
+        var index = GetVectorMethodArgumentIndex(receiver, args);
+        if (args.Count <= index || !TryReadVector2(args[index], out var other)) return DynValue.Nil;
+        var values = ReadVector2(receiver);
+        return Vector2Value([operation(values[0], other[0]), operation(values[1], other[1])]);
+    }
+
+    private static float[] ReadVector2(Table value) => [(float)value.Get("X").Number, (float)value.Get("Y").Number];
+
+    private DynValue Vector2ValueWithoutDerivedProperties(float[] values)
+    {
+        var table = new Table(script);
+        runtimeTypeTags.Add(table, new LuaXTypeTag("Vector2"));
+        table.Set("X", DynValue.NewNumber(values[0]));
+        table.Set("Y", DynValue.NewNumber(values[1]));
+        table.Set(1, DynValue.NewNumber(values[0]));
+        table.Set(2, DynValue.NewNumber(values[1]));
+        table.MetaTable = vector2Metatable;
         table.ReadOnly = true;
         return DynValue.NewTable(table);
     }
@@ -7687,6 +8401,38 @@ public sealed class LuaXRuntime
             var other = ReadVector(args[index], [0, 0, 0]);
             var alpha = (float)args[index + 1].Number;
             return VectorValue([values[0] + (other[0] - values[0]) * alpha, values[1] + (other[1] - values[1]) * alpha, values[2] + (other[2] - values[2]) * alpha]);
+        }));
+        table.Set("Angle", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(table, args);
+            if (args.Count <= index) return DynValue.Nil;
+            var other = ReadVector(args[index], [0, 0, 0]);
+            var otherMagnitude = Math.Sqrt(other.Sum(value => value * value));
+            return DynValue.NewNumber(magnitude == 0 || otherMagnitude == 0 ? 0
+                : Math.Acos(Math.Clamp((values[0] * other[0] + values[1] * other[1] + values[2] * other[2]) / (magnitude * otherMagnitude), -1, 1)));
+        }));
+        table.Set("FuzzyEq", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(table, args);
+            if (args.Count <= index) return DynValue.NewBoolean(false);
+            var other = ReadVector(args[index], [0, 0, 0]);
+            var epsilon = args.Count > index + 1 && args[index + 1].Type == DataType.Number && double.IsFinite(args[index + 1].Number)
+                ? (float)Math.Clamp(args[index + 1].Number, 0, 1000000) : 0.00001f;
+            return DynValue.NewBoolean(Enumerable.Range(0, 3).All(axis => Math.Abs(values[axis] - other[axis]) <= epsilon));
+        }));
+        table.Set("Abs", DynValue.NewCallback((_, _) => VectorValue(values.Select(Math.Abs).ToArray())));
+        table.Set("Ceil", DynValue.NewCallback((_, _) => VectorValue(values.Select(MathF.Ceiling).ToArray())));
+        table.Set("Floor", DynValue.NewCallback((_, _) => VectorValue(values.Select(MathF.Floor).ToArray())));
+        table.Set("Sign", DynValue.NewCallback((_, _) => VectorValue(values.Select(value => (float)MathF.Sign(value)).ToArray())));
+        table.Set("Min", DynValue.NewCallback((_, args) => Vector3ComponentExtremum(table, args, Math.Min)));
+        table.Set("Max", DynValue.NewCallback((_, args) => Vector3ComponentExtremum(table, args, Math.Max)));
+        table.Set("ClampMagnitude", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetVectorMethodArgumentIndex(table, args);
+            if (args.Count <= index || args[index].Type != DataType.Number || !double.IsFinite(args[index].Number)) return DynValue.Nil;
+            var limit = Math.Max(0, args[index].Number);
+            return magnitude <= limit || magnitude == 0 ? VectorValue(values)
+                : VectorValue(values.Select(value => value / magnitude * (float)limit).ToArray());
         }));
         table.MetaTable = vector3Metatable;
         table.ReadOnly = true;
