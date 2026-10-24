@@ -5,8 +5,27 @@ namespace BullerStudio.Services;
 
 public static class SceneModelService
 {
+    public static bool ContainsPrimaryPart(SceneNode model, string partId) => model.Type == "Model"
+        && GameProjectStore.Flatten(model.Children).Any(node => node.Id == partId && SceneNodeTypes.IsBasePart(node));
+
+    public static bool SetPrimaryPart(SceneNode model, SceneNode? part)
+    {
+        if (model.Type != "Model" || part is not null && (!SceneNodeTypes.IsBasePart(part) || !ContainsPrimaryPart(model, part.Id))) return false;
+        model.PrimaryPart = part?.Id ?? string.Empty;
+        model.HasModelPivot = part is not null;
+        if (part is not null)
+        {
+            model.Position = (float[])part.Position.Clone();
+            model.Rotation = (float[])part.Rotation.Clone();
+        }
+        return true;
+    }
+
     public static float[] GetPivot(SceneNode model)
     {
+        if (model.Type == "Model" && !string.IsNullOrEmpty(model.PrimaryPart)
+            && GameProjectStore.Flatten(model.Children).FirstOrDefault(node => node.Id == model.PrimaryPart && SceneNodeTypes.IsBasePart(node)) is { } primaryPart)
+            return (float[])primaryPart.Position.Clone();
         if (model.HasModelPivot) return (float[])model.Position.Clone();
         var parts = GameProjectStore.Flatten(model.Children)
             .Where(node => SceneNodeTypes.IsBasePart(node) || node.Type == "ImageLabel")

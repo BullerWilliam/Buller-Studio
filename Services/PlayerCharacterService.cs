@@ -5,12 +5,14 @@ namespace BullerStudio.Services;
 public sealed class PlayerCharacterService
 {
     private readonly GameProject project;
+    private readonly SceneNode player;
     private readonly (SceneNode Node, float[] Offset)[] body;
     private float facingYaw;
 
-    public PlayerCharacterService(GameProject project)
+    public PlayerCharacterService(GameProject project, SceneNode player)
     {
         this.project = project;
+        this.player = player;
         var name = "PlayerCharacter";
         var existingNames = GameProjectStore.Flatten(project.Workspace.Children).Select(node => node.Name).ToHashSet(StringComparer.Ordinal);
         for (var suffix = 2; existingNames.Contains(name); suffix++) name = $"PlayerCharacter{suffix}";
@@ -35,6 +37,8 @@ public sealed class PlayerCharacterService
             (CreateBodyPart("RightLeg", "Block", [.52f, 1.35f, .52f], "#343B58"), [.37f, -1.05f, 0])
         ];
         foreach (var (part, _) in body) Model.Children.Add(part);
+        SpawnProtection = new SceneNode { Type = "ForceField", Name = "ForceField", Enabled = SpawnLocation?.Duration > 0 };
+        Model.Children.Add(SpawnProtection);
         project.Workspace.Children.Add(Model);
         UpdatePose();
     }
@@ -42,6 +46,8 @@ public sealed class PlayerCharacterService
     public SceneNode Model { get; }
     public SceneNode Root { get; }
     public SceneNode Humanoid { get; }
+    public SceneNode SpawnProtection { get; }
+    public SceneNode? SpawnLocation { get; private set; }
     public bool IsSeated { get; set; }
     public bool NeedsRespawn => Root.Position[1] < -60 || Humanoid.Health <= 0;
 
@@ -69,6 +75,11 @@ public sealed class PlayerCharacterService
     public IReadOnlyList<SceneNode> UpdatePose()
     {
         var changed = new List<SceneNode>();
+        if (Root.Rotation[1] != facingYaw)
+        {
+            Root.Rotation[1] = facingYaw;
+            changed.Add(Root);
+        }
         var yaw = facingYaw * MathF.PI / 180;
         var cosine = MathF.Cos(yaw);
         var sine = MathF.Sin(yaw);
@@ -110,9 +121,13 @@ public sealed class PlayerCharacterService
     private float[] FindSpawnPosition()
     {
         var parts = GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
-        var pad = parts.FirstOrDefault(node => node.Type == "SpawnLocation" && node.Enabled);
+        SpawnLocation = null;
+        var pad = parts.FirstOrDefault(node => node.Type == "SpawnLocation" && node.Enabled && IsSpawnAllowed(node));
         if (pad is not null)
+        {
+            SpawnLocation = pad;
             return [pad.Position[0], (CollisionGeometry.TopYAt(pad, pad.Position[0], pad.Position[2]) ?? CollisionGeometry.TopY(pad)) + 1.801f, pad.Position[2]];
+        }
 
         var ground = parts.Where(node => node.Type != "SpawnLocation" && node.Anchored && node.CanCollide
                 && CollisionGeometry.TopYAt(node, 0, 0) is not null)
@@ -120,5 +135,12 @@ public sealed class PlayerCharacterService
             .FirstOrDefault();
         var top = ground is null ? 0 : CollisionGeometry.TopYAt(ground, 0, 0) ?? 0;
         return [0, top + 1.801f, 0];
+    }
+
+    private bool IsSpawnAllowed(SceneNode spawn)
+    {
+        if (spawn.Neutral) return true;
+        var team = project.Teams.Children.FirstOrDefault(node => node.Type == "Team" && node.Id == player.Team);
+        return team is not null && string.Equals(team.TeamColor, spawn.TeamColor, StringComparison.OrdinalIgnoreCase);
     }
 }

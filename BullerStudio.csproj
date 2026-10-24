@@ -19,6 +19,8 @@
     <PackageReference Include="Dirkster.AvalonDock" Version="4.74.1" />
     <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.74.1" />
     <PackageReference Include="HelixToolkit.SharpDX.Core.Wpf" Version="2.27.3" />
+    <PackageReference Include="NAudio" Version="1.9.0" />
+    <PackageReference Include="SoundTouch.Net.NAudioSupport" Version="2.3.2" />
     <PackageReference Include="WattleScript.Interpreter" Version="1.0.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(GameProjectPath)' != '' and '$(GameBuildMode)' == 'Included'">

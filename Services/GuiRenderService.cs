@@ -3,31 +3,247 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Media.Effects;
+using Vector3 = System.Numerics.Vector3;
 using BullerStudio.Models;
 
 namespace BullerStudio.Services;
 
 public static class GuiRenderService
 {
-    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
+    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
 
-    public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null)
+    public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, SceneNode? screenGuiRoot = null)
     {
         var canvas = new Canvas { Background = Brushes.Transparent, ClipToBounds = true, IsHitTestVisible = isInteractive };
         var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
         var height = double.IsFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
-        foreach (var screen in project.Gui.Children.Where(node => node.Type == "ScreenGui" && node.Visible))
+        foreach (var screen in (screenGuiRoot ?? project.Gui).Children.Where(node => node.Type == "ScreenGui" && node.Enabled && node.Visible).OrderBy(node => node.DisplayOrder))
         {
-            AddChildren(canvas, screen, project, width, height, selectedId, activated, textChanged);
+            var screenCanvas = new Canvas { Width = width, Height = height, Background = Brushes.Transparent };
+            AddChildren(screenCanvas, screen, project, width, height, selectedId, activated, textChanged);
             if (screen.Id == selectedId)
             {
                 var outline = new Border { Width = width, Height = height, BorderBrush = new SolidColorBrush(Color.FromRgb(74, 163, 255)), BorderThickness = new Thickness(2), IsHitTestVisible = false };
                 Canvas.SetLeft(outline, 0);
                 Canvas.SetTop(outline, 0);
-                canvas.Children.Add(outline);
+                screenCanvas.Children.Add(outline);
             }
+            Panel.SetZIndex(screenCanvas, screen.DisplayOrder);
+            canvas.Children.Add(screenCanvas);
         }
         return canvas;
+    }
+
+    public static void AddBillboards(Canvas canvas, GameProject project, Vector3 cameraPosition, Vector3 lookDirection,
+        Vector3 upDirection, float fieldOfView, double viewportWidth, double viewportHeight, bool isInteractive,
+        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null)
+    {
+        var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
+        var height = double.IsFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
+        var nodes = GameProjectStore.Flatten(project.Workspace.Children);
+        foreach (var billboard in nodes.Where(node => node.Type == "BillboardGui"))
+        {
+            if (!billboard.Enabled || ResolveBillboardAdornee(project, billboard) is not { } adornee) continue;
+            var billboardWidth = Math.Clamp(billboard.SizeScale[0] * width + billboard.Size[0], 1, 4000);
+            var billboardHeight = Math.Clamp(billboard.SizeScale[1] * height + billboard.Size[1], 1, 4000);
+            var element = new Canvas
+            {
+                Tag = billboard,
+                Width = billboardWidth,
+                Height = billboardHeight,
+                Background = Brushes.Transparent,
+                IsHitTestVisible = isInteractive
+            };
+            AddChildren(element, billboard, project, billboardWidth, billboardHeight, selectedId, activated, textChanged);
+            Panel.SetZIndex(element, billboard.AlwaysOnTop ? int.MaxValue : int.MinValue);
+            canvas.Children.Add(element);
+        }
+        UpdateBillboardPositions(canvas, project, cameraPosition, lookDirection, upDirection, fieldOfView, width, height);
+    }
+
+    public static void UpdateBillboardPositions(Canvas canvas, GameProject project, Vector3 cameraPosition, Vector3 lookDirection,
+        Vector3 upDirection, float fieldOfView, double viewportWidth, double viewportHeight)
+    {
+        var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
+        var height = double.IsFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
+        foreach (var visual in canvas.Children.OfType<Canvas>().Where(item => item.Tag is SceneNode { Type: "BillboardGui" }))
+        {
+            var billboard = (SceneNode)visual.Tag;
+            var adornee = ResolveBillboardAdornee(project, billboard);
+            if (!billboard.Enabled || adornee is null || !TryProjectBillboard(adornee.Position, cameraPosition, lookDirection,
+                    upDirection, fieldOfView, width, height, out var screenX, out var screenY, out var distance)
+                || billboard.MaxDistance > 0 && distance > billboard.MaxDistance
+                || !billboard.AlwaysOnTop && IsBillboardOccluded(project, adornee, cameraPosition))
+            {
+                visual.Visibility = Visibility.Collapsed;
+                continue;
+            }
+            visual.Visibility = Visibility.Visible;
+            Canvas.SetLeft(visual, screenX - visual.Width / 2);
+            Canvas.SetTop(visual, screenY - visual.Height / 2);
+        }
+    }
+
+    public static void AddSurfaceGuis(Canvas canvas, GameProject project, Vector3 cameraPosition, Vector3 lookDirection,
+        Vector3 upDirection, float fieldOfView, double viewportWidth, double viewportHeight, bool isInteractive,
+        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null)
+    {
+        var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
+        var height = double.IsFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
+        foreach (var surfaceGui in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "SurfaceGui" && node.Enabled))
+        {
+            if (ResolveWorldGuiAdornee(project, surfaceGui) is not { } adornee || !TryGetSurfaceFrame(adornee, surfaceGui.Face, out var frame)) continue;
+            var pixelsPerStud = Math.Clamp(surfaceGui.PixelsPerStud, 1, 1000);
+            var guiWidth = Math.Clamp(frame.Width * pixelsPerStud, 1, 4000);
+            var guiHeight = Math.Clamp(frame.Height * pixelsPerStud, 1, 4000);
+            var element = new Canvas
+            {
+                Tag = surfaceGui,
+                Width = guiWidth,
+                Height = guiHeight,
+                Background = Brushes.Transparent,
+                IsHitTestVisible = isInteractive,
+                RenderTransformOrigin = new Point(.5, .5)
+            };
+            AddChildren(element, surfaceGui, project, guiWidth, guiHeight, selectedId, activated, textChanged);
+            Panel.SetZIndex(element, surfaceGui.AlwaysOnTop ? int.MaxValue : int.MinValue + 1);
+            canvas.Children.Add(element);
+        }
+        UpdateSurfaceGuiPositions(canvas, project, cameraPosition, lookDirection, upDirection, fieldOfView, width, height);
+    }
+
+    public static void UpdateSurfaceGuiPositions(Canvas canvas, GameProject project, Vector3 cameraPosition, Vector3 lookDirection,
+        Vector3 upDirection, float fieldOfView, double viewportWidth, double viewportHeight)
+    {
+        var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
+        var height = double.IsFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
+        foreach (var visual in canvas.Children.OfType<Canvas>().Where(item => item.Tag is SceneNode { Type: "SurfaceGui" }))
+        {
+            var surfaceGui = (SceneNode)visual.Tag;
+            var adornee = ResolveWorldGuiAdornee(project, surfaceGui);
+            if (!surfaceGui.Enabled || adornee is null || !TryGetSurfaceFrame(adornee, surfaceGui.Face, out var frame)
+                || !TryProjectBillboard([frame.Center.X, frame.Center.Y, frame.Center.Z], cameraPosition, lookDirection,
+                    upDirection, fieldOfView, width, height, out var screenX, out var screenY, out var distance)
+                || surfaceGui.MaxDistance > 0 && distance > surfaceGui.MaxDistance
+                || Vector3.Dot(frame.Normal, cameraPosition - frame.Center) <= 0
+                || !surfaceGui.AlwaysOnTop && IsWorldGuiOccluded(project, adornee, frame.Center, cameraPosition))
+            {
+                visual.Visibility = Visibility.Collapsed;
+                continue;
+            }
+            if (!TryProjectBillboard([frame.Center.X + frame.Right.X * frame.Width, frame.Center.Y + frame.Right.Y * frame.Width, frame.Center.Z + frame.Right.Z * frame.Width],
+                    cameraPosition, lookDirection, upDirection, fieldOfView, width, height, out var rightX, out var rightY, out _)
+                || !TryProjectBillboard([frame.Center.X + frame.Up.X * frame.Height, frame.Center.Y + frame.Up.Y * frame.Height, frame.Center.Z + frame.Up.Z * frame.Height],
+                    cameraPosition, lookDirection, upDirection, fieldOfView, width, height, out var upX, out var upY, out _))
+            {
+                visual.Visibility = Visibility.Collapsed;
+                continue;
+            }
+            var projectedWidth = Math.Sqrt(Math.Pow(rightX - screenX, 2) + Math.Pow(rightY - screenY, 2)) * 2;
+            var projectedHeight = Math.Sqrt(Math.Pow(upX - screenX, 2) + Math.Pow(upY - screenY, 2)) * 2;
+            if (!double.IsFinite(projectedWidth) || !double.IsFinite(projectedHeight) || projectedWidth < .5 || projectedHeight < .5)
+            {
+                visual.Visibility = Visibility.Collapsed;
+                continue;
+            }
+            var rotation = Math.Atan2(rightY - screenY, rightX - screenX) * 180 / Math.PI;
+            visual.RenderTransform = new TransformGroup
+            {
+                Children =
+                [
+                    new ScaleTransform(projectedWidth / visual.Width, projectedHeight / visual.Height),
+                    new RotateTransform(rotation)
+                ]
+            };
+            visual.Visibility = Visibility.Visible;
+            Canvas.SetLeft(visual, screenX - visual.Width / 2);
+            Canvas.SetTop(visual, screenY - visual.Height / 2);
+        }
+    }
+
+    private static SceneNode? ResolveWorldGuiAdornee(GameProject project, SceneNode gui)
+    {
+        var nodes = GameProjectStore.Flatten(project.Workspace.Children);
+        if (!string.IsNullOrEmpty(gui.Adornee)) return nodes.FirstOrDefault(node => node.Id == gui.Adornee && SceneNodeTypes.IsBasePart(node));
+        return nodes.FirstOrDefault(node => node.Children.Any(child => child.Id == gui.Id) && SceneNodeTypes.IsBasePart(node));
+    }
+
+    private static bool TryGetSurfaceFrame(SceneNode adornee, string face, out (Vector3 Center, Vector3 Right, Vector3 Up, Vector3 Normal, float Width, float Height) frame)
+    {
+        var local = face switch
+        {
+            "Back" => (Right: -Vector3.UnitX, Up: Vector3.UnitY, Normal: Vector3.UnitZ),
+            "Left" => (Right: Vector3.UnitZ, Up: Vector3.UnitY, Normal: -Vector3.UnitX),
+            "Right" => (Right: -Vector3.UnitZ, Up: Vector3.UnitY, Normal: Vector3.UnitX),
+            "Top" => (Right: Vector3.UnitX, Up: -Vector3.UnitZ, Normal: Vector3.UnitY),
+            "Bottom" => (Right: Vector3.UnitX, Up: Vector3.UnitZ, Normal: -Vector3.UnitY),
+            _ => (Right: Vector3.UnitX, Up: Vector3.UnitY, Normal: -Vector3.UnitZ)
+        };
+        var radians = new Vector3(adornee.Rotation[0], adornee.Rotation[1], adornee.Rotation[2]) * (MathF.PI / 180);
+        var rotation = System.Numerics.Matrix4x4.CreateRotationZ(radians.Z) * System.Numerics.Matrix4x4.CreateRotationX(radians.X) * System.Numerics.Matrix4x4.CreateRotationY(radians.Y);
+        var right = Vector3.Normalize(Vector3.TransformNormal(local.Right, rotation));
+        var up = Vector3.Normalize(Vector3.TransformNormal(local.Up, rotation));
+        var normal = Vector3.Normalize(Vector3.TransformNormal(local.Normal, rotation));
+        var size = new Vector3(Math.Abs(adornee.Size[0]), Math.Abs(adornee.Size[1]), Math.Abs(adornee.Size[2]));
+        var halfDepth = (Math.Abs(local.Normal.X) * size.X + Math.Abs(local.Normal.Y) * size.Y + Math.Abs(local.Normal.Z) * size.Z) * .5f;
+        var faceWidth = Math.Abs(local.Right.X) * size.X + Math.Abs(local.Right.Y) * size.Y + Math.Abs(local.Right.Z) * size.Z;
+        var faceHeight = Math.Abs(local.Up.X) * size.X + Math.Abs(local.Up.Y) * size.Y + Math.Abs(local.Up.Z) * size.Z;
+        var center = new Vector3(adornee.Position[0], adornee.Position[1], adornee.Position[2]) + normal * halfDepth;
+        frame = (center, right, up, normal, faceWidth, faceHeight);
+        return faceWidth > 0 && faceHeight > 0;
+    }
+
+    private static SceneNode? ResolveBillboardAdornee(GameProject project, SceneNode billboard)
+    {
+        var nodes = GameProjectStore.Flatten(project.Workspace.Children);
+        if (billboard.Adornee.Length > 0)
+            return nodes.FirstOrDefault(node => node.Id == billboard.Adornee && SceneNodeTypes.IsBasePart(node));
+        return nodes.FirstOrDefault(node => node.Children.Any(child => child.Id == billboard.Id) && SceneNodeTypes.IsBasePart(node));
+    }
+
+    private static bool TryProjectBillboard(float[] position, Vector3 cameraPosition, Vector3 lookDirection, Vector3 upDirection,
+        float fieldOfView, double viewportWidth, double viewportHeight, out double screenX, out double screenY, out float distance)
+    {
+        screenX = screenY = 0;
+        distance = 0;
+        if (position.Length < 3 || viewportWidth <= 0 || viewportHeight <= 0 || lookDirection.LengthSquared() < .000001f) return false;
+        var look = Vector3.Normalize(lookDirection);
+        var right = Vector3.Cross(look, upDirection);
+        if (right.LengthSquared() < .000001f) return false;
+        right = Vector3.Normalize(right);
+        var screenUp = Vector3.Normalize(Vector3.Cross(right, look));
+        var relative = new Vector3(position[0], position[1], position[2]) - cameraPosition;
+        distance = relative.Length();
+        var depth = Vector3.Dot(relative, look);
+        if (depth <= .01f || !float.IsFinite(depth)) return false;
+        var tangent = Math.Tan(Math.Clamp(fieldOfView, 1, 179) * Math.PI / 360);
+        var aspect = viewportWidth / viewportHeight;
+        var horizontal = Vector3.Dot(relative, right) / ((double)depth * tangent * aspect);
+        var vertical = Vector3.Dot(relative, screenUp) / ((double)depth * tangent);
+        screenX = viewportWidth * (.5 + horizontal * .5);
+        screenY = viewportHeight * (.5 - vertical * .5);
+        return double.IsFinite(screenX) && double.IsFinite(screenY);
+    }
+
+    private static bool IsBillboardOccluded(GameProject project, SceneNode adornee, Vector3 cameraPosition)
+    {
+        return IsWorldGuiOccluded(project, adornee, new Vector3(adornee.Position[0], adornee.Position[1], adornee.Position[2]), cameraPosition);
+    }
+
+    private static bool IsWorldGuiOccluded(GameProject project, SceneNode adornee, Vector3 targetPosition, Vector3 cameraPosition)
+    {
+        var toTarget = targetPosition - cameraPosition;
+        var maxDistance = toTarget.Length();
+        if (maxDistance < .001f) return false;
+        var ray = toTarget / maxDistance;
+        foreach (var part in GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart))
+        {
+            if (part.Id == adornee.Id || !part.CanQuery) continue;
+            var hit = CollisionGeometry.Raycast(part, cameraPosition, ray * maxDistance);
+            if (hit is { } rayHit && rayHit.Distance + .05f < maxDistance) return true;
+        }
+        return false;
     }
 
     private static void AddChildren(Canvas canvas, SceneNode parent, GameProject project, double availableWidth, double availableHeight, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged)
@@ -119,6 +335,8 @@ public static class GuiRenderService
                     cursorY += height * visualScale + listSpacing;
                 }
             }
+            left -= Math.Clamp(node.AnchorPoint[0], 0, 1) * width * visualScale;
+            top -= Math.Clamp(node.AnchorPoint[1], 0, 1) * height * visualScale;
             var visual = CreateNode(node, project, width, height, selectedId, activated, textChanged);
             if (visual is null) continue;
             Canvas.SetLeft(visual, left);
@@ -151,6 +369,19 @@ public static class GuiRenderService
         var content = new Grid();
         root.Child = content;
         var element = CreateVisual(node, project, width, height, activated, textChanged);
+        var textShadows = node.Children.Where(child => child.Type == "UIShadow" && child.Enabled && child.ShadowMode == "Text")
+            .OrderBy(child => child.ZIndex).ToArray();
+        if (textShadows.Length > 0 && parentSupportsTextShadow(node))
+        {
+            content.Children.Add(new Border { Background = BackgroundFor(node), IsHitTestVisible = false });
+            var textLayer = new Canvas { Width = width, Height = height, IsHitTestVisible = false };
+            foreach (var shadow in textShadows)
+                textLayer.Children.Add(CreateShadowVisual(node, shadow, width, height, rounded));
+            content.Children.Add(textLayer);
+            if (element is TextBlock textBlock) textBlock.Background = Brushes.Transparent;
+            else if (element is Control control) control.Background = Brushes.Transparent;
+            else if (element is Grid textBoxGrid) textBoxGrid.Background = Brushes.Transparent;
+        }
         if (element is not null) content.Children.Add(element);
         var childCanvas = new Canvas { ClipToBounds = node.Type != "ScrollingFrame" };
         var childExtent = GetChildrenExtent(node, width, height);
@@ -170,15 +401,116 @@ public static class GuiRenderService
         }
         else content.Children.Add(childCanvas);
         AddChildren(childCanvas, node, project, width, height, selectedId, activated, textChanged);
+        foreach (var shadow in node.Children.Where(child => child.Type == "UIShadow" && child.Enabled && child.ShadowInset && child.ShadowMode == "Shape").OrderBy(child => child.ZIndex))
+        {
+            var insetLayer = new Canvas { Width = width, Height = height, ClipToBounds = true, IsHitTestVisible = false };
+            insetLayer.Children.Add(CreateShadowVisual(node, shadow, width, height, rounded));
+            content.Children.Add(insetLayer);
+        }
         if (node.Id == selectedId || node.Children.Any(child => child.Id == selectedId && Components.Contains(child.Type)))
             content.Children.Add(new Border { BorderBrush = new SolidColorBrush(Color.FromRgb(74, 163, 255)), BorderThickness = new Thickness(2), IsHitTestVisible = false });
-        return root;
+        var outerShadows = node.Children.Where(child => child.Type == "UIShadow" && child.Enabled && child.ShadowMode == "Shape" && !child.ShadowInset)
+            .OrderBy(child => child.ZIndex).ToArray();
+        if (outerShadows.Length == 0) return root;
+        var layer = new Canvas { Tag = node, Width = width, Height = height, RenderTransform = transform };
+        root.RenderTransform = null;
+        foreach (var shadow in outerShadows)
+            layer.Children.Add(CreateShadowVisual(node, shadow, width, height, rounded));
+        layer.Children.Add(root);
+        return layer;
+    }
+
+    private static bool parentSupportsTextShadow(SceneNode node) => node.Type is "TextLabel" or "TextButton" or "TextBox";
+
+    private static FrameworkElement CreateShadowVisual(SceneNode parent, SceneNode shadow, double width, double height, SceneNode? rounded)
+    {
+        var (offsetX, offsetY) = UIShadowService.ResolveOffset(shadow, width, height);
+        var (spreadX, spreadY) = shadow.ShadowMode == "Text" ? (0d, 0d) : UIShadowService.ResolveSpread(shadow, width, height);
+        var blur = UIShadowService.ResolveBlur(shadow, width, height);
+        var color = WithTransparency(ColorFrom(shadow.Color, Colors.Black), shadow.Transparency);
+        var gradient = shadow.Children.FirstOrDefault(child => child.Type == "UIGradient" && child.Enabled);
+        Brush brush = gradient is null ? new SolidColorBrush(color) : GradientBrush(gradient, color);
+        FrameworkElement visual;
+        if (shadow.ShadowMode == "Text")
+        {
+            var fontSize = FontSizeFor(parent, width, height);
+            visual = new TextBlock
+            {
+                Text = parent.Text,
+                Width = width,
+                Height = height,
+                Foreground = brush,
+                FontSize = fontSize,
+                Padding = new Thickness(0, Math.Max(0, (height - fontSize * 1.2) / 2), 0, 0),
+                TextAlignment = TextAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                IsHitTestVisible = false
+            };
+        }
+        else
+        {
+            var shadowWidth = Math.Max(0, shadow.ShadowInset ? width : width + spreadX * 2);
+            var shadowHeight = Math.Max(0, shadow.ShadowInset ? height : height + spreadY * 2);
+            var radius = rounded is null ? new CornerRadius(0) : UICornerRadiusService.Render(rounded, shadowWidth, shadowHeight);
+            visual = new Border
+            {
+                Width = shadowWidth,
+                Height = shadowHeight,
+                CornerRadius = radius,
+                Background = !shadow.ShadowInset && shadow.ShadowShowBehindParent ? brush : Brushes.Transparent,
+                BorderBrush = brush,
+                BorderThickness = shadow.ShadowInset ? new Thickness(Math.Max(1, blur + Math.Max(spreadX, spreadY)))
+                    : !shadow.ShadowShowBehindParent ? new Thickness(Math.Max(1, blur)) : new Thickness(0),
+                IsHitTestVisible = false
+            };
+        }
+        if (blur > 0) visual.Effect = new BlurEffect { Radius = blur };
+        Canvas.SetLeft(visual, offsetX - (shadow.ShadowInset ? 0 : spreadX));
+        Canvas.SetTop(visual, offsetY - (shadow.ShadowInset ? 0 : spreadY));
+        return visual;
     }
 
     private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, double width, double height, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged)
     {
         var background = BackgroundFor(node);
         var fontSize = FontSizeFor(node, width, height);
+        if (node.Type == "TextBox")
+        {
+            var input = new TextBox
+            {
+                Tag = node,
+                Text = node.Text,
+                Foreground = ForegroundFor(node),
+                Background = Brushes.Transparent,
+                FontSize = fontSize,
+                AcceptsReturn = node.MultiLine,
+                IsReadOnly = textChanged is null || !node.TextEditable,
+                TextWrapping = node.MultiLine || node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap,
+                VerticalContentAlignment = node.MultiLine ? VerticalAlignment.Top : VerticalAlignment.Center
+            };
+            var placeholder = new TextBlock
+            {
+                Text = node.PlaceholderText,
+                Foreground = ForegroundFor(node),
+                Opacity = .55,
+                Margin = new Thickness(6, node.MultiLine ? 4 : 0, 4, 0),
+                VerticalAlignment = node.MultiLine ? VerticalAlignment.Top : VerticalAlignment.Center,
+                TextWrapping = node.MultiLine ? TextWrapping.Wrap : TextWrapping.NoWrap,
+                IsHitTestVisible = false
+            };
+            placeholder.Visibility = string.IsNullOrEmpty(node.Text) && !string.IsNullOrEmpty(node.PlaceholderText) ? Visibility.Visible : Visibility.Collapsed;
+            input.TextChanged += (_, _) =>
+            {
+                placeholder.Visibility = string.IsNullOrEmpty(input.Text) && !string.IsNullOrEmpty(node.PlaceholderText) ? Visibility.Visible : Visibility.Collapsed;
+                textChanged?.Invoke(node, input.Text);
+            };
+            if (textChanged is not null)
+                input.GotKeyboardFocus += (_, _) => { if (node.TextEditable && node.ClearTextOnFocus && input.Text.Length > 0) input.Clear(); };
+            var textBox = new Grid { Background = background };
+            textBox.Children.Add(input);
+            textBox.Children.Add(placeholder);
+            return textBox;
+        }
         FrameworkElement? visual = node.Type switch
         {
             "Frame" => new Border { Background = background },
@@ -187,11 +519,9 @@ public static class GuiRenderService
             "ImageButton" => new Button { Content = new Image { Source = ImageFor(node, project), Stretch = Stretch.Fill }, Background = background, BorderThickness = new Thickness(0), Padding = new Thickness(0) },
             "TextLabel" => new TextBlock { Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap },
             "TextButton" => new Button { Content = node.TextScaled ? new TextBlock { Text = node.Text, FontSize = fontSize, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center } : node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, Padding = new Thickness(2) },
-            "TextBox" => new TextBox { Tag = node, Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, TextWrapping = node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap, VerticalContentAlignment = VerticalAlignment.Center },
             _ => null
         };
         if (visual is Button button && activated is not null) button.Click += (_, _) => activated(node);
-        if (visual is TextBox textBox && textChanged is not null) textBox.TextChanged += (_, _) => textChanged(node, textBox.Text);
         return visual;
     }
 
@@ -305,8 +635,10 @@ public static class GuiRenderService
             var contentHeight = rows * rowHeight + Math.Max(0, rows - 1) * tableLayout.LayoutSpacing;
             return new Size(availableWidth, Math.Max(availableHeight, padding.Top + contentHeight + padding.Bottom));
         }
-        var right = children.Select((node, index) => padding.Left + node.PositionScale[0] * innerWidth + node.Position[0] + elementSizes[index].Width).Max();
-        var bottom = children.Select((node, index) => padding.Top + node.PositionScale[1] * innerHeight + node.Position[1] + elementSizes[index].Height).Max();
+        var right = children.Select((node, index) => padding.Left + node.PositionScale[0] * innerWidth + node.Position[0]
+            + elementSizes[index].Width * (1 - Math.Clamp(node.AnchorPoint[0], 0, 1))).Max();
+        var bottom = children.Select((node, index) => padding.Top + node.PositionScale[1] * innerHeight + node.Position[1]
+            + elementSizes[index].Height * (1 - Math.Clamp(node.AnchorPoint[1], 0, 1))).Max();
         return new Size(Math.Max(availableWidth, right + padding.Right), Math.Max(availableHeight, bottom + padding.Bottom));
     }
 

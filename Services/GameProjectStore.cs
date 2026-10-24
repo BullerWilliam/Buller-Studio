@@ -243,6 +243,8 @@ public static class GameProjectStore
         }
         project.Scripts ??= [];
         project.Settings ??= new ProjectSettings();
+        project.Settings.MoveSnapIncrement = float.IsFinite(project.Settings.MoveSnapIncrement) ? Math.Clamp(project.Settings.MoveSnapIncrement, .01f, 1000) : 1;
+        project.Settings.RotateSnapIncrement = float.IsFinite(project.Settings.RotateSnapIncrement) ? Math.Clamp(project.Settings.RotateSnapIncrement, .1f, 360) : 15;
         project.Workspace ??= new SceneNode { Id = "workspace", Type = "Workspace", Name = "Workspace" };
         project.Workspace.Children ??= [];
         project.Workspace.Gravity = float.IsFinite(project.Workspace.Gravity) ? Math.Clamp(project.Workspace.Gravity, 0, 1000) : 24;
@@ -251,6 +253,20 @@ public static class GameProjectStore
         project.Players.Type = "Players";
         project.Players.Name = "Players";
         project.Players.Children ??= [];
+        project.Teams ??= new SceneNode { Id = "teams", Type = "Teams", Name = "Teams" };
+        project.Teams.Id = "teams";
+        project.Teams.Type = "Teams";
+        project.Teams.Name = "Teams";
+        project.Teams.Children ??= [];
+        foreach (var team in project.Teams.Children.Where(node => node.Type == "Team"))
+        {
+            if (team.TeamColor is null || !System.Text.RegularExpressions.Regex.IsMatch(team.TeamColor, "^#[0-9A-Fa-f]{6}$")) team.TeamColor = "#E53935";
+        }
+        foreach (var spawn in Flatten(project.Workspace.Children).Where(node => node.Type == "SpawnLocation"))
+        {
+            if (spawn.TeamColor is null || !System.Text.RegularExpressions.Regex.IsMatch(spawn.TeamColor, "^#[0-9A-Fa-f]{6}$")) spawn.TeamColor = "#E53935";
+            spawn.Duration = float.IsFinite(spawn.Duration) ? Math.Clamp(spawn.Duration, 0, 10000) : 10;
+        }
         project.Lighting ??= new SceneNode { Id = "lighting", Type = "Lighting", Name = "Lighting", Ambient = "#808080", ClockTime = 14, Children = [new SceneNode { Id = "sky-main", Type = "Sky", Name = "Sky" }] };
         project.Lighting.Id = "lighting";
         project.Lighting.Type = "Lighting";
@@ -259,6 +275,20 @@ public static class GameProjectStore
         if (project.Lighting.Ambient is null || !System.Text.RegularExpressions.Regex.IsMatch(project.Lighting.Ambient, "^#[0-9A-Fa-f]{6}$")) project.Lighting.Ambient = "#808080";
         project.Lighting.ClockTime = float.IsFinite(project.Lighting.ClockTime) ? Math.Clamp(project.Lighting.ClockTime, 0, 24) : 14;
         project.Lighting.Brightness = float.IsFinite(project.Lighting.Brightness) ? Math.Clamp(project.Lighting.Brightness, 0, 8) : 1;
+        foreach (var atmosphere in project.Lighting.Children.Where(node => node.Type == "Atmosphere"))
+        {
+            atmosphere.Density = float.IsFinite(atmosphere.Density) ? Math.Clamp(atmosphere.Density, 0, 1) : .3f;
+            atmosphere.Haze = float.IsFinite(atmosphere.Haze) ? Math.Clamp(atmosphere.Haze, 0, 10) : 0;
+            atmosphere.Glare = float.IsFinite(atmosphere.Glare) ? Math.Clamp(atmosphere.Glare, 0, 10) : 0;
+            atmosphere.Offset = float.IsFinite(atmosphere.Offset) ? Math.Clamp(atmosphere.Offset, -1, 1) : 0;
+            if (atmosphere.Color is null || !System.Text.RegularExpressions.Regex.IsMatch(atmosphere.Color, "^#[0-9A-Fa-f]{6}$")) atmosphere.Color = "#C6D9FF";
+            if (atmosphere.AtmosphereDecay is null || !System.Text.RegularExpressions.Regex.IsMatch(atmosphere.AtmosphereDecay, "^#[0-9A-Fa-f]{6}$")) atmosphere.AtmosphereDecay = "#607080";
+        }
+        project.SoundService ??= new SceneNode { Id = "sound-service", Type = "SoundService", Name = "SoundService" };
+        project.SoundService.Id = "sound-service";
+        project.SoundService.Type = "SoundService";
+        project.SoundService.Name = "SoundService";
+        project.SoundService.Children ??= [];
         project.ReplicatedStorage ??= new SceneNode { Id = "replicated-storage", Type = "ReplicatedStorage", Name = "ReplicatedStorage" };
         project.ReplicatedStorage.Id = "replicated-storage";
         project.ReplicatedStorage.Type = "ReplicatedStorage";
@@ -274,14 +304,19 @@ public static class GameProjectStore
         project.ServerStorage.Type = "ServerStorage";
         project.ServerStorage.Name = "ServerStorage";
         project.ServerStorage.Children ??= [];
-        project.Gui ??= new SceneNode { Id = "gui", Type = "Gui", Name = "Gui" };
+        project.StarterPack ??= new SceneNode { Id = "starter-pack", Type = "StarterPack", Name = "StarterPack" };
+        project.StarterPack.Id = "starter-pack";
+        project.StarterPack.Type = "StarterPack";
+        project.StarterPack.Name = "StarterPack";
+        project.StarterPack.Children ??= [];
+        project.Gui ??= new SceneNode { Id = "gui", Type = "StarterGui", Name = "StarterGui" };
         project.Gui.Id = "gui";
-        project.Gui.Type = "Gui";
-        project.Gui.Name = "Gui";
+        project.Gui.Type = "StarterGui";
+        project.Gui.Name = "StarterGui";
         project.Gui.Children ??= [];
         if (!project.Gui.Children.Any(node => node.Type == "ScreenGui"))
             project.Gui.Children.Add(new SceneNode { Id = Guid.NewGuid().ToString("N"), Type = "ScreenGui", Name = "ScreenGui" });
-        foreach (var node in Flatten(project.Workspace.Children).Concat(Flatten(project.Players.Children)).Concat(Flatten(project.Lighting.Children)).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.Gui.Children)))
+        foreach (var node in Flatten(project.Workspace.Children).Concat(Flatten(project.Players.Children)).Concat(Flatten(project.Teams.Children)).Concat(Flatten(project.Lighting.Children)).Concat(Flatten(project.SoundService.Children)).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.StarterPack.Children)).Concat(Flatten(project.Gui.Children)))
         {
             node.Children ??= [];
             node.Position = EnsureVector(node.Position, [0, 0, 0]);
@@ -289,6 +324,8 @@ public static class GameProjectStore
             node.Size = EnsureVector(node.Size, [2, 2, 2]);
             node.Velocity = EnsureVector(node.Velocity, [0, 0, 0]);
             node.PositionScale = EnsurePair(node.PositionScale);
+            node.AnchorPoint = EnsureVector(node.AnchorPoint, [0, 0]);
+            for (var axis = 0; axis < 2; axis++) node.AnchorPoint[axis] = Math.Clamp(node.AnchorPoint[axis], 0, 1);
             node.SizeScale = EnsurePair(node.SizeScale);
             node.PaddingLeft = EnsurePair(node.PaddingLeft);
             node.PaddingTop = EnsurePair(node.PaddingTop);
@@ -375,11 +412,20 @@ public static class GameProjectStore
             node.ActionText ??= "Interact";
             node.ObjectText ??= string.Empty;
             node.MaxActivationDistance = float.IsFinite(node.MaxActivationDistance) ? Math.Clamp(node.MaxActivationDistance, 1, 100) : 10;
+            node.MaxDistance = float.IsFinite(node.MaxDistance) ? Math.Clamp(node.MaxDistance, 0, 100000) : 0;
+            node.PixelsPerStud = float.IsFinite(node.PixelsPerStud) ? Math.Clamp(node.PixelsPerStud, 1, 1000) : 50;
+            if (node.Type == "SurfaceGui" && !SceneNodeTypes.IsFace(node.Face)) node.Face = "Front";
             node.Volume = float.IsFinite(node.Volume) ? Math.Clamp(node.Volume, 0, 1) : .5f;
+            node.PlaybackSpeed = float.IsFinite(node.PlaybackSpeed) ? Math.Clamp(node.PlaybackSpeed, 0, 20) : 1;
+            node.SoundServiceVolume = float.IsFinite(node.SoundServiceVolume) ? Math.Clamp(node.SoundServiceVolume, 0, 1) : 1;
+            node.SoundGroupVolume = float.IsFinite(node.SoundGroupVolume) ? Math.Clamp(node.SoundGroupVolume, 0, 1) : 1;
+            node.SoundGroupId ??= string.Empty;
+            node.PitchShiftOctave = float.IsFinite(node.PitchShiftOctave) ? Math.Clamp(node.PitchShiftOctave, .5f, 2) : 1.25f;
             node.RollOffMinDistance = float.IsFinite(node.RollOffMinDistance) ? Math.Clamp(node.RollOffMinDistance, 0, 1000) : 10;
             node.RollOffMaxDistance = float.IsFinite(node.RollOffMaxDistance) ? Math.Clamp(node.RollOffMaxDistance, node.RollOffMinDistance + .01f, 10000) : 100;
             node.Part0 ??= string.Empty;
             node.Part1 ??= string.Empty;
+            node.PrimaryPart ??= string.Empty;
             node.Character ??= string.Empty;
             node.Occupant ??= string.Empty;
             node.MaxHealth = float.IsFinite(node.MaxHealth) ? Math.Clamp(node.MaxHealth, 1, 100000) : 100;
@@ -389,6 +435,7 @@ public static class GameProjectStore
             node.IntegerValue = Math.Clamp(node.IntegerValue, -9007199254740991L, 9007199254740991L);
             node.NumberValue = double.IsFinite(node.NumberValue) ? node.NumberValue : 0;
             node.StringValueText ??= string.Empty;
+            node.Vector2Value = EnsureVector(node.Vector2Value, [0, 0]);
             node.Vector3Value = EnsureVector(node.Vector3Value, [0, 0, 0]);
             if (node.Color3Value is null || !System.Text.RegularExpressions.Regex.IsMatch(node.Color3Value, "^#[0-9A-Fa-f]{6}$")) node.Color3Value = "#000000";
             node.ObjectValueId ??= string.Empty;
@@ -396,7 +443,11 @@ public static class GameProjectStore
             node.Width1 = float.IsFinite(node.Width1) ? Math.Clamp(node.Width1, 0, 100) : .2f;
             node.Force = EnsureVector(node.Force, [0, 0, 0]);
             for (var axis = 0; axis < 3; axis++) node.Force[axis] = float.IsFinite(node.Force[axis]) ? Math.Clamp(node.Force[axis], -1000000, 1000000) : 0;
-            if (node.RelativeTo is not ("World" or "Attachment0")) node.RelativeTo = node.Type == "VectorForce" ? "Attachment0" : "World";
+            if (node.Type == "AngularVelocity")
+            {
+                if (node.RelativeTo is not ("World" or "Attachment0" or "Attachment1")) node.RelativeTo = "World";
+            }
+            else if (node.RelativeTo is not ("World" or "Attachment0")) node.RelativeTo = node.Type == "VectorForce" ? "Attachment0" : "World";
             node.VectorVelocity = EnsureVector(node.VectorVelocity, [0, 0, 0]);
             node.LineDirection = EnsureVector(node.LineDirection, [1, 0, 0]);
             node.PrimaryTangentAxis = EnsureVector(node.PrimaryTangentAxis, [1, 0, 0]);
@@ -410,6 +461,12 @@ public static class GameProjectStore
             if (node.AlignmentMode is not ("OneAttachment" or "TwoAttachment")) node.AlignmentMode = "TwoAttachment";
             node.Responsiveness = float.IsFinite(node.Responsiveness) ? Math.Clamp(node.Responsiveness, 0, 200) : 10;
             node.MaxVelocity = float.IsFinite(node.MaxVelocity) ? Math.Clamp(node.MaxVelocity, 0, 10000) : 100;
+            node.AlignOrientationRotation = EnsureVector(node.AlignOrientationRotation, [0, 0, 0]);
+            for (var axis = 0; axis < 3; axis++) node.AlignOrientationRotation[axis] = float.IsFinite(node.AlignOrientationRotation[axis]) ? Math.Clamp(node.AlignOrientationRotation[axis], -360000, 360000) : 0;
+            node.AngularVelocityTarget = EnsureVector(node.AngularVelocityTarget, [0, 0, 0]);
+            for (var axis = 0; axis < 3; axis++) node.AngularVelocityTarget[axis] = float.IsFinite(node.AngularVelocityTarget[axis]) ? Math.Clamp(node.AngularVelocityTarget[axis], -1000, 1000) : 0;
+            node.MaxTorque = float.IsFinite(node.MaxTorque) ? Math.Clamp(node.MaxTorque, 0, 1000000) : 1000;
+            node.MaxAngularVelocity = float.IsFinite(node.MaxAngularVelocity) ? Math.Clamp(node.MaxAngularVelocity, 0, 10000) : 100;
             if (node.VelocityConstraintMode is not ("Vector" or "Line" or "Plane")) node.VelocityConstraintMode = "Vector";
             node.TrailLifetime = float.IsFinite(node.TrailLifetime) ? Math.Clamp(node.TrailLifetime, .01f, 20) : 2;
             node.TrailMinLength = float.IsFinite(node.TrailMinLength) ? Math.Clamp(node.TrailMinLength, 0, 100) : .1f;
@@ -443,15 +500,22 @@ public static class GameProjectStore
             }
         }
         var validObjectIds = Flatten(project).Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        var validTeamIds = project.Teams.Children.Where(node => node.Type == "Team").Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var player in Flatten(project.Players.Children).Where(node => node.Type == "Player" && node.Team.Length > 0))
+            if (!validTeamIds.Contains(player.Team)) player.Team = string.Empty;
+        NormalizeModelPrimaryParts(project);
         foreach (var objectValue in Flatten(project).Where(node => node.Type == "ObjectValue" && node.ObjectValueId.Length > 0))
             if (!validObjectIds.Contains(objectValue.ObjectValueId)) objectValue.ObjectValueId = string.Empty;
+        var validSoundGroupIds = Flatten(project).Where(node => node.Type == "SoundGroup").Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var sound in Flatten(project).Where(node => node.Type == "Sound" && node.SoundGroupId.Length > 0))
+            if (!validSoundGroupIds.Contains(sound.SoundGroupId)) sound.SoundGroupId = string.Empty;
         var validAdorneeIds = Flatten(project)
             .Where(node => SceneNodeTypes.IsBasePart(node) || node.Type == "Model")
             .Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
-        foreach (var adornment in Flatten(project).Where(node => node.Type is ("SelectionBox" or "SelectionSphere" or "Highlight") && node.Adornee.Length > 0))
+        foreach (var adornment in Flatten(project).Where(node => node.Type is ("SelectionBox" or "SelectionSphere" or "Highlight" or "BillboardGui" or "SurfaceGui") && node.Adornee.Length > 0))
             if (!validAdorneeIds.Contains(adornment.Adornee)) adornment.Adornee = string.Empty;
-        var scriptNames = Flatten(project.Workspace.Children).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.Gui.Children))
-            .Where(node => node.Type is "Script" or "ModuleScript")
+        var scriptNames = Flatten(project.Workspace.Children).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.StarterPack.Children)).Concat(Flatten(project.Gui.Children))
+        .Where(node => node.Type is "Script" or "ModuleScript")
             .GroupBy(node => node.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.Ordinal);
         foreach (var script in project.Scripts)
@@ -492,7 +556,17 @@ public static class GameProjectStore
         return result;
     }
 
-    public static IReadOnlyList<SceneNode> Flatten(GameProject project) => Flatten([project.Workspace, project.Players, project.Lighting, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.Gui]);
+    public static IReadOnlyList<SceneNode> Flatten(GameProject project) => Flatten([project.Workspace, project.Players, project.Teams, project.Lighting, project.SoundService, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.StarterPack, project.Gui]);
+
+    public static void NormalizeModelPrimaryParts(GameProject project)
+    {
+        foreach (var model in Flatten(project).Where(node => node.Type == "Model" && node.PrimaryPart.Length > 0))
+            if (!SceneModelService.ContainsPrimaryPart(model, model.PrimaryPart))
+            {
+                model.PrimaryPart = string.Empty;
+                model.HasModelPivot = true;
+            }
+    }
 
     public static SceneNode? CloneSubtree(SceneNode source, out Dictionary<string, string> renewedIds, bool respectArchivable = true)
     {
@@ -515,12 +589,14 @@ public static class GameProjectStore
         {
             if (idMap.TryGetValue(node.Part0, out var part0)) node.Part0 = part0;
             if (idMap.TryGetValue(node.Part1, out var part1)) node.Part1 = part1;
+            if (idMap.TryGetValue(node.PrimaryPart, out var primaryPart)) node.PrimaryPart = primaryPart;
             if (idMap.TryGetValue(node.Attachment0, out var attachment0)) node.Attachment0 = attachment0;
             if (idMap.TryGetValue(node.Attachment1, out var attachment1)) node.Attachment1 = attachment1;
             if (idMap.TryGetValue(node.Subject, out var subject)) node.Subject = subject;
             if (idMap.TryGetValue(node.Character, out var character)) node.Character = character;
             if (idMap.TryGetValue(node.Occupant, out var occupant)) node.Occupant = occupant;
             if (idMap.TryGetValue(node.ObjectValueId, out var referencedObject)) node.ObjectValueId = referencedObject;
+            if (idMap.TryGetValue(node.SoundGroupId, out var soundGroup)) node.SoundGroupId = soundGroup;
             if (idMap.TryGetValue(node.Adornee, out var adornee)) node.Adornee = adornee;
         }
         if (!respectArchivable) clone.Archivable = true;
@@ -529,8 +605,8 @@ public static class GameProjectStore
 
     public static bool CanParentNode(GameProject project, SceneNode source, SceneNode destinationParent)
     {
-        if (source.Id == project.Workspace.Id || source.Id == project.Players.Id || source.Id == project.Lighting.Id || source.Id == project.ReplicatedStorage.Id || source.Id == project.ServerScriptService.Id || source.Id == project.ServerStorage.Id || source.Id == project.Gui.Id || source.Id == destinationParent.Id) return false;
-        if (!IsNodeInTree(project.Workspace, destinationParent.Id) && !IsNodeInTree(project.Lighting, destinationParent.Id) && !IsNodeInTree(project.ReplicatedStorage, destinationParent.Id) && !IsNodeInTree(project.ServerScriptService, destinationParent.Id) && !IsNodeInTree(project.ServerStorage, destinationParent.Id) && !IsNodeInTree(project.Gui, destinationParent.Id)) return false;
+        if (source.Id == project.Workspace.Id || source.Id == project.Players.Id || source.Id == project.Teams.Id || source.Id == project.Lighting.Id || source.Id == project.SoundService.Id || source.Id == project.ReplicatedStorage.Id || source.Id == project.ServerScriptService.Id || source.Id == project.ServerStorage.Id || source.Id == project.StarterPack.Id || source.Id == project.Gui.Id || source.Id == destinationParent.Id) return false;
+        if (!IsNodeInTree(project.Workspace, destinationParent.Id) && !IsNodeInTree(project.Players, destinationParent.Id) && !IsNodeInTree(project.Teams, destinationParent.Id) && !IsNodeInTree(project.Lighting, destinationParent.Id) && !IsNodeInTree(project.SoundService, destinationParent.Id) && !IsNodeInTree(project.ReplicatedStorage, destinationParent.Id) && !IsNodeInTree(project.ServerScriptService, destinationParent.Id) && !IsNodeInTree(project.ServerStorage, destinationParent.Id) && !IsNodeInTree(project.StarterPack, destinationParent.Id) && !IsNodeInTree(project.Gui, destinationParent.Id)) return false;
         if (Flatten(source.Children).Any(node => node.Id == destinationParent.Id)) return false;
         if (source.Type == "Humanoid")
             return destinationParent.Type == "Model" && source.Children.Count == 0
@@ -538,11 +614,31 @@ public static class GameProjectStore
         if (source.Type == "Camera")
             return destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
         if (destinationParent.Id == project.Lighting.Id)
-            return source.Type == "Sky" && source.Children.Count == 0
-                && !destinationParent.Children.Any(child => child.Type == "Sky" && child.Id != source.Id);
-        if (source.Type == "Sky" || IsNodeInTree(project.Lighting, destinationParent.Id)) return false;
+            return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => child.Type == source.Type && child.Id != source.Id);
+        if (source.Type is "Sky" or "Atmosphere" || IsNodeInTree(project.Lighting, destinationParent.Id)) return false;
+        if (destinationParent.Id == project.SoundService.Id) return IsWorkspaceSubtreeCompatible(source, "SoundService") || source.Type == "Folder";
+        if (IsNodeInTree(project.SoundService, destinationParent.Id)) return destinationParent.Type is "Folder" or "Configuration" or "Sound" or "SoundGroup" && IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
+
+        if (destinationParent.Id == project.Players.Id) return source.Type == "Player";
+        if (destinationParent.Id == project.Teams.Id) return source.Type == "Team" && source.Children.Count == 0;
+        if (IsNodeInTree(project.Teams, destinationParent.Id)) return false;
+        if (IsNodeInTree(project.Players, destinationParent.Id))
+        {
+            if (destinationParent.Type == "Player") return source.Type == "Folder" && source.Name == "Backpack";
+            if (destinationParent.Type == "PlayerGui") return source.Type == "ScreenGui" && IsGuiSubtreeCompatible(source, true);
+            var playerGui = project.Players.Children.SelectMany(player => player.Children).FirstOrDefault(child => child.Type == "PlayerGui");
+            if (playerGui is not null && IsNodeInTree(playerGui, destinationParent.Id))
+            {
+                if (source.Type == "ScreenGui" || !IsGuiContainer(destinationParent.Type) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
+                return IsGuiSubtreeCompatible(source, false, destinationParent.Type);
+            }
+            if (destinationParent.Name == "Backpack") return source.Type is "Tool" or "Folder";
+            return destinationParent.Type == "Model" && source.Type == "Tool";
+        }
 
         var destinationIsGui = IsNodeInTree(project.Gui, destinationParent.Id);
+        if (destinationParent.Type is "BillboardGui" or "SurfaceGui") return IsGuiSubtreeCompatible(source, false, destinationParent.Type);
         if (destinationIsGui)
         {
             if (destinationParent.Id == project.Gui.Id)
@@ -554,28 +650,34 @@ public static class GameProjectStore
 
         if (IsNodeInTree(project.ReplicatedStorage, destinationParent.Id)
             || IsNodeInTree(project.ServerScriptService, destinationParent.Id)
-            || IsNodeInTree(project.ServerStorage, destinationParent.Id))
+            || IsNodeInTree(project.ServerStorage, destinationParent.Id)
+            || IsNodeInTree(project.StarterPack, destinationParent.Id))
         {
-            if (destinationParent.Type is not ("ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Attachment")
+            if (destinationParent.Type is not ("ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "SoundService" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Attachment")
                 && !SceneNodeTypes.IsBasePart(destinationParent) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
-            return IsWorkspaceSubtreeCompatible(source, destinationParent.Type is "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" ? "Workspace" : destinationParent.Type);
+            return IsWorkspaceSubtreeCompatible(source, destinationParent.Type is "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" ? "Workspace" : destinationParent.Type);
         }
 
-        if (destinationParent.Type is not ("Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Attachment") && !SceneNodeTypes.IsBasePart(destinationParent) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
+        if (destinationParent.Type is not ("Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Attachment" or "Sound" or "SoundGroup") && !SceneNodeTypes.IsBasePart(destinationParent) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
         return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
     }
 
     public static bool CanParentDetachedNode(SceneNode source, SceneNode destinationParent)
     {
         if (source.Id == destinationParent.Id || Flatten(source.Children).Any(child => child.Id == destinationParent.Id)) return false;
-        if (source.Type is "Workspace" or "Players" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "Camera") return false;
-        if (destinationParent.Type == "Lighting") return source.Type == "Sky" && source.Children.Count == 0 && destinationParent.Children.All(child => child.Type != "Sky");
-        if (source.Type == "Sky") return false;
+        if (source.Type is "Workspace" or "Players" or "PlayerGui" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui" or "Camera") return false;
+        if (destinationParent.Type == "Teams") return source.Type == "Team" && source.Children.Count == 0;
+        if (destinationParent.Type == "Team") return false;
+        if (destinationParent.Type == "Lighting") return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0 && destinationParent.Children.All(child => child.Type != source.Type);
+        if (destinationParent.Type is "Sound" or "SoundGroup") return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
+        if (source.Type is "Sky" or "Atmosphere") return false;
+        if (destinationParent.Type == "PlayerGui") return source.Type == "ScreenGui" && IsGuiSubtreeCompatible(source, true);
         if (source.Type == "Humanoid")
             return destinationParent.Type == "Model" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == "Humanoid" && child.Id != source.Id);
         if (destinationParent.Type is "Model" or "Attachment" || SceneNodeTypes.IsBasePart(destinationParent))
             return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
+        if (destinationParent.Type is "BillboardGui" or "SurfaceGui") return IsGuiSubtreeCompatible(source, false, destinationParent.Type);
         if (destinationParent.Type is "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript")
             return IsWorkspaceSubtreeCompatible(source, destinationParent.Type) || IsGuiSubtreeCompatible(source, false, destinationParent.Type);
         if (SceneNodeTypes.IsValueObject(destinationParent))
@@ -588,26 +690,34 @@ public static class GameProjectStore
         if (!CanParentNode(project, source, destinationParent)) return false;
         var sourceCollection = FindParentCollection(project.Workspace.Children, source)
             ?? FindParentCollection(project.Lighting.Children, source)
+            ?? FindParentCollection(project.SoundService.Children, source)
+            ?? FindParentCollection(project.Teams.Children, source)
             ?? FindParentCollection(project.ReplicatedStorage.Children, source)
             ?? FindParentCollection(project.ServerScriptService.Children, source)
             ?? FindParentCollection(project.ServerStorage.Children, source)
+            ?? FindParentCollection(project.StarterPack.Children, source)
+            ?? FindParentCollection(project.Players.Children, source)
             ?? FindParentCollection(project.Gui.Children, source);
         if (sourceCollection is null || ReferenceEquals(sourceCollection, destinationParent.Children)) return false;
         sourceCollection.Remove(source);
         destinationParent.Children.Add(source);
+        NormalizeModelPrimaryParts(project);
         return true;
     }
 
     public static bool MoveNodeBeside(GameProject project, SceneNode source, SceneNode target, bool after)
     {
         if (source.Type == "Camera" || target.Type == "Camera" || ReferenceEquals(source, target) || source.Id == target.Id) return false;
-        var destinationParent = FindParentNode(project.Workspace, target) ?? FindParentNode(project.Lighting, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.Gui, target);
+        var destinationParent = FindParentNode(project.Workspace, target) ?? FindParentNode(project.Teams, target) ?? FindParentNode(project.Lighting, target) ?? FindParentNode(project.SoundService, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.StarterPack, target) ?? FindParentNode(project.Gui, target);
         if (destinationParent is null || !CanParentNode(project, source, destinationParent)) return false;
         var sourceCollection = FindParentCollection(project.Workspace.Children, source)
             ?? FindParentCollection(project.Lighting.Children, source)
+            ?? FindParentCollection(project.SoundService.Children, source)
+            ?? FindParentCollection(project.Teams.Children, source)
             ?? FindParentCollection(project.ReplicatedStorage.Children, source)
             ?? FindParentCollection(project.ServerScriptService.Children, source)
             ?? FindParentCollection(project.ServerStorage.Children, source)
+            ?? FindParentCollection(project.StarterPack.Children, source)
             ?? FindParentCollection(project.Gui.Children, source);
         if (sourceCollection is null) return false;
         var destinationCollection = destinationParent.Children;
@@ -621,6 +731,7 @@ public static class GameProjectStore
         if (ReferenceEquals(sourceCollection, destinationCollection) && sourceIndex == destinationIndex) return false;
         sourceCollection.RemoveAt(sourceIndex);
         destinationCollection.Insert(Math.Clamp(destinationIndex, 0, destinationCollection.Count), source);
+        NormalizeModelPrimaryParts(project);
         return true;
     }
 
@@ -659,7 +770,7 @@ public static class GameProjectStore
     private static bool IsNodeInTree(SceneNode root, string nodeId) =>
         root.Id == nodeId || Flatten(root.Children).Any(node => node.Id == nodeId);
 
-    private static bool IsGuiContainer(string type) => type is "Gui" or "ScreenGui" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
+    private static bool IsGuiContainer(string type) => type is "Gui" or "StarterGui" or "PlayerGui" or "ScreenGui" or "BillboardGui" or "SurfaceGui" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox" or "UIShadow";
 
     private static bool IsGuiObject(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
 
@@ -672,6 +783,9 @@ public static class GameProjectStore
         if (node.Type == "Script") return node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node)) return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (node.Type == "UITextSizeConstraint") return destinationType is "TextLabel" or "TextButton" or "TextBox" && node.Children.Count == 0;
+        if (node.Type == "UIGradient") return (destinationType == "UIShadow" || destinationType is not null && IsGuiObject(destinationType)) && node.Children.Count == 0;
+        if (node.Type == "UIShadow") return destinationType is not null && IsGuiObject(destinationType)
+            && node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (IsGuiComponent(node.Type)) return destinationType is not null && IsGuiObject(destinationType) && node.Children.Count == 0;
         if (!IsGuiObject(node.Type)) return false;
         return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
@@ -679,15 +793,28 @@ public static class GameProjectStore
 
     private static bool IsWorkspaceSubtreeCompatible(SceneNode node, string? parentType)
     {
+        if (node.Type == "SoundGroup")
+            return (parentType is "Workspace" or "SoundService" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType))
+                && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
+        if (node.Type == "PitchShiftSoundEffect")
+            return parentType is "Sound" or "SoundGroup" && node.Children.Count == 0;
+        if (node.Type is "RemoteEvent" or "RemoteFunction")
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType))
+                && node.Children.Count == 0;
+        if (node.Type == "Tool") return (parentType is "Workspace" or "Folder" or "Model" or "StarterPack" or "Backpack")
+            && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Model"));
+        if (node.Type is "BillboardGui" or "SurfaceGui")
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType))
+                && node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (node.Type == "Humanoid") return parentType == "Model" && node.Children.Count == 0;
         if (node.Type == "Attachment")
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
-        if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition")
-            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
+        if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity")
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node))
-            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType))
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType))
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
         if (node.Type is "Decal" or "Texture")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
@@ -696,7 +823,8 @@ public static class GameProjectStore
         if (node.Type is "ProximityPrompt" or "ClickDetector")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type == "Sound")
-            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
+            return (parentType is "Workspace" or "SoundService" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType))
+                && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
         if (node.Type is "SelectionBox" or "SelectionSphere")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
         if (node.Type == "Highlight")
@@ -706,11 +834,11 @@ public static class GameProjectStore
         if (node.Type == "Explosion")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
         if (node.Type is "WeldConstraint" or "NoCollisionConstraint")
-            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
         if (SceneNodeTypes.IsLight(node))
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.Count == 0;
-        if (!SceneNodeTypes.IsBasePart(node) && node.Type is not ("ImageLabel" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Script")) return false;
+        if (!SceneNodeTypes.IsBasePart(node) && node.Type is not ("ImageLabel" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Script")) return false;
         if (node.Type is "Script" or "ImageLabel" && node.Children.Count > 0) return false;
         return node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
     }

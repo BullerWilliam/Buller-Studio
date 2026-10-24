@@ -9,11 +9,14 @@ public sealed class GameProject
     public ProjectSettings Settings { get; set; } = new();
     public SceneNode Workspace { get; set; } = new() { Id = "workspace", Type = "Workspace", Name = "Workspace" };
     public SceneNode Players { get; set; } = new() { Id = "players", Type = "Players", Name = "Players" };
+    public SceneNode Teams { get; set; } = new() { Id = "teams", Type = "Teams", Name = "Teams" };
     public SceneNode Lighting { get; set; } = new() { Id = "lighting", Type = "Lighting", Name = "Lighting", Ambient = "#808080", ClockTime = 14, Children = [new SceneNode { Id = "sky-main", Type = "Sky", Name = "Sky" }] };
+    public SceneNode SoundService { get; set; } = new() { Id = "sound-service", Type = "SoundService", Name = "SoundService" };
     public SceneNode ReplicatedStorage { get; set; } = new() { Id = "replicated-storage", Type = "ReplicatedStorage", Name = "ReplicatedStorage" };
     public SceneNode ServerScriptService { get; set; } = new() { Id = "server-script-service", Type = "ServerScriptService", Name = "ServerScriptService" };
     public SceneNode ServerStorage { get; set; } = new() { Id = "server-storage", Type = "ServerStorage", Name = "ServerStorage" };
-    public SceneNode Gui { get; set; } = new() { Id = "gui", Type = "Gui", Name = "Gui", Children = [new SceneNode { Id = "screen-gui-main", Type = "ScreenGui", Name = "ScreenGui" }] };
+    public SceneNode StarterPack { get; set; } = new() { Id = "starter-pack", Type = "StarterPack", Name = "StarterPack" };
+    public SceneNode Gui { get; set; } = new() { Id = "gui", Type = "StarterGui", Name = "StarterGui", Children = [new SceneNode { Id = "screen-gui-main", Type = "ScreenGui", Name = "ScreenGui" }] };
     public List<ProjectAsset> Assets { get; set; } = [];
     public List<GameScript> Scripts { get; set; } = [];
     [JsonIgnore] public string ProjectPath { get; set; } = string.Empty;
@@ -24,6 +27,9 @@ public sealed class ProjectSettings
 {
     public string Background { get; set; } = "#101522";
     public bool Shadows { get; set; } = true;
+    public bool SnapToGrid { get; set; } = true;
+    public float MoveSnapIncrement { get; set; } = 1;
+    public float RotateSnapIncrement { get; set; } = 15;
 }
 
 public sealed class SceneNode
@@ -34,7 +40,9 @@ public sealed class SceneNode
     public bool Archivable { get; set; } = true;
     public float[] Position { get; set; } = [0, 0, 0];
     public bool HasModelPivot { get; set; }
+    public string PrimaryPart { get; set; } = string.Empty;
     public float[] PositionScale { get; set; } = [0, 0];
+    public float[] AnchorPoint { get; set; } = [0, 0];
     public float[] PaddingLeft { get; set; } = [0, 0];
     public float[] PaddingTop { get; set; } = [0, 0];
     public float[] PaddingRight { get; set; } = [0, 0];
@@ -44,6 +52,7 @@ public sealed class SceneNode
     public float[] Size { get; set; } = [2, 2, 2];
     public float[] SizeScale { get; set; } = [0, 0];
     public int ZIndex { get; set; } = 1;
+    public int DisplayOrder { get; set; }
     public int LayoutOrder { get; set; }
     public string Color { get; set; } = "#4E9DFF";
     public string FillColor { get; set; } = "#00BFFF";
@@ -53,6 +62,9 @@ public sealed class SceneNode
     public float FillTransparency { get; set; } = .5f;
     public float OutlineTransparency { get; set; }
     public string Adornee { get; set; } = string.Empty;
+    public float MaxDistance { get; set; }
+    public bool AlwaysOnTop { get; set; }
+    public float PixelsPerStud { get; set; } = 50;
     public string SurfaceColor3 { get; set; } = "#FFFFFF";
     public float SurfaceTransparency { get; set; } = 1;
     public float LineThickness { get; set; } = .05f;
@@ -70,6 +82,11 @@ public sealed class SceneNode
     public bool Enabled { get; set; } = true;
     public float Brightness { get; set; } = 1;
     public string Ambient { get; set; } = "#808080";
+    public string AtmosphereDecay { get; set; } = "#607080";
+    public float Density { get; set; } = .3f;
+    public float Haze { get; set; }
+    public float Glare { get; set; }
+    public float Offset { get; set; }
     public float ClockTime { get; set; } = 14;
     public float Range { get; set; } = 16;
     public string SecondaryColor { get; set; } = "#FFE69A";
@@ -97,6 +114,11 @@ public sealed class SceneNode
     public string ObjectText { get; set; } = string.Empty;
     public float MaxActivationDistance { get; set; } = 10;
     public float Volume { get; set; } = .5f;
+    public float PlaybackSpeed { get; set; } = 1;
+    public float SoundServiceVolume { get; set; } = 1;
+    public float SoundGroupVolume { get; set; } = 1;
+    public string SoundGroupId { get; set; } = string.Empty;
+    public float PitchShiftOctave { get; set; } = 1.25f;
     public bool Looped { get; set; }
     public bool Playing { get; set; }
     public float RollOffMinDistance { get; set; } = 10;
@@ -121,6 +143,11 @@ public sealed class SceneNode
     public float MaxVelocity { get; set; } = 100;
     public bool RigidityEnabled { get; set; }
     public bool ReactionForceEnabled { get; set; }
+    public float[] AlignOrientationRotation { get; set; } = [0, 0, 0];
+    public float[] AngularVelocityTarget { get; set; } = [0, 0, 0];
+    public float MaxTorque { get; set; } = 1000;
+    public float MaxAngularVelocity { get; set; } = 100;
+    public bool ReactionTorqueEnabled { get; set; }
     public float Width0 { get; set; } = .2f;
     public float Width1 { get; set; } = .2f;
     public float TrailLifetime { get; set; } = 2;
@@ -133,7 +160,11 @@ public sealed class SceneNode
     public float TextureLength { get; set; } = 1;
     [JsonIgnore] public int TrailClearVersion { get; set; }
     public string Text { get; set; } = "Text";
+    public string PlaceholderText { get; set; } = string.Empty;
     public string TextColor { get; set; } = "#FFFFFF";
+    public bool MultiLine { get; set; }
+    public bool TextEditable { get; set; } = true;
+    public bool ClearTextOnFocus { get; set; } = true;
     public string StrokeColor { get; set; } = "#FFFFFF";
     public float TextSize { get; set; } = 18;
     public bool TextScaled { get; set; }
@@ -188,10 +219,17 @@ public sealed class SceneNode
     public bool CanTouch { get; set; } = true;
     public bool CanQuery { get; set; } = true;
     public float[] Velocity { get; set; } = [0, 0, 0];
+    [JsonIgnore] public float[] AssemblyAngularVelocity { get; set; } = [0, 0, 0];
     public bool CastShadow { get; set; } = true;
     public float Gravity { get; set; } = 24;
     public bool AutoManageCharacter { get; set; } = true;
     public string Character { get; set; } = string.Empty;
+    public string Team { get; set; } = string.Empty;
+    public string TeamColor { get; set; } = "#E53935";
+    public bool AutoAssignable { get; set; } = true;
+    public bool Neutral { get; set; } = true;
+    public bool AllowTeamChangeOnTouch { get; set; } = true;
+    public float Duration { get; set; } = 10;
     public string Occupant { get; set; } = string.Empty;
     public float Health { get; set; } = 100;
     public float MaxHealth { get; set; } = 100;
@@ -201,6 +239,7 @@ public sealed class SceneNode
     public long IntegerValue { get; set; }
     public double NumberValue { get; set; }
     public string StringValueText { get; set; } = string.Empty;
+    public float[] Vector2Value { get; set; } = [0, 0];
     public float[] Vector3Value { get; set; } = [0, 0, 0];
     public string Color3Value { get; set; } = "#000000";
     public string ObjectValueId { get; set; } = string.Empty;

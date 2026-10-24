@@ -186,7 +186,7 @@ public sealed class SceneRenderService
 
     public void UpdateNode(SceneNode node, GameProject project)
     {
-        if (node.Type is "Lighting" or "Sky")
+        if (node.Type is "Lighting" or "Sky" or "Atmosphere")
         {
             Refresh(project);
             return;
@@ -1258,7 +1258,7 @@ public sealed class SceneRenderService
 
         void Visit(SceneNode parent)
         {
-            foreach (var forceField in parent.Children.Where(child => child.Type == "ForceField" && child.Visible))
+            foreach (var forceField in parent.Children.Where(child => child.Type == "ForceField" && child.Enabled && child.Visible))
             {
                 var protectedParts = parent.Type == "Model"
                     ? GameProjectStore.Flatten(parent.Children).Where(SceneNodeTypes.IsBasePart).ToArray()
@@ -1357,6 +1357,30 @@ public sealed class SceneRenderService
     {
         try { ambientLight.Color = (System.Windows.Media.Color)ColorConverter.ConvertFromString(lighting.Ambient); }
         catch { ambientLight.Color = Colors.Gray; }
+        var background = Colors.Black;
+        try { if (activeProject is not null) background = (System.Windows.Media.Color)ColorConverter.ConvertFromString(activeProject.Settings.Background); }
+        catch { }
+        var atmosphere = lighting.Children.FirstOrDefault(node => node.Type == "Atmosphere" && node.Enabled);
+        if (atmosphere is not null)
+        {
+            try
+            {
+                var haze = (System.Windows.Media.Color)ColorConverter.ConvertFromString(atmosphere.Color);
+                var decay = (System.Windows.Media.Color)ColorConverter.ConvertFromString(atmosphere.AtmosphereDecay);
+                var decayBlend = (float)Math.Clamp(.12f + atmosphere.Glare * .025f + Math.Max(0, atmosphere.Offset) * .2f, 0, .55f);
+                haze = System.Windows.Media.Color.FromRgb(
+                    (byte)Math.Clamp(haze.R * (1 - decayBlend) + decay.R * decayBlend, 0, 255),
+                    (byte)Math.Clamp(haze.G * (1 - decayBlend) + decay.G * decayBlend, 0, 255),
+                    (byte)Math.Clamp(haze.B * (1 - decayBlend) + decay.B * decayBlend, 0, 255));
+                var blend = (float)Math.Clamp(atmosphere.Density * .38f + atmosphere.Haze * .025f + atmosphere.Glare * .008f + atmosphere.Offset * .025f, 0, .72f);
+                viewport.BackgroundColor = System.Windows.Media.Color.FromRgb(
+                    (byte)Math.Clamp(background.R * (1 - blend) + haze.R * blend, 0, 255),
+                    (byte)Math.Clamp(background.G * (1 - blend) + haze.G * blend, 0, 255),
+                    (byte)Math.Clamp(background.B * (1 - blend) + haze.B * blend, 0, 255));
+            }
+            catch { viewport.BackgroundColor = background; }
+        }
+        else viewport.BackgroundColor = background;
         var phase = (lighting.ClockTime - 6) * Math.PI / 12;
         var elevation = Math.Sin(phase);
         sunLight.Direction = new Vector3D(-Math.Cos(phase), -Math.Max(.08, elevation), -.45);

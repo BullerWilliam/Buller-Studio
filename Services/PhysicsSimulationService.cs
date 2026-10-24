@@ -11,6 +11,7 @@ public sealed class PhysicsSimulationService
     private readonly Dictionary<string, Dictionary<string, WeldedTransform>> weldedTransforms = new(StringComparer.Ordinal);
     private sealed record WeldedTransform(float[] Position, float[] Rotation);
     private sealed record VelocityTarget(SceneNode Constraint, Matrix4x4 Orientation);
+    private sealed record OrientationOwner(SceneNode Attachment, SceneNode Part);
 
     public PhysicsSimulationService(GameProject project, Action<SceneNode> moved)
     {
@@ -24,6 +25,7 @@ public sealed class PhysicsSimulationService
         var parts = GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
         var appliedForces = BuildForceMap(parts);
         var velocityTargets = BuildVelocityMap(parts);
+        var orientations = BuildOrientationOwners(parts);
         var ignoredPairs = BuildIgnoredCollisionPairs(parts);
         var weldedGroups = BuildWeldedGroups(parts);
         var activeAssemblies = weldedGroups.Values.Distinct().Select(AssemblyKey).ToHashSet(StringComparer.Ordinal);
@@ -37,6 +39,8 @@ public sealed class PhysicsSimulationService
             foreach (var (partId, force) in BuildAlignmentForceMap(parts))
                 stepForces[partId] = stepForces.GetValueOrDefault(partId) + force;
             SimulateStep(parts, weldedGroups, stepForces, velocityTargets, ignoredPairs, deltaTime);
+            ApplyAngularVelocityTargets(parts, orientations, deltaTime);
+            ApplyOrientationTargets(orientations, deltaTime);
             remaining -= deltaTime;
         }
     }
@@ -183,6 +187,140 @@ public sealed class PhysicsSimulationService
             list.Add(new VelocityTarget(constraint, orientation));
         }
         return targets;
+    }
+
+    private Dictionary<string, OrientationOwner> BuildOrientationOwners(SceneNode[] parts) => parts
+        .SelectMany(part => part.Children.Where(child => child.Type == "Attachment")
+            .Select(attachment => (attachment, part)))
+        .ToDictionary(pair => pair.attachment.Id, pair => new OrientationOwner(pair.attachment, pair.part), StringComparer.Ordinal);
+
+    private void ApplyAngularVelocityTargets(SceneNode[] parts, Dictionary<string, OrientationOwner> owners, float deltaTime)
+    {
+        static Vector3 Vector(float[] values) => new(values[0], values[1], values[2]);
+        foreach (var constraint in GameProjectStore.Flatten(project.Workspace.Children)
+                     .Where(node => node.Type == "AngularVelocity" && node.Enabled))
+        {
+            if (!owners.TryGetValue(constraint.Attachment0, out var owner) || owner.Part.Anchored) continue;
+            var target = Vector(constraint.AngularVelocityTarget);
+            OrientationOwner? reactionOwner = null;
+            if (constraint.RelativeTo == "Attachment0")
+                target = Vector3.TransformNormal(target, RotationMath.FromDegrees(owner.Attachment.Rotation) * RotationMath.FromDegrees(owner.Part.Rotation));
+            else if (constraint.RelativeTo == "Attachment1")
+            {
+                if (!owners.TryGetValue(constraint.Attachment1, out var relativeAttachment)) continue;
+                target = Vector3.TransformNormal(target, RotationMath.FromDegrees(relativeAttachment.Attachment.Rotation) * RotationMath.FromDegrees(relativeAttachment.Part.Rotation));
+                if (constraint.ReactionTorqueEnabled && !relativeAttachment.Part.Anchored && relativeAttachment.Part.Id != owner.Part.Id)
+                    reactionOwner = relativeAttachment;
+            }
+            var current = Vector(owner.Part.AssemblyAngularVelocity);
+            var error = target - current;
+            var magnitude = error.Length();
+            var maxChange = constraint.MaxTorque / PartMomentOfInertia(owner.Part) * deltaTime;
+            if (!float.IsFinite(magnitude) || !float.IsFinite(maxChange) || maxChange <= 0) continue;
+            var change = magnitude > maxChange ? error * (maxChange / magnitude) : error;
+            owner.Part.AssemblyAngularVelocity = [current.X + change.X, current.Y + change.Y, current.Z + change.Z];
+            if (reactionOwner is { } reaction)
+            {
+                var firstInertia = PartMomentOfInertia(owner.Part);
+                var secondInertia = PartMomentOfInertia(reaction.Part);
+                var reactionChange = -change * (firstInertia / secondInertia);
+                reaction.Part.AssemblyAngularVelocity = [reaction.Part.AssemblyAngularVelocity[0] + reactionChange.X,
+                    reaction.Part.AssemblyAngularVelocity[1] + reactionChange.Y,
+                    reaction.Part.AssemblyAngularVelocity[2] + reactionChange.Z];
+            }
+        }
+
+        foreach (var part in parts)
+        {
+            if (part.Anchored)
+            {
+                part.AssemblyAngularVelocity = [0, 0, 0];
+                continue;
+            }
+            var angularVelocity = Vector(part.AssemblyAngularVelocity);
+            if (!float.IsFinite(angularVelocity.X) || !float.IsFinite(angularVelocity.Y) || !float.IsFinite(angularVelocity.Z))
+            {
+                part.AssemblyAngularVelocity = [0, 0, 0];
+                continue;
+            }
+            var rotationDelta = angularVelocity * (deltaTime * (180f / MathF.PI));
+            if (rotationDelta.LengthSquared() < .000001f) continue;
+            part.Rotation = [part.Rotation[0] + rotationDelta.X, part.Rotation[1] + rotationDelta.Y, part.Rotation[2] + rotationDelta.Z];
+            moved(part);
+        }
+    }
+
+    private void ApplyOrientationTargets(Dictionary<string, OrientationOwner> owners, float deltaTime)
+    {
+        static Vector3 Vector(float[] values) => new(values[0], values[1], values[2]);
+        static float WrapAngle(float degrees)
+        {
+            degrees %= 360;
+            if (degrees > 180) degrees -= 360;
+            if (degrees < -180) degrees += 360;
+            return degrees;
+        }
+
+        foreach (var constraint in GameProjectStore.Flatten(project.Workspace.Children)
+                     .Where(node => node.Type == "AlignOrientation" && node.Enabled))
+        {
+            if (!owners.TryGetValue(constraint.Attachment0, out var first) || first.Part.Anchored) continue;
+            var targetRotation = RotationMath.FromDegrees(constraint.AlignOrientationRotation);
+            OrientationOwner? reactionOwner = null;
+            if (constraint.AlignmentMode == "TwoAttachment")
+            {
+                if (!owners.TryGetValue(constraint.Attachment1, out var second) || second.Part.Id == first.Part.Id) continue;
+                var targetAttachmentRotation = RotationMath.FromDegrees(second.Attachment.Rotation) * RotationMath.FromDegrees(second.Part.Rotation);
+                targetRotation = Matrix4x4.Transpose(RotationMath.FromDegrees(first.Attachment.Rotation)) * targetAttachmentRotation;
+                reactionOwner = second;
+            }
+            else
+                targetRotation = Matrix4x4.Transpose(RotationMath.FromDegrees(first.Attachment.Rotation)) * targetRotation;
+
+            var current = Vector(first.Part.Rotation);
+            var desired = RotationMath.ToDegrees(targetRotation);
+            var delta = new Vector3(WrapAngle(desired[0] - current.X), WrapAngle(desired[1] - current.Y), WrapAngle(desired[2] - current.Z));
+            var error = delta.Length();
+            if (!float.IsFinite(error) || error < .001f) continue;
+
+            var maxSpeed = Math.Clamp(constraint.MaxAngularVelocity, 0, 10000) * (180f / MathF.PI);
+            var maxAngularAcceleration = Math.Clamp(constraint.MaxTorque, 0, 1000000) / PartMomentOfInertia(first.Part) * (180f / MathF.PI);
+            if (constraint.RigidityEnabled) { maxSpeed = 10000; maxAngularAcceleration = 1000000; }
+            if (maxSpeed <= 0 || maxAngularAcceleration <= 0) continue;
+            var response = constraint.RigidityEnabled ? 1 : Math.Clamp(constraint.Responsiveness, 0, 200) * deltaTime;
+            var step = delta * Math.Min(1, response);
+            var stepLength = step.Length();
+            var maxStep = Math.Min(maxSpeed * deltaTime, maxAngularAcceleration * deltaTime * deltaTime);
+            if (stepLength > maxStep && stepLength > 0) step *= maxStep / stepLength;
+            var firstStep = step;
+            var secondStep = Vector3.Zero;
+            var applyReaction = reactionOwner is { } reaction && constraint.ReactionTorqueEnabled && !reaction.Part.Anchored;
+            if (applyReaction && reactionOwner is { } reactionPart)
+            {
+                var firstInertia = PartMomentOfInertia(first.Part);
+                var secondInertia = PartMomentOfInertia(reactionPart.Part);
+                firstStep *= secondInertia / (firstInertia + secondInertia);
+                secondStep = -step * (firstInertia / (firstInertia + secondInertia));
+            }
+            first.Part.Rotation = [current.X + firstStep.X, current.Y + firstStep.Y, current.Z + firstStep.Z];
+            moved(first.Part);
+
+            if (applyReaction && reactionOwner is { } reactionOwnerPart)
+            {
+                reactionOwnerPart.Part.Rotation = [reactionOwnerPart.Part.Rotation[0] + secondStep.X,
+                    reactionOwnerPart.Part.Rotation[1] + secondStep.Y,
+                    reactionOwnerPart.Part.Rotation[2] + secondStep.Z];
+                moved(reactionOwnerPart.Part);
+            }
+        }
+    }
+
+    private static float PartMomentOfInertia(SceneNode part)
+    {
+        var x = Math.Max(.01f, Math.Abs(part.Size[0]));
+        var y = Math.Max(.01f, Math.Abs(part.Size[1]));
+        var z = Math.Max(.01f, Math.Abs(part.Size[2]));
+        return Math.Max(.001f, PartMass(part) * (x * x + y * y + z * z) / 18f);
     }
 
     private static void ApplyVelocityTargets(float[] velocity, IEnumerable<SceneNode> members,

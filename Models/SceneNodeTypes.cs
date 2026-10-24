@@ -14,7 +14,7 @@ public static class SceneNodeTypes
 
     public static bool IsValueObject(SceneNode? node) => IsValueObjectType(node?.Type);
 
-    public static bool IsValueObjectType(string? type) => type is "BoolValue" or "IntValue" or "NumberValue" or "StringValue" or "Vector3Value" or "Color3Value" or "ObjectValue";
+    public static bool IsValueObjectType(string? type) => type is "BoolValue" or "IntValue" or "NumberValue" or "StringValue" or "Vector2Value" or "Vector3Value" or "Color3Value" or "ObjectValue";
 
     public static bool IsFace(string? face) => face is "Front" or "Back" or "Left" or "Right" or "Top" or "Bottom";
 }

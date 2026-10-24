@@ -866,6 +866,80 @@ if (UICornerRadiusService.Get(legacyCorner, "TopRightRadius")[1] != 12
     || UICornerRadiusService.Render(legacyCorner, 100, 50).TopRight != 12)
     throw new Exception("Legacy pixel UICorner radius did not remain compatible.");
 
+var shadowProject = new GameProject();
+var shadowScreen = shadowProject.Gui.Children.Single(node => node.Type == "ScreenGui");
+var shadowFrame = new SceneNode { Type = "Frame", Name = "ShadowFrame", Size = [100, 60, 2] };
+shadowScreen.Children.Add(shadowFrame);
+if (!GameProjectStore.CanParentNode(shadowProject, new SceneNode { Type = "UIShadow" }, shadowFrame)
+    || GameProjectStore.CanParentNode(shadowProject, new SceneNode { Type = "UIShadow" }, shadowProject.Workspace))
+    throw new Exception("UIShadow parenting rules are wrong.");
+var shadowOutput = new List<string>();
+var shadowRuntime = new LuaXRuntime(shadowProject, output: shadowOutput.Add);
+var shadowScript = new GameScript { Source = "local s = Instance.new('UIShadow', game.Gui.ScreenGui.ShadowFrame); s.BlurRadius = UDim.new(.1, 4); s.Offset = UDim2.new(0, 6, 0, 8); s.Spread = UDim2.new(0, 2, 0, 3); s.Transparency = .3; print('shadow', s.BlurRadius.Scale, s.Offset.X.Offset, s.Spread.Y.Offset, s:IsA('UIComponent'))" };
+shadowProject.Scripts.Add(shadowScript);
+shadowRuntime.Run(shadowScript.Id);
+var shadowNode = shadowFrame.Children.Single(node => node.Type == "UIShadow");
+if (Math.Abs(shadowNode.ShadowBlurRadius[0] - .1f) > .0001f || shadowNode.ShadowOffset[0] != 6
+    || shadowNode.ShadowSpread[1] != 3 || Math.Abs(shadowNode.Transparency - .3f) > .0001f
+    || !shadowOutput.Any(line => line.StartsWith("shadow\t", StringComparison.Ordinal) && line.EndsWith("\t6\t3\ttrue", StringComparison.Ordinal)))
+    throw new Exception($"UIShadow Lua X properties failed: blur={shadowNode.ShadowBlurRadius[0]}, offset={shadowNode.ShadowOffset[0]}, spread={shadowNode.ShadowSpread[1]}, transparency={shadowNode.Transparency}; " + string.Join(" | ", shadowOutput));
+var restoredShadowProject = JsonSerializer.Deserialize<GameProject>(
+    JsonSerializer.Serialize(shadowProject, GameProjectStore.JsonOptions), GameProjectStore.JsonOptions)
+    ?? throw new Exception("UIShadow project did not deserialize.");
+GameProjectStore.EnsureProject(restoredShadowProject);
+Exception? shadowRenderError = null;
+var shadowRenderThread = new Thread(() =>
+{
+    try
+    {
+        var canvas = GuiRenderService.Render(restoredShadowProject, false, 200, 100);
+        var layer = canvas.Children.OfType<System.Windows.Controls.Canvas>().Single(child => ((SceneNode)child.Tag).Name == "ShadowFrame");
+        var visual = layer.Children.OfType<System.Windows.Controls.Border>().First();
+        if (System.Windows.Controls.Canvas.GetLeft(visual) != 4 || System.Windows.Controls.Canvas.GetTop(visual) != 5
+            || visual.Width != 104 || visual.Height != 66 || visual.Effect is not System.Windows.Media.Effects.BlurEffect)
+            throw new Exception("UIShadow shape settings did not render.");
+    }
+    catch (Exception exception) { shadowRenderError = exception; }
+});
+shadowRenderThread.SetApartmentState(ApartmentState.STA);
+shadowRenderThread.Start();
+shadowRenderThread.Join();
+if (shadowRenderError is not null) throw shadowRenderError;
+if (!GameProjectStore.CanParentNode(shadowProject, new SceneNode { Type = "UIGradient" }, shadowNode))
+    throw new Exception("UIGradient cannot be added beneath UIShadow.");
+var restoredShadowFrame = restoredShadowProject.Gui.Children.Single(node => node.Type == "ScreenGui").Children.Single(node => node.Name == "ShadowFrame");
+var restoredShadow = restoredShadowFrame.Children.Single(node => node.Type == "UIShadow");
+restoredShadow.Children.Add(new SceneNode { Type = "UIGradient", StartColor = "#FFFFFF", EndColor = "#808080" });
+restoredShadow.ShadowInset = true;
+var textShadowLabel = new SceneNode { Type = "TextLabel", Name = "TextShadowLabel", Text = "Shadow", Size = [100, 30, 2] };
+textShadowLabel.Children.Add(new SceneNode { Type = "UIShadow", ShadowMode = "Text", ShadowInset = true });
+restoredShadowProject.Gui.Children.Single(node => node.Type == "ScreenGui").Children.Add(textShadowLabel);
+shadowRenderError = null;
+shadowRenderThread = new Thread(() =>
+{
+    try
+    {
+        var canvas = GuiRenderService.Render(restoredShadowProject, false, 200, 100);
+        var frame = canvas.Children.OfType<System.Windows.Controls.Border>().Single(child => ((SceneNode)child.Tag).Name == "ShadowFrame");
+        var content = (System.Windows.Controls.Grid)frame.Child;
+        var inset = content.Children.OfType<System.Windows.Controls.Canvas>()
+            .SelectMany(child => child.Children.OfType<System.Windows.Controls.Border>()).Single(child => child.Effect is System.Windows.Media.Effects.BlurEffect);
+        if (inset.BorderBrush is not System.Windows.Media.LinearGradientBrush)
+            throw new Exception("UIGradient did not color the inset UIShadow.");
+        var label = canvas.Children.OfType<System.Windows.Controls.Border>().Single(child => ((SceneNode)child.Tag).Name == "TextShadowLabel");
+        var labelContent = (System.Windows.Controls.Grid)label.Child;
+        if (!labelContent.Children.OfType<System.Windows.Controls.Canvas>()
+            .SelectMany(child => child.Children.OfType<System.Windows.Controls.TextBlock>())
+            .Any(child => child.Effect is System.Windows.Media.Effects.BlurEffect))
+            throw new Exception("Text-mode UIShadow did not render.");
+    }
+    catch (Exception exception) { shadowRenderError = exception; }
+});
+shadowRenderThread.SetApartmentState(ApartmentState.STA);
+shadowRenderThread.Start();
+shadowRenderThread.Join();
+if (shadowRenderError is not null) throw shadowRenderError;
+
 var alignedListProject = new GameProject();
 var alignedListScreen = alignedListProject.Gui.Children.Single(node => node.Type == "ScreenGui");
 alignedListScreen.Children.Add(new SceneNode { Type = "Frame", Name = "B", Size = [50, 20, 2], LayoutOrder = 0 });
