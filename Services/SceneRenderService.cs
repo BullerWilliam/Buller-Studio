@@ -44,6 +44,7 @@ public sealed class SceneRenderService
     private SceneNode cameraNode;
     private GameProject? activeProject;
     private string? selectedId;
+    private readonly HashSet<string> selectedIds = new(StringComparer.Ordinal);
     private float orbitYaw = 35;
     private float orbitPitch = -24;
     private float orbitDistance = 12;
@@ -79,23 +80,31 @@ public sealed class SceneRenderService
 
     public void SetSelection(string? selectedId)
     {
-        this.selectedId = selectedId;
-        var selectedNode = activeProject is null ? null : GameProjectStore.Flatten(activeProject.Workspace.Children).FirstOrDefault(node => node.Id == selectedId);
-        var selectedParts = selectedNode?.Type == "Model"
-            ? GameProjectStore.Flatten(selectedNode.Children).Where(IsRenderable).Select(node => node.Id).ToHashSet(StringComparer.Ordinal)
-            : null;
-        var selectedAdornee = selectedNode?.Type is ("SelectionBox" or "SelectionSphere") && activeProject is not null
-            ? GameProjectStore.Flatten(activeProject.Workspace.Children).FirstOrDefault(node => node.Id == selectedNode.Adornee)
-            : null;
-        var selectedBoxParts = selectedAdornee?.Type == "Model"
-            ? GameProjectStore.Flatten(selectedAdornee.Children).Where(SceneNodeTypes.IsBasePart).Select(node => node.Id).ToHashSet(StringComparer.Ordinal)
-            : null;
+        SetSelections(selectedId is null ? [] : [selectedId], selectedId);
+    }
+
+    public void SetSelections(IEnumerable<string> selectionIds, string? primaryId = null)
+    {
+        var nextSelectionIds = selectionIds.ToArray();
+        selectedIds.Clear();
+        selectedIds.UnionWith(nextSelectionIds);
+        this.selectedId = primaryId is not null && selectedIds.Contains(primaryId) ? primaryId : selectedIds.LastOrDefault();
+        SceneNode[] workspaceNodes = activeProject is null ? [] : GameProjectStore.Flatten(activeProject.Workspace.Children).ToArray();
+        var selectedNodes = workspaceNodes.Where(node => selectedIds.Contains(node.Id)).ToArray();
+        var selectedParts = selectedNodes.Where(node => node.Type == "Model")
+            .SelectMany(node => GameProjectStore.Flatten(node.Children)).Where(IsRenderable)
+            .Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var node in selectedNodes.Where(node => node.Type is "SelectionBox" or "SelectionSphere"))
+        {
+            var adornee = workspaceNodes.FirstOrDefault(candidate => candidate.Id == node.Adornee);
+            if (adornee?.Type == "Model") selectedParts.UnionWith(GameProjectStore.Flatten(adornee.Children).Where(SceneNodeTypes.IsBasePart).Select(part => part.Id));
+            else if (adornee is not null) selectedParts.Add(adornee.Id);
+        }
         foreach (var entry in visuals)
         {
             if (entry.Value is not OutLineMeshGeometryModel3D visual) continue;
-            var isSelected = entry.Key == selectedId || selectedParts?.Contains(entry.Key) == true
-                || entry.Key == selectedAdornee?.Id || selectedBoxParts?.Contains(entry.Key) == true
-                || selectedNode?.Type == "Highlight" && highlightSources.TryGetValue(entry.Key, out var selectedHighlight) && selectedHighlight.Id == selectedId;
+            var isSelected = selectedIds.Contains(entry.Key) || selectedParts.Contains(entry.Key)
+                || selectedNodes.Any(node => node.Type == "Highlight" && highlightSources.TryGetValue(entry.Key, out var selectedHighlight) && selectedHighlight.Id == node.Id);
             highlightSources.TryGetValue(entry.Key, out var highlight);
             visual.EnableOutline = isSelected || highlight is not null && highlight.Enabled && highlight.OutlineTransparency < 1;
             visual.OutlineColor = isSelected ? Colors.Orange : highlight is null
@@ -103,7 +112,7 @@ public sealed class SceneRenderService
         }
         foreach (var (id, beam) in beamVisuals)
         {
-            beam.EnableOutline = id == selectedId;
+            beam.EnableOutline = selectedIds.Contains(id);
             beam.OutlineColor = Colors.Orange;
         }
     }
@@ -181,7 +190,7 @@ public sealed class SceneRenderService
         RefreshParticleEffects(project);
         RefreshSkybox(project.Workspace, project);
         UpdateCamera(project);
-        SetSelection(selectedId);
+        SetSelections(selectedIds, selectedId);
     }
 
     public void UpdateNode(SceneNode node, GameProject project)
@@ -209,13 +218,13 @@ public sealed class SceneRenderService
             RefreshBeams(project);
             if (hasTrailNodes) RefreshTrails(project);
             if (hasParticleEffects) RefreshParticleEffects(project);
-            SetSelection(selectedId);
+        SetSelections(selectedIds, selectedId);
             return;
         }
         if (node.Type == "Beam")
         {
             RefreshBeams(project);
-            SetSelection(selectedId);
+        SetSelections(selectedIds, selectedId);
             return;
         }
         if (node.Type == "Trail")
@@ -227,7 +236,7 @@ public sealed class SceneRenderService
         if (node.Type == "Highlight")
         {
             RefreshHighlights(project);
-            SetSelection(selectedId);
+        SetSelections(selectedIds, selectedId);
             return;
         }
         if (node.Type is "SelectionBox" or "SelectionSphere")
@@ -253,7 +262,7 @@ public sealed class SceneRenderService
                 var explosionVisual = CreateVisual(node, project);
                 visuals[node.Id] = explosionVisual;
                 viewport.Items.Add(explosionVisual);
-                SetSelection(selectedId);
+        SetSelections(selectedIds, selectedId);
             }
             return;
         }
@@ -300,7 +309,7 @@ public sealed class SceneRenderService
                 fill.Transform = HighlightTransformFor(node);
             }
         }
-        if (refreshSelection) SetSelection(selectedId);
+        if (refreshSelection) SetSelections(selectedIds, selectedId);
         UpdateCamera(project);
     }
 
@@ -403,7 +412,7 @@ public sealed class SceneRenderService
         else if (node.Type == "WedgePart") AddWedge(builder);
         else if (node.Type == "CornerWedgePart") AddCornerWedge(builder);
         else if (node.Type == "SpawnLocation") AddSpawnLocation(builder);
-        else if (node.Type == "Seat") AddSeat(builder);
+        else if (node.Type is "Seat" or "VehicleSeat") AddSeat(builder);
         else if (node.Type == "TrussPart") AddTruss(builder);
         else builder.AddBox(Vector3.Zero, 1, 1, 1);
         var decalParent = node.Type is "Decal" or "Texture" ? FindPartParent(project, node) : null;
@@ -426,7 +435,7 @@ public sealed class SceneRenderService
         "Texture" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency}|{node.StudsPerTileU}|{node.StudsPerTileV}|{node.OffsetStudsU}|{node.OffsetStudsV}|{string.Join(',', FindPartParent(project, node)?.Size ?? [])}",
         "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}",
         "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}",
-        "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat" => MaterialKey(node),
+        "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat" or "VehicleSeat" => MaterialKey(node),
         _ => string.Empty
     };
 
@@ -1432,12 +1441,19 @@ public sealed class SceneRenderService
         var red = parsed.R / 255f;
         var green = parsed.G / 255f;
         var blue = parsed.B / 255f;
-        var specular = node.Material switch { "Metal" => .8f, "Glass" => .65f, "Plastic" => .14f, _ => .03f };
+        var specular = node.Material switch
+        {
+            "Metal" or "CorrodedMetal" or "DiamondPlate" => .8f,
+            "Foil" => .9f,
+            "Glass" or "Ice" or "Glacier" => .65f,
+            "Plastic" or "SmoothPlastic" => .14f,
+            _ => .03f
+        };
         return new PhongMaterial
         {
             DiffuseColor = new Color4(red, green, blue, parsed.A / 255f * (1 - EffectiveTransparency(node))),
             SpecularColor = new Color4(specular, specular, specular, 1),
-            SpecularShininess = node.Material is "Metal" or "Glass" ? 100 : 24,
+            SpecularShininess = node.Material is "Metal" or "CorrodedMetal" or "DiamondPlate" or "Foil" or "Glass" or "Ice" or "Glacier" ? 100 : 24,
             EmissiveColor = node.Material == "Neon" ? new Color4(red * .5f, green * .5f, blue * .5f, 1) : new Color4(0, 0, 0, 1)
         };
     }

@@ -9,9 +9,12 @@ namespace BullerStudio.Services;
 
 public sealed class LuaXRuntime
 {
+    private const float TerrainCellSize = 4;
+    private const int MaxTerrainCells = 4096;
     private readonly GameProject project;
     private readonly Action<SceneNode, string, DynValue>? propertyChanged;
     private readonly Action<string>? output;
+    private readonly Action<SceneNode, SceneNode>? sitOnSeat;
     private readonly Dictionary<string, Table> instances = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SceneNode> createdNodes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HashSet<string>> linkedChildKeys = new(StringComparer.Ordinal);
@@ -19,6 +22,9 @@ public sealed class LuaXRuntime
     private readonly Dictionary<string, List<ScriptCallback>> guiActivatedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> toolEquippedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> toolUnequippedCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<ScriptCallback>> toolDeactivatedCallbacks = new(StringComparer.Ordinal);
+    private readonly HashSet<string> equippedToolIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> activatedToolIds = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> guiTextChangedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> promptTriggeredCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> clickDetectorCallbacks = new(StringComparer.Ordinal);
@@ -31,6 +37,7 @@ public sealed class LuaXRuntime
     private readonly Dictionary<(string Tag, bool Added), List<BindableConnection>> tagCallbacks = [];
     private readonly Dictionary<(string Tag, bool Added), Table> tagSignals = [];
     private readonly Dictionary<string, List<BindableConnection>> runServiceCallbacks = new(StringComparer.Ordinal);
+    private readonly List<TweenState> activeTweens = [];
     private readonly Dictionary<string, ScriptCallback> bindableFunctionCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<(string NodeId, string Callback), ScriptCallback> remoteFunctionCallbacks = [];
     private readonly Dictionary<Coroutine, Stack<BindableInvocationScope>> bindableInvocationScopes = new();
@@ -44,9 +51,11 @@ public sealed class LuaXRuntime
     private readonly Queue<string> pendingScriptStarts = new();
     private readonly HashSet<string> queuedScriptIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> startedScriptIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> starterCharacterModels = new(StringComparer.Ordinal);
     private readonly ConditionalWeakTable<Table, LuaXTypeTag> runtimeTypeTags = new();
     private readonly bool isStudio;
     private double simulationTime;
+    private Table tweenService = null!;
     private Script script = null!;
     private DynValue bindableInvokeFactory = DynValue.Nil;
     private DynValue contextualRequireFactory = DynValue.Nil;
@@ -83,21 +92,36 @@ public sealed class LuaXRuntime
         public float Remaining { get; set; } = remaining;
         public bool Deferred { get; } = deferred;
     }
+    private sealed record TweenInfoData(float Time, string EasingStyle, string EasingDirection, int RepeatCount, bool Reverses, float DelayTime);
+    private sealed class TweenState(SceneNode target, TweenInfoData info, Dictionary<string, DynValue> goals, GameScript owner, Table instance)
+    {
+        public SceneNode Target { get; } = target;
+        public TweenInfoData Info { get; } = info;
+        public Dictionary<string, DynValue> Goals { get; } = goals;
+        public GameScript Owner { get; } = owner;
+        public Table Instance { get; } = instance;
+        public Dictionary<string, DynValue> Starts { get; set; } = new(StringComparer.Ordinal);
+        public List<ScriptCallback> CompletedCallbacks { get; } = [];
+        public float Elapsed { get; set; }
+        public bool Playing { get; set; }
+        public string PlaybackState { get; set; } = "Begin";
+    }
     private static readonly HashSet<string> CreatableClasses = new(StringComparer.Ordinal)
     {
-        "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Tool", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "ModuleScript", "Humanoid",
+        "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Model", "Folder", "Tool", "Accessory", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue",
-        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Team",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "BodyForce", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Team",
         "Sky", "Atmosphere", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"
     };
 
-    public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null, bool isStudio = true)
+    public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null, bool isStudio = true, Action<SceneNode, SceneNode>? sitOnSeat = null)
     {
         this.project = project;
         this.propertyChanged = propertyChanged;
         this.output = output;
         this.isStudio = isStudio;
+        this.sitOnSeat = sitOnSeat;
         Initialize();
     }
 
@@ -118,12 +142,26 @@ public sealed class LuaXRuntime
         foreach (var callbacks in runServiceCallbacks.Values)
             foreach (var connection in callbacks) connection.Disconnect();
         runServiceCallbacks.Clear();
+        touchedCallbacks.Clear();
+        guiActivatedCallbacks.Clear();
+        toolEquippedCallbacks.Clear();
+        toolUnequippedCallbacks.Clear();
+        toolDeactivatedCallbacks.Clear();
+        guiTextChangedCallbacks.Clear();
+        promptTriggeredCallbacks.Clear();
+        clickDetectorCallbacks.Clear();
+        humanoidDiedCallbacks.Clear();
+        explosionHitCallbacks.Clear();
+        valueChangedCallbacks.Clear();
+        equippedToolIds.Clear();
+        activatedToolIds.Clear();
         bindableFunctionCallbacks.Clear();
         remoteFunctionCallbacks.Clear();
         explosionHitCallbacks.Clear();
         detonatedExplosions.Clear();
         activeExplosions.Clear();
         debrisItems.Clear();
+        activeTweens.Clear();
         bindableInvocationScopes.Clear();
         activeScripts.Clear();
         scheduledTasks.Clear();
@@ -131,10 +169,12 @@ public sealed class LuaXRuntime
         queuedScriptIds.Clear();
         startedScriptIds.Clear();
         simulationTime = 0;
+        foreach (var player in project.Players.Children.Where(node => node.Type == "Player"))
+            if (FindNode(player.Character) is { Type: "Model" } character) AddStarterCharacterScripts(character);
         foreach (var gameScript in project.Scripts.ToArray())
         {
             var node = FindScriptNode(gameScript.Id);
-            if (node is not null && (node.Type != "Script" || !node.Enabled || !IsScriptAttachedForExecution(node))) continue;
+            if (node is not null && (!SceneNodeTypes.IsBaseScript(node) || !node.Enabled || !IsScriptAttachedForExecution(node))) continue;
             startedScriptIds.Add(gameScript.Id);
             StartScript(gameScript, false);
         }
@@ -147,6 +187,8 @@ public sealed class LuaXRuntime
     {
         var gameScript = project.Scripts.FirstOrDefault(item => item.Id == scriptId);
         if (gameScript is null || FindScriptNode(scriptId) is { Type: "ModuleScript" }) return;
+        foreach (var player in project.Players.Children.Where(node => node.Type == "Player"))
+            if (FindNode(player.Character) is { Type: "Model" } character) AddStarterCharacterScripts(character);
         startedScriptIds.Add(scriptId);
         StartScript(gameScript, true);
         StartQueuedScripts();
@@ -156,6 +198,7 @@ public sealed class LuaXRuntime
     {
         var elapsed = Math.Clamp(elapsedSeconds, .001f, .25f);
         UpdateBeforePhysics(elapsed);
+        AdvanceTweens(elapsed);
         FireFrameSignal("PostSimulation", DynValue.NewNumber(elapsed));
         RunDeferredTasks();
         ResumePendingScripts(elapsed);
@@ -181,11 +224,29 @@ public sealed class LuaXRuntime
 
     private bool IsScriptAttachedForExecution(SceneNode node)
     {
+        if (node.Type == "LocalScript")
+        {
+            var localScriptCurrent = node;
+            while (FindParentNode(localScriptCurrent) is { } parent)
+            {
+                if ((parent.Type is "PlayerGui" or "Backpack" or "PlayerScripts")
+                    && project.Players.Children.Any(player => FindParentNode(player, parent) is not null)) return true;
+                if (project.Players.Children.Any(player => player.Type == "Player" && player.Character == localScriptCurrent.Id)
+                    && GameProjectStore.Flatten(project.Workspace.Children).Any(node => node.Id == localScriptCurrent.Id)) return true;
+                if (ReferenceEquals(parent, project.Workspace))
+                    return project.Players.Children.Any(player => player.Type == "Player" && player.Character == localScriptCurrent.Id);
+                if (ReferenceEquals(parent, project.Players) || ReferenceEquals(parent, project.Gui)
+                    || ReferenceEquals(parent, project.ServerScriptService) || ReferenceEquals(parent, project.ServerStorage)
+                    || ReferenceEquals(parent, project.StarterPack) || ReferenceEquals(parent, project.StarterPlayer) || ReferenceEquals(parent, project.ReplicatedStorage)) return false;
+                localScriptCurrent = parent;
+            }
+            return false;
+        }
         var current = node;
         while (FindParentNode(current) is { } parent)
         {
             if (ReferenceEquals(parent, project.Workspace) || ReferenceEquals(parent, project.ServerScriptService) || ReferenceEquals(parent, project.Gui)) return true;
-            if (ReferenceEquals(parent, project.ReplicatedStorage) || ReferenceEquals(parent, project.ServerStorage) || ReferenceEquals(parent, project.StarterPack) || ReferenceEquals(parent, project.Players)) return false;
+            if (ReferenceEquals(parent, project.ReplicatedStorage) || ReferenceEquals(parent, project.ServerStorage) || ReferenceEquals(parent, project.StarterPack) || ReferenceEquals(parent, project.StarterPlayer) || ReferenceEquals(parent, project.Players)) return false;
             current = parent;
         }
         return false;
@@ -194,7 +255,7 @@ public sealed class LuaXRuntime
     private void QueueRunnableScripts(SceneNode source)
     {
         foreach (var node in new[] { source }.Concat(GameProjectStore.Flatten(source.Children)))
-            if (node.Type == "Script" && node.Enabled && IsScriptAttachedForExecution(node) && !startedScriptIds.Contains(node.Id)
+            if (SceneNodeTypes.IsBaseScript(node) && node.Enabled && IsScriptAttachedForExecution(node) && !startedScriptIds.Contains(node.Id)
                 && project.Scripts.Any(item => item.Id == node.Id) && queuedScriptIds.Add(node.Id))
                 pendingScriptStarts.Enqueue(node.Id);
     }
@@ -205,11 +266,25 @@ public sealed class LuaXRuntime
         {
             var id = pendingScriptStarts.Dequeue();
             queuedScriptIds.Remove(id);
-            if (startedScriptIds.Contains(id) || FindScriptNode(id) is not { Type: "Script", Enabled: true } node || !IsScriptAttachedForExecution(node)) continue;
+            if (startedScriptIds.Contains(id) || FindScriptNode(id) is not { } node || !SceneNodeTypes.IsBaseScript(node) || !node.Enabled || !IsScriptAttachedForExecution(node)) continue;
             var gameScript = project.Scripts.FirstOrDefault(item => item.Id == id);
             if (gameScript is null) continue;
             startedScriptIds.Add(id);
             StartScript(gameScript, false);
+        }
+    }
+
+    private void AddStarterCharacterScripts(SceneNode character)
+    {
+        if (starterCharacterModels.Contains(character.Id)) return;
+        var templates = project.StarterPlayer.Children.FirstOrDefault(node => node.Name == "StarterCharacterScripts" && node.Type == "Folder");
+        if (templates is null || !instances.ContainsKey(character.Id)) return;
+        starterCharacterModels.Add(character.Id);
+        foreach (var template in templates.Children.ToArray())
+        {
+            var cloneValue = CloneInstance(template);
+            if (ReadNodeArgument(cloneValue) is not { } clone || !instances.TryGetValue(character.Id, out var characterInstance)) continue;
+            TrySetParent(clone, DynValue.NewTable(characterInstance));
         }
     }
 
@@ -354,7 +429,7 @@ public sealed class LuaXRuntime
             var instance = CreateInstance(node);
             instances[node.Id] = instance;
             if (node.Type == "Humanoid") humanoidWasAlive[node.Id] = node.Health > 0;
-            if (node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui")) script.Globals.Set(node.Name, DynValue.NewTable(instance));
+            if (node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui")) script.Globals.Set(node.Name, DynValue.NewTable(instance));
         }
         foreach (var node in GameProjectStore.Flatten(project))
         {
@@ -384,6 +459,7 @@ public sealed class LuaXRuntime
         var serverScriptService = instances[project.ServerScriptService.Id];
         var serverStorage = instances[project.ServerStorage.Id];
         var starterPack = instances[project.StarterPack.Id];
+        var starterPlayer = instances[project.StarterPlayer.Id];
         var gui = instances[project.Gui.Id];
         var debris = new Table(script);
         runtimeTypeTags.Add(debris, new LuaXTypeTag("Debris"));
@@ -392,6 +468,7 @@ public sealed class LuaXRuntime
         debris.Set("AddItem", DynValue.NewCallback((_, args) => AddDebrisItem(debris, args)));
         var collectionService = CreateCollectionService();
         var runService = CreateRunService();
+        tweenService = CreateTweenService();
         game.Set("Workspace", DynValue.NewTable(workspace));
         game.Set("Players", DynValue.NewTable(players));
         game.Set("Teams", DynValue.NewTable(teams));
@@ -401,11 +478,13 @@ public sealed class LuaXRuntime
         game.Set("ServerScriptService", DynValue.NewTable(serverScriptService));
         game.Set("ServerStorage", DynValue.NewTable(serverStorage));
         game.Set("StarterPack", DynValue.NewTable(starterPack));
+        game.Set("StarterPlayer", DynValue.NewTable(starterPlayer));
         game.Set("Gui", DynValue.NewTable(gui));
         game.Set("StarterGui", DynValue.NewTable(gui));
         game.Set("Debris", DynValue.NewTable(debris));
         game.Set("CollectionService", DynValue.NewTable(collectionService));
         game.Set("RunService", DynValue.NewTable(runService));
+        game.Set("TweenService", DynValue.NewTable(tweenService));
         game.Set("GetService", DynValue.NewCallback((_, args) =>
         {
             var serviceName = args.Count > 1 ? args[1].CastToString() : args.Count == 1 ? args[0].CastToString() : null;
@@ -420,11 +499,13 @@ public sealed class LuaXRuntime
                 "ServerScriptService" => DynValue.NewTable(serverScriptService),
                 "ServerStorage" => DynValue.NewTable(serverStorage),
                 "StarterPack" => DynValue.NewTable(starterPack),
+                "StarterPlayer" => DynValue.NewTable(starterPlayer),
                 "Gui" => DynValue.NewTable(gui),
                 "StarterGui" => DynValue.NewTable(gui),
                 "Debris" => DynValue.NewTable(debris),
                 "CollectionService" => DynValue.NewTable(collectionService),
                 "RunService" => DynValue.NewTable(runService),
+                "TweenService" => DynValue.NewTable(tweenService),
                 _ => DynValue.Nil
             };
         }));
@@ -438,8 +519,10 @@ public sealed class LuaXRuntime
         script.Globals.Set("ServerScriptService", DynValue.NewTable(serverScriptService));
         script.Globals.Set("ServerStorage", DynValue.NewTable(serverStorage));
         script.Globals.Set("StarterPack", DynValue.NewTable(starterPack));
+        script.Globals.Set("StarterPlayer", DynValue.NewTable(starterPlayer));
         script.Globals.Set("Gui", DynValue.NewTable(gui));
         script.Globals.Set("StarterGui", DynValue.NewTable(gui));
+        script.Globals.Set("TweenService", DynValue.NewTable(tweenService));
         var instanceLibrary = new Table(script);
         instanceLibrary.Set("new", DynValue.NewCallback((_, args) => NewInstance(args)));
         script.Globals.Set("Instance", DynValue.NewTable(instanceLibrary));
@@ -451,6 +534,18 @@ public sealed class LuaXRuntime
         layoutDirectionEnum.Set("Horizontal", DynValue.NewString("Horizontal"));
         var enumTable = new Table(script);
         enumTable.Set("CameraMode", DynValue.NewTable(cameraModeEnum));
+        var easingStyleEnum = new Table(script);
+        foreach (var style in new[] { "Linear", "Sine", "Quad", "Cubic", "Quart", "Quint", "Exponential", "Circular", "Back", "Bounce", "Elastic" }) easingStyleEnum.Set(style, DynValue.NewString(style));
+        enumTable.Set("EasingStyle", DynValue.NewTable(easingStyleEnum));
+        var easingDirectionEnum = new Table(script);
+        foreach (var direction in new[] { "In", "Out", "InOut" }) easingDirectionEnum.Set(direction, DynValue.NewString(direction));
+        enumTable.Set("EasingDirection", DynValue.NewTable(easingDirectionEnum));
+        var playbackStateEnum = new Table(script);
+        foreach (var state in new[] { "Begin", "Delayed", "Playing", "Paused", "Completed", "Cancelled" }) playbackStateEnum.Set(state, DynValue.NewString(state));
+        enumTable.Set("PlaybackState", DynValue.NewTable(playbackStateEnum));
+        var materialEnum = new Table(script);
+        foreach (var material in SceneNodeTypes.EnumMaterials) materialEnum.Set(material, DynValue.NewString(material));
+        enumTable.Set("Material", DynValue.NewTable(materialEnum));
         enumTable.Set("LayoutDirection", DynValue.NewTable(layoutDirectionEnum));
         enumTable.Set("FillDirection", DynValue.NewTable(layoutDirectionEnum));
         var positionAlignmentModeEnum = new Table(script);
@@ -481,6 +576,9 @@ public sealed class LuaXRuntime
         foreach (var mode in new[] { "Vector", "Line", "Plane" }) velocityConstraintModeEnum.Set(mode, DynValue.NewString(mode));
         enumTable.Set("VelocityConstraintMode", DynValue.NewTable(velocityConstraintModeEnum));
         script.Globals.Set("Enum", DynValue.NewTable(enumTable));
+        var tweenInfoLibrary = new Table(script);
+        tweenInfoLibrary.Set("new", DynValue.NewCallback((_, args) => CreateTweenInfo(args)));
+        script.Globals.Set("TweenInfo", DynValue.NewTable(tweenInfoLibrary));
         var raycastParams = new Table(script);
         raycastParams.Set("new", DynValue.NewCallback((_, _) =>
         {
@@ -704,6 +802,7 @@ public sealed class LuaXRuntime
         "ServerScriptService" => project.ServerScriptService,
         "ServerStorage" => project.ServerStorage,
         "StarterPack" => project.StarterPack,
+        "StarterPlayer" => project.StarterPlayer,
         "Gui" => project.Gui,
         "StarterGui" => project.Gui,
         _ => null
@@ -712,7 +811,7 @@ public sealed class LuaXRuntime
     private bool IsServiceRoot(SceneNode node) =>
         ReferenceEquals(node, project.Workspace) || ReferenceEquals(node, project.Players)
         || ReferenceEquals(node, project.Teams) || ReferenceEquals(node, project.Lighting) || ReferenceEquals(node, project.SoundService) || ReferenceEquals(node, project.ReplicatedStorage)
-        || ReferenceEquals(node, project.ServerScriptService) || ReferenceEquals(node, project.ServerStorage) || ReferenceEquals(node, project.StarterPack)
+        || ReferenceEquals(node, project.ServerScriptService) || ReferenceEquals(node, project.ServerStorage) || ReferenceEquals(node, project.StarterPack) || ReferenceEquals(node, project.StarterPlayer)
         || ReferenceEquals(node, project.Gui);
 
     private DynValue LoadModule(CallbackArguments args)
@@ -809,7 +908,7 @@ public sealed class LuaXRuntime
     {
         if (!project.Scripts.Any(item => item.Id == owner.Id)) return false;
         var node = FindScriptNode(owner.Id);
-        return node is null || node.Type == "Script" && node.Enabled && IsScriptAttachedForExecution(node);
+        return node is null || SceneNodeTypes.IsBaseScript(node) && node.Enabled && IsScriptAttachedForExecution(node);
     }
 
     private void StartScheduledTask(ScheduledTask scheduled)
@@ -940,6 +1039,7 @@ public sealed class LuaXRuntime
         instance.Set("ClassName", DynValue.NewString(node.Type));
         instance.Set("Position", IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Type == "Model" ? SceneModelService.GetPivot(node) : node.Position));
         if (IsGuiObject(node)) instance.Set("AnchorPoint", Vector2Value(node.AnchorPoint));
+        if (IsGuiObject(node)) instance.Set("BackgroundColor3", ColorValue(node.Color));
         instance.Set("Rotation", VectorValue(node.Rotation));
         instance.Set("Size", node.Type == "Sparkles" ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) || node.Type == "BillboardGui" ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size));
         instance.Set("Color", ColorValue(node.Color));
@@ -997,6 +1097,7 @@ public sealed class LuaXRuntime
         instance.Set("Angle", DynValue.NewNumber(node.Angle));
         instance.Set("ActionText", DynValue.NewString(node.ActionText));
         instance.Set("ObjectText", DynValue.NewString(node.ObjectText));
+        instance.Set("HoldDuration", DynValue.NewNumber(node.HoldDuration));
         instance.Set("MaxActivationDistance", DynValue.NewNumber(node.MaxActivationDistance));
         instance.Set("Volume", DynValue.NewNumber(node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume));
         instance.Set("Octave", DynValue.NewNumber(node.PitchShiftOctave));
@@ -1089,6 +1190,17 @@ public sealed class LuaXRuntime
         instance.Set("AllowTeamChangeOnTouch", DynValue.NewBoolean(node.AllowTeamChangeOnTouch));
         instance.Set("Duration", DynValue.NewNumber(node.Duration));
         instance.Set("Occupant", GetOccupantValue(node));
+        if (node.Type == "VehicleSeat")
+        {
+            instance.Set("Disabled", DynValue.NewBoolean(node.VehicleSeatDisabled));
+            instance.Set("HeadsUpDisplay", DynValue.NewBoolean(node.VehicleSeatHeadsUpDisplay));
+            instance.Set("MaxSpeed", DynValue.NewNumber(node.VehicleSeatMaxSpeed));
+            instance.Set("Torque", DynValue.NewNumber(node.VehicleSeatTorque));
+            instance.Set("TurnSpeed", DynValue.NewNumber(node.VehicleSeatTurnSpeed));
+            instance.Set("ThrottleFloat", DynValue.NewNumber(node.VehicleSeatThrottleFloat));
+            instance.Set("SteerFloat", DynValue.NewNumber(node.VehicleSeatSteerFloat));
+            instance.Set("AreHingesDetected", DynValue.NewNumber(node.VehicleSeatAreHingesDetected));
+        }
         instance.Set("Health", DynValue.NewNumber(node.Health));
         instance.Set("MaxHealth", DynValue.NewNumber(node.MaxHealth));
         instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
@@ -1148,15 +1260,207 @@ public sealed class LuaXRuntime
                 return DynValue.Nil;
             }));
         }
+        if (node.Type == "BodyForce") instance.Set("Force", VectorValue(node.Force));
+        if (node.Type == "BodyVelocity")
+        {
+            instance.Set("Velocity", VectorValue(node.BodyVelocityTarget));
+            instance.Set("MaxForce", VectorValue(node.BodyVelocityMaxForce));
+            instance.Set("P", DynValue.NewNumber(node.BodyVelocityP));
+        }
+        if (node.Type == "BodyPosition")
+        {
+            instance.Set("Position", VectorValue(node.BodyPositionTarget));
+            instance.Set("MaxForce", VectorValue(node.BodyPositionMaxForce));
+            instance.Set("P", DynValue.NewNumber(node.BodyPositionP));
+            instance.Set("D", DynValue.NewNumber(node.BodyPositionD));
+        }
+        if (node.Type == "BodyGyro")
+        {
+            instance.Set("Rotation", VectorValue(node.BodyGyroTargetRotation));
+            instance.Set("MaxTorque", VectorValue(node.BodyGyroMaxTorque));
+            instance.Set("P", DynValue.NewNumber(node.BodyGyroP));
+            instance.Set("D", DynValue.NewNumber(node.BodyGyroD));
+        }
+        if (node.Type == "BodyAngularVelocity")
+        {
+            instance.Set("AngularVelocity", VectorValue(node.BodyAngularVelocityTarget));
+            instance.Set("MaxTorque", VectorValue(node.BodyAngularVelocityMaxTorque));
+            instance.Set("P", DynValue.NewNumber(node.BodyAngularVelocityP));
+        }
         if (node.Type == "VectorForce")
         {
             instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
             instance.Set("Force", VectorValue(node.Force));
             instance.Set("RelativeTo", DynValue.NewString(node.RelativeTo));
+            instance.Set("ApplyAtCenterOfMass", DynValue.NewBoolean(node.ApplyAtCenterOfMass));
+        }
+        if (node.Type == "LineForce")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("Magnitude", DynValue.NewNumber(node.LineForceMagnitude));
+            instance.Set("MaxForce", DynValue.NewNumber(node.LineForceMaxForce));
+            instance.Set("InverseSquareLaw", DynValue.NewBoolean(node.LineForceInverseSquareLaw));
+            instance.Set("ReactionForceEnabled", DynValue.NewBoolean(node.LineForceReactionForceEnabled));
+            instance.Set("ApplyAtCenterOfMass", DynValue.NewBoolean(node.ApplyAtCenterOfMass));
+        }
+        if (node.Type == "Torque")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("Torque", VectorValue(node.TorqueTarget));
+            instance.Set("RelativeTo", DynValue.NewString(node.RelativeTo));
+        }
+        if (node.Type == "SpringConstraint")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("CurrentLength", DynValue.NewNumber(node.SpringCurrentLength));
+            instance.Set("Damping", DynValue.NewNumber(node.SpringDamping));
+            instance.Set("FreeLength", DynValue.NewNumber(node.SpringFreeLength));
+            instance.Set("LimitsEnabled", DynValue.NewBoolean(node.SpringLimitsEnabled));
+            instance.Set("MaxForce", DynValue.NewNumber(node.SpringMaxForce));
+            instance.Set("MaxLength", DynValue.NewNumber(node.SpringMaxLength));
+            instance.Set("MinLength", DynValue.NewNumber(node.SpringMinLength));
+            instance.Set("Stiffness", DynValue.NewNumber(node.SpringStiffness));
+        }
+        if (node.Type == "TorsionSpringConstraint")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("Coils", DynValue.NewNumber(node.TorsionSpringCoils));
+            instance.Set("CurrentAngle", DynValue.NewNumber(node.TorsionSpringCurrentAngle));
+            instance.Set("Damping", DynValue.NewNumber(node.TorsionSpringDamping));
+            instance.Set("LimitsEnabled", DynValue.NewBoolean(node.TorsionSpringLimitsEnabled));
+            instance.Set("MaxAngle", DynValue.NewNumber(node.TorsionSpringMaxAngle));
+            instance.Set("MaxTorque", DynValue.NewNumber(node.TorsionSpringMaxTorque));
+            instance.Set("Radius", DynValue.NewNumber(node.TorsionSpringRadius));
+            instance.Set("Restitution", DynValue.NewNumber(node.TorsionSpringRestitution));
+            instance.Set("Stiffness", DynValue.NewNumber(node.TorsionSpringStiffness));
+        }
+        if (node.Type == "BallSocketConstraint")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("LimitsEnabled", DynValue.NewBoolean(node.BallSocketLimitsEnabled));
+            instance.Set("MaxFrictionTorque", DynValue.NewNumber(node.BallSocketMaxFrictionTorque));
+            instance.Set("Radius", DynValue.NewNumber(node.BallSocketRadius));
+            instance.Set("Restitution", DynValue.NewNumber(node.BallSocketRestitution));
+            instance.Set("UpperAngle", DynValue.NewNumber(node.BallSocketUpperAngle));
+            instance.Set("TwistLimitsEnabled", DynValue.NewBoolean(node.BallSocketTwistLimitsEnabled));
+            instance.Set("TwistLowerAngle", DynValue.NewNumber(node.BallSocketTwistLowerAngle));
+            instance.Set("TwistUpperAngle", DynValue.NewNumber(node.BallSocketTwistUpperAngle));
+        }
+        if (node.Type == "UniversalConstraint")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("LimitsEnabled", DynValue.NewBoolean(node.UniversalLimitsEnabled));
+            instance.Set("MaxAngle", DynValue.NewNumber(node.UniversalMaxAngle));
+            instance.Set("Radius", DynValue.NewNumber(node.UniversalRadius));
+            instance.Set("Restitution", DynValue.NewNumber(node.UniversalRestitution));
+        }
+        if (node.Type == "HingeConstraint")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("ActuatorType", DynValue.NewString(node.HingeActuatorType));
+            instance.Set("AngularResponsiveness", DynValue.NewNumber(node.HingeAngularResponsiveness));
+            instance.Set("AngularSpeed", DynValue.NewNumber(node.HingeAngularSpeed));
+            instance.Set("AngularVelocity", DynValue.NewNumber(node.HingeAngularVelocity));
+            instance.Set("CurrentAngle", DynValue.NewNumber(node.HingeCurrentAngle));
+            instance.Set("LimitsEnabled", DynValue.NewBoolean(node.HingeLimitsEnabled));
+            instance.Set("LowerAngle", DynValue.NewNumber(node.HingeLowerAngle));
+            instance.Set("MotorMaxAcceleration", DynValue.NewNumber(node.HingeMotorMaxAcceleration));
+            instance.Set("MotorMaxTorque", DynValue.NewNumber(node.HingeMotorMaxTorque));
+            instance.Set("Radius", DynValue.NewNumber(node.HingeRadius));
+            instance.Set("Restitution", DynValue.NewNumber(node.HingeRestitution));
+            instance.Set("ServoMaxTorque", DynValue.NewNumber(node.HingeServoMaxTorque));
+            instance.Set("TargetAngle", DynValue.NewNumber(node.HingeTargetAngle));
+            instance.Set("UpperAngle", DynValue.NewNumber(node.HingeUpperAngle));
+        }
+        if (node.Type is "PrismaticConstraint" or "CylindricalConstraint")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("ActuatorType", DynValue.NewString(node.PrismaticActuatorType));
+            instance.Set("CurrentPosition", DynValue.NewNumber(node.PrismaticCurrentPosition));
+            instance.Set("LimitsEnabled", DynValue.NewBoolean(node.PrismaticLimitsEnabled));
+            instance.Set("LinearResponsiveness", DynValue.NewNumber(node.PrismaticLinearResponsiveness));
+            instance.Set("LowerLimit", DynValue.NewNumber(node.PrismaticLowerLimit));
+            instance.Set("MotorMaxAcceleration", DynValue.NewNumber(node.PrismaticMotorMaxAcceleration));
+            instance.Set("MotorMaxForce", DynValue.NewNumber(node.PrismaticMotorMaxForce));
+            instance.Set("Restitution", DynValue.NewNumber(node.PrismaticRestitution));
+            instance.Set("ServoMaxForce", DynValue.NewNumber(node.PrismaticServoMaxForce));
+            instance.Set("Size", DynValue.NewNumber(node.PrismaticSize));
+            instance.Set("Speed", DynValue.NewNumber(node.PrismaticSpeed));
+            instance.Set("TargetPosition", DynValue.NewNumber(node.PrismaticTargetPosition));
+            instance.Set("UpperLimit", DynValue.NewNumber(node.PrismaticUpperLimit));
+            instance.Set("Velocity", DynValue.NewNumber(node.PrismaticVelocity));
+        }
+        if (node.Type == "CylindricalConstraint")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("ActuatorType", DynValue.NewString(node.PrismaticActuatorType));
+            instance.Set("CurrentPosition", DynValue.NewNumber(node.PrismaticCurrentPosition));
+            instance.Set("LimitsEnabled", DynValue.NewBoolean(node.PrismaticLimitsEnabled));
+            instance.Set("LinearResponsiveness", DynValue.NewNumber(node.PrismaticLinearResponsiveness));
+            instance.Set("LowerLimit", DynValue.NewNumber(node.PrismaticLowerLimit));
+            instance.Set("MotorMaxAcceleration", DynValue.NewNumber(node.PrismaticMotorMaxAcceleration));
+            instance.Set("MotorMaxForce", DynValue.NewNumber(node.PrismaticMotorMaxForce));
+            instance.Set("Restitution", DynValue.NewNumber(node.PrismaticRestitution));
+            instance.Set("ServoMaxForce", DynValue.NewNumber(node.PrismaticServoMaxForce));
+            instance.Set("Size", DynValue.NewNumber(node.PrismaticSize));
+            instance.Set("Speed", DynValue.NewNumber(node.PrismaticSpeed));
+            instance.Set("TargetPosition", DynValue.NewNumber(node.PrismaticTargetPosition));
+            instance.Set("UpperLimit", DynValue.NewNumber(node.PrismaticUpperLimit));
+            instance.Set("Velocity", DynValue.NewNumber(node.PrismaticVelocity));
+            instance.Set("AngularActuatorType", DynValue.NewString(node.HingeActuatorType));
+            instance.Set("AngularLimitsEnabled", DynValue.NewBoolean(node.HingeLimitsEnabled));
+            instance.Set("AngularRestitution", DynValue.NewNumber(node.HingeRestitution));
+            instance.Set("AngularResponsiveness", DynValue.NewNumber(node.HingeAngularResponsiveness));
+            instance.Set("AngularSpeed", DynValue.NewNumber(node.HingeAngularSpeed));
+            instance.Set("AngularVelocity", DynValue.NewNumber(node.HingeAngularVelocity));
+            instance.Set("CurrentAngle", DynValue.NewNumber(node.HingeCurrentAngle));
+            instance.Set("InclinationAngle", DynValue.NewNumber(node.CylindricalInclinationAngle));
+            instance.Set("LowerAngle", DynValue.NewNumber(node.HingeLowerAngle));
+            instance.Set("MotorMaxAngularAcceleration", DynValue.NewNumber(node.HingeMotorMaxAcceleration));
+            instance.Set("MotorMaxTorque", DynValue.NewNumber(node.HingeMotorMaxTorque));
+            instance.Set("RotationAxisVisible", DynValue.NewBoolean(node.CylindricalRotationAxisVisible));
+            instance.Set("ServoMaxTorque", DynValue.NewNumber(node.HingeServoMaxTorque));
+            instance.Set("TargetAngle", DynValue.NewNumber(node.HingeTargetAngle));
+            instance.Set("UpperAngle", DynValue.NewNumber(node.HingeUpperAngle));
+        }
+        if (node.Type == "RopeConstraint")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("CurrentLength", DynValue.NewNumber(node.RopeCurrentLength));
+            instance.Set("Length", DynValue.NewNumber(node.RopeLength));
+            instance.Set("Restitution", DynValue.NewNumber(node.RopeRestitution));
+            instance.Set("WinchEnabled", DynValue.NewBoolean(node.RopeWinchEnabled));
+            instance.Set("WinchForce", DynValue.NewNumber(node.RopeWinchForce));
+            instance.Set("WinchResponsiveness", DynValue.NewNumber(node.RopeWinchResponsiveness));
+            instance.Set("WinchSpeed", DynValue.NewNumber(node.RopeWinchSpeed));
+            instance.Set("WinchTarget", DynValue.NewNumber(node.RopeWinchTarget));
+        }
+        if (node.Type == "RodConstraint")
+        {
+            instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+            instance.Set("CurrentDistance", DynValue.NewNumber(node.RodCurrentDistance));
+            instance.Set("Length", DynValue.NewNumber(node.RodLength));
+            instance.Set("LimitAngle0", DynValue.NewNumber(node.RodLimitAngle0));
+            instance.Set("LimitAngle1", DynValue.NewNumber(node.RodLimitAngle1));
+            instance.Set("LimitsEnabled", DynValue.NewBoolean(node.RodLimitsEnabled));
+            instance.Set("Thickness", DynValue.NewNumber(node.RodThickness));
         }
         if (node.Type == "LinearVelocity")
         {
             instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
+            instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
             instance.Set("RelativeTo", DynValue.NewString(node.RelativeTo));
             instance.Set("VelocityConstraintMode", DynValue.NewString(node.VelocityConstraintMode));
             instance.Set("VectorVelocity", VectorValue(node.VectorVelocity));
@@ -1167,6 +1471,10 @@ public sealed class LuaXRuntime
             instance.Set("SecondaryTangentAxis", VectorValue(node.SecondaryTangentAxis));
             instance.Set("ForceLimitsEnabled", DynValue.NewBoolean(node.ForceLimitsEnabled));
             instance.Set("MaxForce", DynValue.NewNumber(node.MaxForce));
+            instance.Set("ForceLimitMode", DynValue.NewString(node.ForceLimitMode));
+            instance.Set("MaxAxesForce", VectorValue(node.MaxAxesForce));
+            instance.Set("MaxPlanarAxesForce", Vector2Value(node.MaxPlanarAxesForce));
+            instance.Set("ReactionForceEnabled", DynValue.NewBoolean(node.LinearVelocityReactionForceEnabled));
         }
         if (node.Type == "AlignPosition")
         {
@@ -1177,6 +1485,7 @@ public sealed class LuaXRuntime
             instance.Set("MaxForce", DynValue.NewNumber(node.MaxForce));
             instance.Set("RigidityEnabled", DynValue.NewBoolean(node.RigidityEnabled));
             instance.Set("ReactionForceEnabled", DynValue.NewBoolean(node.ReactionForceEnabled));
+            instance.Set("ApplyAtCenterOfMass", DynValue.NewBoolean(node.ApplyAtCenterOfMass));
         }
         if (node.Type == "AlignOrientation")
         {
@@ -1232,6 +1541,7 @@ public sealed class LuaXRuntime
         InstallAttributeApi(node, instance);
         InstallTagApi(node, instance);
         if (node.Type == "Workspace") instance.Set("Raycast", DynValue.NewCallback((_, args) => Raycast(node, args)));
+        if (node.Type == "Terrain") InstallTerrainApi(node, instance);
         if (SceneNodeTypes.IsValueObject(node))
         {
             var changed = new Table(script);
@@ -1259,6 +1569,16 @@ public sealed class LuaXRuntime
         {
             instance.Set("Play", DynValue.NewCallback((_, _) => SetPropertyValue(node, "Playing", DynValue.NewBoolean(true))));
             instance.Set("Stop", DynValue.NewCallback((_, _) => SetPropertyValue(node, "Playing", DynValue.NewBoolean(false))));
+        }
+        if (node.Type is "Seat" or "VehicleSeat")
+        {
+            instance.Set("Sit", DynValue.NewCallback((_, args) =>
+            {
+                var index = GetInstanceMethodArgumentIndex(node, args);
+                if (args.Count > index && ReadNodeArgument(args[index]) is { Type: "Humanoid" } humanoid)
+                    sitOnSeat?.Invoke(node, humanoid);
+                return DynValue.Nil;
+            }));
         }
         if (node.Type == "Humanoid")
         {
@@ -1308,6 +1628,15 @@ public sealed class LuaXRuntime
             {
                 instance.Set("Equipped", DynValue.NewTable(CreateToolSignal(node.Id, "Equipped", toolEquippedCallbacks)));
                 instance.Set("Unequipped", DynValue.NewTable(CreateToolSignal(node.Id, "Unequipped", toolUnequippedCallbacks)));
+                instance.Set("Deactivated", DynValue.NewTable(CreateToolSignal(node.Id, "Deactivated", toolDeactivatedCallbacks)));
+                instance.Set("Activate", DynValue.NewCallback((_, _) => { ActivateTool(node.Id); return DynValue.Nil; }));
+                instance.Set("Deactivate", DynValue.NewCallback((_, _) => { DeactivateTool(node.Id); return DynValue.Nil; }));
+                instance.Set("ToolTip", DynValue.NewString(node.ToolTip));
+                instance.Set("RequiresHandle", DynValue.NewBoolean(node.RequiresHandle));
+                instance.Set("CanBeDropped", DynValue.NewBoolean(node.CanBeDropped));
+                instance.Set("ManualActivationOnly", DynValue.NewBoolean(node.ManualActivationOnly));
+                instance.Set("GripPosition", VectorValue(node.GripPosition));
+                instance.Set("GripRotation", VectorValue(node.GripRotation));
             }
             else instance.Set("MouseButton1Click", DynValue.NewTable(activated));
         }
@@ -1382,6 +1711,146 @@ public sealed class LuaXRuntime
             }));
         instance.MetaTable = instanceMetatable;
         return instance;
+    }
+
+    private void InstallTerrainApi(SceneNode terrain, Table instance)
+    {
+        instance.Set("FillBlock", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(terrain, args);
+            if (args.Count <= index + 1 || !IsTypedValue(args[index], "Vector3") || !IsTypedValue(args[index + 1], "Vector3")) return DynValue.Nil;
+            var position = ReadVector(args[index], [float.NaN, float.NaN, float.NaN]);
+            var size = ReadVector(args[index + 1], [float.NaN, float.NaN, float.NaN]);
+            var material = ReadTerrainMaterial(args, index + 2);
+            if (!IsValidTerrainRegion(position, size) || material is null) return DynValue.Nil;
+            if (material == "Air") ClearTerrain(terrain, position, size);
+            else FillTerrain(terrain, position, size, material, null);
+            return DynValue.Nil;
+        }));
+        instance.Set("FillBall", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(terrain, args);
+            if (args.Count <= index + 1 || !IsTypedValue(args[index], "Vector3") || args[index + 1].Type != DataType.Number
+                || !double.IsFinite(args[index + 1].Number)) return DynValue.Nil;
+            var position = ReadVector(args[index], [float.NaN, float.NaN, float.NaN]);
+            var radius = (float)Math.Clamp(args[index + 1].Number, 0, 512);
+            var material = ReadTerrainMaterial(args, index + 2);
+            if (!IsValidTerrainPosition(position) || radius <= 0 || material is null) return DynValue.Nil;
+            if (material == "Air") ClearTerrain(terrain, position, [radius * 2, radius * 2, radius * 2], radius);
+            else FillTerrain(terrain, position, [radius * 2, radius * 2, radius * 2], material, radius);
+            return DynValue.Nil;
+        }));
+        instance.Set("ClearBlock", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(terrain, args);
+            if (args.Count <= index + 1 || !IsTypedValue(args[index], "Vector3") || !IsTypedValue(args[index + 1], "Vector3")) return DynValue.Nil;
+            var position = ReadVector(args[index], [float.NaN, float.NaN, float.NaN]);
+            var size = ReadVector(args[index + 1], [float.NaN, float.NaN, float.NaN]);
+            if (!IsValidTerrainRegion(position, size)) return DynValue.Nil;
+            ClearTerrain(terrain, position, size);
+            return DynValue.Nil;
+        }));
+        instance.Set("Clear", DynValue.NewCallback((_, _) =>
+        {
+            ClearTerrain(terrain, null, null);
+            return DynValue.Nil;
+        }));
+    }
+
+    private static string? ReadTerrainMaterial(CallbackArguments args, int index)
+    {
+        var material = index < args.Count ? args[index].CastToString() : "Grass";
+        return SceneNodeTypes.IsTerrainMaterial(material) ? material : null;
+    }
+
+    private static bool IsValidTerrainPosition(float[] position) => position.Length == 3
+        && position.All(value => float.IsFinite(value) && Math.Abs(value) <= 1_000_000);
+
+    private static bool IsValidTerrainRegion(float[] position, float[] size) => IsValidTerrainPosition(position)
+        && size.All(value => float.IsFinite(value) && value > 0 && value <= 1024);
+
+    private void FillTerrain(SceneNode terrain, float[] position, float[] size, string material, float? sphereRadius)
+    {
+        var minX = (int)Math.Floor((position[0] - size[0] * .5f + TerrainCellSize * .5f) / TerrainCellSize);
+        var minY = (int)Math.Floor((position[1] - size[1] * .5f + TerrainCellSize * .5f) / TerrainCellSize);
+        var minZ = (int)Math.Floor((position[2] - size[2] * .5f + TerrainCellSize * .5f) / TerrainCellSize);
+        var maxX = (int)Math.Ceiling((position[0] + size[0] * .5f + TerrainCellSize * .5f) / TerrainCellSize) - 1;
+        var maxY = (int)Math.Ceiling((position[1] + size[1] * .5f + TerrainCellSize * .5f) / TerrainCellSize) - 1;
+        var maxZ = (int)Math.Ceiling((position[2] + size[2] * .5f + TerrainCellSize * .5f) / TerrainCellSize) - 1;
+        var cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
+        if (cellCount <= 0 || cellCount > MaxTerrainCells) return;
+
+        var targetCells = new List<(string Name, float[] Position)>();
+        for (var x = minX; x <= maxX; x++)
+        for (var y = minY; y <= maxY; y++)
+        for (var z = minZ; z <= maxZ; z++)
+        {
+            var cellPosition = new[] { x * TerrainCellSize, y * TerrainCellSize, z * TerrainCellSize };
+            if (sphereRadius is { } radius && !TerrainCellIntersectsSphere(position, radius, cellPosition)) continue;
+            targetCells.Add(($"TerrainCell_{x}_{y}_{z}", cellPosition));
+        }
+
+        var existingCells = terrain.Children.Where(child => child.Type == "Part" && child.Name.StartsWith("TerrainCell_", StringComparison.Ordinal))
+            .GroupBy(child => child.Name, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var additionalCells = targetCells.Count(target => !existingCells.ContainsKey(target.Name));
+        if (existingCells.Count + additionalCells > MaxTerrainCells) return;
+
+        SceneNode? changedNode = null;
+        foreach (var (name, cellPosition) in targetCells)
+        {
+            existingCells.TryGetValue(name, out var cell);
+            if (cell is null)
+            {
+                cell = new SceneNode
+                {
+                    Type = "Part", Name = name, Position = cellPosition,
+                    Size = [TerrainCellSize, TerrainCellSize, TerrainCellSize],
+                    Material = material, Color = SceneNodeTypes.TerrainColor(material),
+                    Anchored = true, CanCollide = true, IsExplorerVisible = false
+                };
+                terrain.Children.Add(cell);
+                createdNodes[cell.Id] = cell;
+                instances[cell.Id] = CreateInstance(cell);
+                instances[cell.Id].Set("Parent", DynValue.NewTable(instances[terrain.Id]));
+            }
+            else
+            {
+                cell.Material = material;
+                cell.Color = SceneNodeTypes.TerrainColor(material);
+                if (instances.TryGetValue(cell.Id, out var cellInstance))
+                {
+                    cellInstance.Set("Material", DynValue.NewString(material));
+                    cellInstance.Set("Color", ColorValue(cell.Color));
+                }
+            }
+            changedNode = cell;
+        }
+        if (changedNode is null) return;
+        RefreshParentChildren(terrain);
+        propertyChanged?.Invoke(changedNode, "Parent", DynValue.NewTable(instances[terrain.Id]));
+    }
+
+    private static bool TerrainCellIntersectsSphere(float[] position, float radius, float[] cellPosition)
+    {
+        var half = TerrainCellSize * .5f;
+        var dx = position[0] - Math.Clamp(position[0], cellPosition[0] - half, cellPosition[0] + half);
+        var dy = position[1] - Math.Clamp(position[1], cellPosition[1] - half, cellPosition[1] + half);
+        var dz = position[2] - Math.Clamp(position[2], cellPosition[2] - half, cellPosition[2] + half);
+        return dx * dx + dy * dy + dz * dz <= radius * radius;
+    }
+
+    private void ClearTerrain(SceneNode terrain, float[]? position, float[]? size, float? sphereRadius = null)
+    {
+        var region = position is null || size is null ? null : new SceneNode { Type = "Part", Position = position, Size = size };
+        var cells = terrain.Children.Where(node => node.Name.StartsWith("TerrainCell_", StringComparison.Ordinal)
+                && node.Type == "Part" && (region is null || CollisionGeometry.Intersects(node, region))
+                && (sphereRadius is null || position is not null && TerrainCellIntersectsSphere(position, sphereRadius.Value, node.Position)))
+            .ToArray();
+        foreach (var cell in cells) DestroyInstance(cell, notifyParentChange: false, refreshParent: false);
+        if (cells.Length == 0) return;
+        RefreshParentChildren(terrain);
+        propertyChanged?.Invoke(cells[0], "Parent", DynValue.Nil);
     }
 
     private static bool IsReservedBindableMember(SceneNode node, string name) =>
@@ -1755,6 +2224,246 @@ public sealed class LuaXRuntime
         return service;
     }
 
+    private Table CreateTweenService()
+    {
+        var service = new Table(script);
+        runtimeTypeTags.Add(service, new LuaXTypeTag("TweenService"));
+        service.Set("Name", DynValue.NewString("TweenService"));
+        service.Set("ClassName", DynValue.NewString("TweenService"));
+        service.Set("Create", DynValue.NewCallback((_, args) => CreateTween(args)));
+        return service;
+    }
+
+    private DynValue CreateTweenInfo(CallbackArguments args)
+    {
+        var index = args.Count > 0 && args[0].Type == DataType.Table ? 1 : 0;
+        var time = args.Count > index && args[index].Type == DataType.Number && double.IsFinite(args[index].Number)
+            ? (float)Math.Clamp(args[index].Number, 0, 86400) : 1f;
+        var style = args.Count > index + 1 ? args[index + 1].CastToString() ?? "Quad" : "Quad";
+        var direction = args.Count > index + 2 ? args[index + 2].CastToString() ?? "Out" : "Out";
+        var repeatCount = args.Count > index + 3 && args[index + 3].Type == DataType.Number && double.IsFinite(args[index + 3].Number)
+            ? (int)Math.Clamp(Math.Truncate(args[index + 3].Number), -1, 10000) : 0;
+        var reverses = args.Count > index + 4 && args[index + 4].CastToBool();
+        var delay = args.Count > index + 5 && args[index + 5].Type == DataType.Number && double.IsFinite(args[index + 5].Number)
+            ? (float)Math.Clamp(args[index + 5].Number, 0, 86400) : 0;
+        var info = new Table(script);
+        runtimeTypeTags.Add(info, new LuaXTypeTag("TweenInfo"));
+        info.Set("Time", DynValue.NewNumber(time));
+        info.Set("EasingStyle", DynValue.NewString(style));
+        info.Set("EasingDirection", DynValue.NewString(direction));
+        info.Set("RepeatCount", DynValue.NewNumber(repeatCount));
+        info.Set("Reverses", DynValue.NewBoolean(reverses));
+        info.Set("DelayTime", DynValue.NewNumber(delay));
+        info.ReadOnly = true;
+        return DynValue.NewTable(info);
+    }
+
+    private DynValue CreateTween(CallbackArguments args)
+    {
+        var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, tweenService) ? 1 : 0;
+        if (args.Count <= index + 2 || currentGameScript is not { } owner
+            || ReadNodeArgument(args[index]) is not { } target
+            || !IsTypedValue(args[index + 1], "TweenInfo") || args[index + 2].Type != DataType.Table) return DynValue.Nil;
+        if (!instances.TryGetValue(target.Id, out var targetInstance)) return DynValue.Nil;
+        var infoTable = args[index + 1].Table;
+        var info = new TweenInfoData(
+            ReadFiniteNumber(infoTable.Get("Time"), 1, 0, 86400),
+            infoTable.Get("EasingStyle").CastToString() ?? "Quad",
+            infoTable.Get("EasingDirection").CastToString() ?? "Out",
+            (int)ReadFiniteNumber(infoTable.Get("RepeatCount"), 0, -1, 10000),
+            infoTable.Get("Reverses").CastToBool(),
+            ReadFiniteNumber(infoTable.Get("DelayTime"), 0, 0, 86400));
+        var goals = new Dictionary<string, DynValue>(StringComparer.Ordinal);
+        foreach (var pair in args[index + 2].Table.Pairs)
+        {
+            if (pair.Key.Type != DataType.String || pair.Value.Type == DataType.Nil) continue;
+            var property = pair.Key.String;
+            var start = GetPropertyValue(target, property);
+            if (CanInterpolateTweenValues(start, pair.Value)) goals[property] = pair.Value;
+        }
+        if (goals.Count == 0) return DynValue.Nil;
+
+        var tween = new Table(script);
+        runtimeTypeTags.Add(tween, new LuaXTypeTag("Tween"));
+        var state = new TweenState(target, info, goals, owner, tween);
+        tween.Set("Name", DynValue.NewString("Tween"));
+        tween.Set("ClassName", DynValue.NewString("Tween"));
+        tween.Set("Instance", DynValue.NewTable(targetInstance));
+        tween.Set("PlaybackState", DynValue.NewString(state.PlaybackState));
+        var completed = new Table(script);
+        runtimeTypeTags.Add(completed, new LuaXTypeTag("RBXScriptSignal"));
+        completed.Set("Connect", DynValue.NewCallback((_, callbackArgs) =>
+        {
+            var callbackIndex = callbackArgs.Count > 0 && callbackArgs[0].Type == DataType.Table && ReferenceEquals(callbackArgs[0].Table, completed) ? 1 : 0;
+            if (currentGameScript is not { } callbackOwner || callbackArgs.Count <= callbackIndex || callbackArgs[callbackIndex].Type != DataType.Function) return DynValue.Nil;
+            state.CompletedCallbacks.Add(new ScriptCallback(callbackOwner, callbackArgs[callbackIndex], "Tween.Completed"));
+            return DynValue.Nil;
+        }));
+        tween.Set("Completed", DynValue.NewTable(completed));
+        tween.Set("Play", DynValue.NewCallback((_, _) => { PlayTween(state); return DynValue.Nil; }));
+        tween.Set("Pause", DynValue.NewCallback((_, _) => { PauseTween(state); return DynValue.Nil; }));
+        tween.Set("Cancel", DynValue.NewCallback((_, _) => { CancelTween(state); return DynValue.Nil; }));
+        activeTweens.Add(state);
+        return DynValue.NewTable(tween);
+    }
+
+    private static float ReadFiniteNumber(DynValue value, float fallback, float minimum, float maximum) =>
+        value.Type == DataType.Number && double.IsFinite(value.Number) ? (float)Math.Clamp(value.Number, minimum, maximum) : fallback;
+
+    private bool CanInterpolateTweenValues(DynValue start, DynValue goal)
+    {
+        if (start.Type == DataType.Number && goal.Type == DataType.Number) return double.IsFinite(start.Number) && double.IsFinite(goal.Number);
+        return TryGetTypedValueName(start, out var startType) && TryGetTypedValueName(goal, out var goalType)
+            && startType == goalType && (startType is "Vector2" or "Vector3" or "Color3" or "UDim2")
+            && (startType != "Vector2" || TryReadVector2(start, out _))
+            && (startType != "Vector3" || ReadVector(start, [float.NaN, float.NaN, float.NaN]).All(float.IsFinite))
+            && (startType != "UDim2" || TryReadUDim2(start, out _, out _) && TryReadUDim2(goal, out _, out _));
+    }
+
+    private bool TryGetTypedValueName(DynValue value, out string name)
+    {
+        name = string.Empty;
+        return value.Type == DataType.Table && runtimeTypeTags.TryGetValue(value.Table, out var tag) && (name = tag.Name) is not null;
+    }
+
+    private void PlayTween(TweenState state)
+    {
+        if (state.Playing) return;
+        if (state.PlaybackState is "Begin" or "Completed" or "Cancelled")
+        {
+            state.Elapsed = 0;
+            state.Starts = state.Goals.Keys.Select(property => (property, value: GetPropertyValue(state.Target, property)))
+                .Where(pair => pair.value.Type != DataType.Nil).ToDictionary(pair => pair.property, pair => pair.value, StringComparer.Ordinal);
+        }
+        if (state.Starts.Count == 0) return;
+        state.Playing = true;
+        SetTweenPlaybackState(state, "Playing");
+    }
+
+    private void PauseTween(TweenState state)
+    {
+        if (!state.Playing) return;
+        state.Playing = false;
+        SetTweenPlaybackState(state, "Paused");
+    }
+
+    private void CancelTween(TweenState state)
+    {
+        if (!state.Playing && state.PlaybackState is not "Paused") return;
+        state.Playing = false;
+        SetTweenPlaybackState(state, "Cancelled");
+        FireTweenCompleted(state, "Cancelled");
+    }
+
+    private static void SetTweenPlaybackState(TweenState state, string playbackState)
+    {
+        state.PlaybackState = playbackState;
+        state.Instance.Set("PlaybackState", DynValue.NewString(playbackState));
+    }
+
+    private void AdvanceTweens(float elapsed)
+    {
+        foreach (var state in activeTweens.ToArray())
+        {
+            if (!state.Playing) continue;
+            if (!IsTaskOwnerActive(state.Owner) || !instances.ContainsKey(state.Target.Id))
+            {
+                CancelTween(state);
+                continue;
+            }
+            state.Elapsed += elapsed;
+            if (state.Elapsed < state.Info.DelayTime) continue;
+            var activeTime = state.Elapsed - state.Info.DelayTime;
+            var duration = Math.Max(.000001f, state.Info.Time);
+            var cycleDuration = duration * (state.Info.Reverses ? 2 : 1);
+            var totalCycles = state.Info.RepeatCount < 0 ? float.PositiveInfinity : state.Info.RepeatCount + 1;
+            var totalDuration = cycleDuration * totalCycles;
+            var complete = activeTime >= totalDuration;
+            var cycleProgress = complete ? 1 : activeTime % cycleDuration / cycleDuration;
+            var phase = state.Info.Reverses && cycleProgress > .5f ? 1 - (cycleProgress - .5f) * 2 : state.Info.Reverses ? cycleProgress * 2 : cycleProgress;
+            if (complete && state.Info.Reverses) phase = 0;
+            var eased = ApplyTweenEasing(Math.Clamp(phase, 0, 1), state.Info.EasingStyle, state.Info.EasingDirection);
+            foreach (var (property, goal) in state.Goals)
+                if (state.Starts.TryGetValue(property, out var start)) SetPropertyValue(state.Target, property, InterpolateTweenValue(start, goal, eased));
+            if (!complete) continue;
+            state.Playing = false;
+            SetTweenPlaybackState(state, "Completed");
+            FireTweenCompleted(state, "Completed");
+        }
+        activeTweens.RemoveAll(state => !state.Playing && state.PlaybackState is "Completed" or "Cancelled");
+    }
+
+    private DynValue InterpolateTweenValue(DynValue start, DynValue goal, float alpha)
+    {
+        if (start.Type == DataType.Number && goal.Type == DataType.Number)
+            return DynValue.NewNumber(start.Number + (goal.Number - start.Number) * alpha);
+        if (!TryGetTypedValueName(start, out var type)) return goal;
+        if (type == "Vector3")
+        {
+            var from = ReadVector(start, [0, 0, 0]);
+            var to = ReadVector(goal, from);
+            return VectorValue(from.Zip(to, (a, b) => a + (b - a) * alpha).ToArray());
+        }
+        if (type == "Vector2")
+        {
+            TryReadVector2(start, out var from); TryReadVector2(goal, out var to);
+            return Vector2Value([from[0] + (to[0] - from[0]) * alpha, from[1] + (to[1] - from[1]) * alpha]);
+        }
+        if (type == "UDim2")
+        {
+            TryReadUDim2(start, out var fromScale, out var fromOffset); TryReadUDim2(goal, out var toScale, out var toOffset);
+            return CreateUDim2Value(
+                [fromScale[0] + (toScale[0] - fromScale[0]) * alpha, fromScale[1] + (toScale[1] - fromScale[1]) * alpha],
+                [fromOffset[0] + (toOffset[0] - fromOffset[0]) * alpha, fromOffset[1] + (toOffset[1] - fromOffset[1]) * alpha]);
+        }
+        if (type == "Color3")
+        {
+            var from = start.Table; var to = goal.Table;
+            return CreateColor(
+                ReadColorChannelFloat(from.Get("R")) + (ReadColorChannelFloat(to.Get("R")) - ReadColorChannelFloat(from.Get("R"))) * alpha,
+                ReadColorChannelFloat(from.Get("G")) + (ReadColorChannelFloat(to.Get("G")) - ReadColorChannelFloat(from.Get("G"))) * alpha,
+                ReadColorChannelFloat(from.Get("B")) + (ReadColorChannelFloat(to.Get("B")) - ReadColorChannelFloat(from.Get("B"))) * alpha);
+        }
+        return goal;
+    }
+
+    private void FireTweenCompleted(TweenState state, string playbackState)
+    {
+        foreach (var callback in state.CompletedCallbacks.ToArray())
+            if (IsTaskOwnerActive(callback.GameScript))
+                scheduledTasks.Add(new ScheduledTask(callback.GameScript, script.CreateCoroutine(callback.Function), [DynValue.NewString(playbackState)], 0, true));
+    }
+
+    private static float ApplyTweenEasing(float value, string style, string direction)
+    {
+        static float BounceOut(float x) => x < 1 / 2.75f ? 7.5625f * x * x
+            : x < 2 / 2.75f ? 7.5625f * (x -= 1.5f / 2.75f) * x + .75f
+            : x < 2.5f / 2.75f ? 7.5625f * (x -= 2.25f / 2.75f) * x + .9375f
+            : 7.5625f * (x -= 2.625f / 2.75f) * x + .984375f;
+        float EaseIn(float x) => style switch
+        {
+            "Linear" => x,
+            "Sine" => 1 - MathF.Cos(x * MathF.PI / 2),
+            "Quad" => x * x,
+            "Cubic" => x * x * x,
+            "Quart" => x * x * x * x,
+            "Quint" => x * x * x * x * x,
+            "Exponential" => x <= 0 ? 0 : MathF.Pow(2, 10 * x - 10),
+            "Circular" => 1 - MathF.Sqrt(Math.Max(0, 1 - x * x)),
+            "Back" => 2.70158f * x * x * x - 1.70158f * x * x,
+            "Bounce" => 1 - BounceOut(1 - x),
+            "Elastic" => x <= 0 || x >= 1 ? x : -MathF.Pow(2, 10 * x - 10) * MathF.Sin((x * 10 - 10.75f) * (2 * MathF.PI / 3)),
+            _ => x * x
+        };
+        var eased = direction switch
+        {
+            "In" => EaseIn(value),
+            "InOut" => value < .5f ? EaseIn(value * 2) / 2 : 1 - EaseIn((1 - value) * 2) / 2,
+            _ => 1 - EaseIn(1 - value)
+        };
+        return float.IsFinite(eased) ? Math.Clamp(eased, 0, 1) : value;
+    }
+
     private void FireFrameSignal(string eventName, params DynValue[] arguments)
     {
         if (!runServiceCallbacks.TryGetValue(eventName, out var callbacks)) return;
@@ -1928,10 +2637,29 @@ public sealed class LuaXRuntime
         foreach (var callback in callbacks.ToArray()) StartCallback(callback);
     }
 
-    public void InvokeToolActivated(string nodeId) => InvokeGuiActivated(nodeId);
+    public void InvokeToolActivated(string nodeId) => ActivateTool(nodeId);
+
+    public void DeactivateTool(string nodeId)
+    {
+        if (!activatedToolIds.Remove(nodeId) || !toolDeactivatedCallbacks.TryGetValue(nodeId, out var callbacks)) return;
+        foreach (var callback in callbacks.ToArray()) StartCallback(callback);
+    }
+
+    private void ActivateTool(string nodeId)
+    {
+        if (!equippedToolIds.Contains(nodeId) || !instances.ContainsKey(nodeId)
+            || FindNode(nodeId) is not { Type: "Tool", Enabled: true } || !activatedToolIds.Add(nodeId)) return;
+        InvokeGuiActivated(nodeId);
+    }
 
     public void InvokeToolEquipped(string nodeId, bool equipped)
     {
+        if (equipped) equippedToolIds.Add(nodeId);
+        else
+        {
+            DeactivateTool(nodeId);
+            equippedToolIds.Remove(nodeId);
+        }
         var callbacks = equipped ? toolEquippedCallbacks : toolUnequippedCallbacks;
         if (!callbacks.TryGetValue(nodeId, out var listeners)) return;
         foreach (var callback in listeners.ToArray()) StartCallback(callback);
@@ -2172,12 +2900,12 @@ public sealed class LuaXRuntime
         if (SceneNodeTypes.IsBasePart(node)) node.Position = [0, 1, 0];
         if (className == "Atmosphere") { node.Color = "#C6D9FF"; node.AtmosphereDecay = "#607080"; }
         if (className == "SpawnLocation") { node.Size = [6, 1, 6]; node.Position = [0, .5f, 0]; node.Color = "#72BF9D"; node.Material = "Metal"; }
-        if (className == "Seat") { node.Size = [2, 1, 2]; node.Position = [0, .5f, 0]; node.Color = "#596B89"; node.Material = "Metal"; }
+        if (className is "Seat" or "VehicleSeat") { node.Size = [2, 1, 2]; node.Position = [0, .5f, 0]; node.Color = "#596B89"; node.Material = "Metal"; }
         if (className == "Fire") { node.Color = "#FF6A00"; node.EffectSize = 5; }
         if (className == "Smoke") node.Color = "#B0B0B0";
         if (className == "Sparkles") node.Color = "#FFFFFF";
         if (className is "ParticleEmitter" or "Trail") node.Color = "#FFFFFF";
-        if (className == "VectorForce") node.RelativeTo = "Attachment0";
+        if (className is "VectorForce" or "Torque") node.RelativeTo = "Attachment0";
         if (className is "SelectionBox" or "SelectionSphere" or "Highlight" or "BillboardGui" or "SurfaceGui")
         {
             if (className is "SelectionBox" or "SelectionSphere") node.Color = "#FFFFFF";
@@ -2190,14 +2918,19 @@ public sealed class LuaXRuntime
         if (className == "UIShadow") { node.Color = "#000000"; node.Transparency = .5f; node.ZIndex = -1; }
         if (className is "WeldConstraint" or "NoCollisionConstraint" && args.Count > 1 && ReadNodeArgument(args[1]) is { } constraintParent && IsBasePart(constraintParent))
             node.Part0 = constraintParent.Id;
-        if (className is "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" && args.Count > 1 && ReadNodeArgument(args[1]) is { } forceParent)
+        if (className is "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" && args.Count > 1 && ReadNodeArgument(args[1]) is { } forceParent)
             node.Attachment0 = forceParent.Type == "Attachment" ? forceParent.Id
                 : IsBasePart(forceParent) ? forceParent.Children.FirstOrDefault(child => child.Type == "Attachment")?.Id ?? string.Empty : string.Empty;
         createdNodes[node.Id] = node;
         var instance = CreateInstance(node);
         instances[node.Id] = instance;
-        if (className == "ModuleScript")
-            project.Scripts.Add(new GameScript { Id = node.Id, Name = node.Name, Source = "local module = {}\nreturn module" });
+        if (className is "Script" or "ModuleScript" or "LocalScript")
+            project.Scripts.Add(new GameScript
+            {
+                Id = node.Id,
+                Name = node.Name,
+                Source = className == "ModuleScript" ? "local module = {}\nreturn module" : string.Empty
+            });
         if (className == "Humanoid") humanoidWasAlive[node.Id] = true;
         if (args.Count > 1 && TrySetParent(node, args[1]))
             propertyChanged?.Invoke(node, "Parent", DynValue.NewTable(instances[FindParentNode(node)!.Id]));
@@ -2206,7 +2939,7 @@ public sealed class LuaXRuntime
 
     private DynValue CloneInstance(SceneNode source)
     {
-        if (source.Type is "Workspace" or "Players" or "PlayerGui" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui" or "Camera" || !instances.ContainsKey(source.Id)) return DynValue.Nil;
+        if (source.Type is "Workspace" or "Players" or "PlayerGui" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera" || !instances.ContainsKey(source.Id)) return DynValue.Nil;
         SynchronizeInstances();
         if (!instances.ContainsKey(source.Id)) return DynValue.Nil;
         var clone = GameProjectStore.CloneSubtree(source, out var renewedIds);
@@ -2230,17 +2963,17 @@ public sealed class LuaXRuntime
             }
             if (node.Type is "SelectionBox" or "SelectionSphere" or "Highlight" or "BillboardGui" or "SurfaceGui") instances[node.Id].Set("Adornee", GetObjectValueReference(node.Adornee));
             if (node.Type == "Model") instances[node.Id].Set("PrimaryPart", GetModelPrimaryPartReference(node));
-            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity")
+            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")
             {
                 instances[node.Id].Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
-                if (node.Type is "Beam" or "Trail" or "AlignPosition" or "AlignOrientation" or "AngularVelocity") instances[node.Id].Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+                if (node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint") instances[node.Id].Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
             }
         }
         foreach (var node in clonedNodes.Where(node => node.Type == "ObjectValue"))
             instances[node.Id].Set("Value", GetValueObjectValue(node));
         foreach (var original in new[] { source }.Concat(GameProjectStore.Flatten(source.Children)))
         {
-            if (original.Type is not ("Script" or "ModuleScript") || !renewedIds.TryGetValue(original.Id, out var clonedId)) continue;
+            if (original.Type is not ("Script" or "LocalScript" or "ModuleScript") || !renewedIds.TryGetValue(original.Id, out var clonedId)) continue;
             var originalScript = project.Scripts.FirstOrDefault(item => item.Id == original.Id);
             if (originalScript is null) continue;
             var clonedScript = clonedNodes.First(node => node.Id == clonedId);
@@ -2253,7 +2986,7 @@ public sealed class LuaXRuntime
     {
         var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, debris) ? 1 : 0;
         if (args.Count <= index || ReadNodeArgument(args[index]) is not { } node || !instances.ContainsKey(node.Id)
-            || node.Type is "Workspace" or "Players" or "PlayerGui" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui" or "Camera") return DynValue.Nil;
+            || node.Type is "Workspace" or "Players" or "PlayerGui" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera") return DynValue.Nil;
         var lifetime = args.Count > index + 1 && args[index + 1].Type == DataType.Number ? args[index + 1].Number : 10;
         if (!double.IsFinite(lifetime)) return DynValue.Nil;
         if (lifetime <= 0)
@@ -2281,18 +3014,18 @@ public sealed class LuaXRuntime
             if (instances.ContainsKey(node.Id)) DestroyInstance(node);
     }
 
-    private DynValue DestroyInstance(SceneNode node)
+    private DynValue DestroyInstance(SceneNode node, bool notifyParentChange = true, bool refreshParent = true)
     {
-        if (node.Type is "Workspace" or "Players" or "PlayerGui" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui" or "Camera" || !instances.ContainsKey(node.Id)) return DynValue.Nil;
+        if (node.Type is "Workspace" or "Players" or "PlayerGui" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera" || !instances.ContainsKey(node.Id)) return DynValue.Nil;
         var wasAttached = IsAttached(node);
         var oldParent = FindParentNode(node);
         var sourceCollection = FindSourceCollection(node);
         sourceCollection?.Remove(node);
         if (wasAttached) FireSubtreeTagChanges(node, false);
-        if (oldParent is not null) RefreshParentChildren(oldParent);
+        if (oldParent is not null && refreshParent) RefreshParentChildren(oldParent);
         if (instances.TryGetValue(node.Id, out var removedInstance)) removedInstance.Set("Parent", DynValue.Nil);
         var removedNodes = new[] { node }.Concat(GameProjectStore.Flatten(node.Children)).ToArray();
-        var removedScriptIds = removedNodes.Where(removed => removed.Type == "Script").Select(removed => removed.Id).ToHashSet(StringComparer.Ordinal);
+        var removedScriptIds = removedNodes.Where(SceneNodeTypes.IsBaseScript).Select(removed => removed.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var removed in removedNodes)
         {
             instances.Remove(removed.Id);
@@ -2303,6 +3036,9 @@ public sealed class LuaXRuntime
             guiActivatedCallbacks.Remove(removed.Id);
             toolEquippedCallbacks.Remove(removed.Id);
             toolUnequippedCallbacks.Remove(removed.Id);
+            toolDeactivatedCallbacks.Remove(removed.Id);
+            equippedToolIds.Remove(removed.Id);
+            activatedToolIds.Remove(removed.Id);
             guiTextChangedCallbacks.Remove(removed.Id);
             promptTriggeredCallbacks.Remove(removed.Id);
             clickDetectorCallbacks.Remove(removed.Id);
@@ -2384,7 +3120,7 @@ public sealed class LuaXRuntime
                 propertyChanged?.Invoke(constraint, "Part1", DynValue.Nil);
             }
         }
-        foreach (var constraint in KnownNodes().Where(item => item.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity"))
+        foreach (var constraint in KnownNodes().Where(item => item.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint"))
         {
             if (removedIds.Contains(constraint.Attachment0))
             {
@@ -2400,7 +3136,7 @@ public sealed class LuaXRuntime
             }
         }
         StopScripts(removedScriptIds);
-        propertyChanged?.Invoke(node, "Parent", DynValue.Nil);
+        if (notifyParentChange) propertyChanged?.Invoke(node, "Parent", DynValue.Nil);
         return DynValue.Nil;
     }
 
@@ -2420,6 +3156,7 @@ public sealed class LuaXRuntime
         RemoveCallbacksOwnedBy(scriptIds, guiActivatedCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, toolEquippedCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, toolUnequippedCallbacks);
+        RemoveCallbacksOwnedBy(scriptIds, toolDeactivatedCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, guiTextChangedCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, promptTriggeredCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, clickDetectorCallbacks);
@@ -2458,7 +3195,7 @@ public sealed class LuaXRuntime
     private void StopInactiveScripts(SceneNode source)
     {
         var inactive = new[] { source }.Concat(GameProjectStore.Flatten(source.Children))
-            .Where(node => node.Type == "Script" && (!node.Enabled || !IsScriptAttachedForExecution(node)))
+            .Where(node => SceneNodeTypes.IsBaseScript(node) && (!node.Enabled || !IsScriptAttachedForExecution(node)))
             .Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
         StopScripts(inactive);
     }
@@ -2481,7 +3218,7 @@ public sealed class LuaXRuntime
 
     private bool TrySetParent(SceneNode source, DynValue value, bool updateLinks = true)
     {
-        if (source.Type is "Workspace" or "Players" or "PlayerGui" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui" or "Camera") return false;
+        if (source.Type is "Workspace" or "Players" or "PlayerGui" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera") return false;
         var wasAttached = IsAttached(source);
         if (value.Type == DataType.Nil)
         {
@@ -2516,8 +3253,8 @@ public sealed class LuaXRuntime
 
     private SceneNode? FindParentNode(SceneNode target)
     {
-        if (ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.Teams) || ReferenceEquals(target, project.Lighting) || ReferenceEquals(target, project.SoundService) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.StarterPack) || ReferenceEquals(target, project.Gui)) return null;
-        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.Teams, target) ?? FindParentNode(project.Lighting, target) ?? FindParentNode(project.SoundService, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.StarterPack, target) ?? FindParentNode(project.Gui, target)
+        if (ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.Teams) || ReferenceEquals(target, project.Lighting) || ReferenceEquals(target, project.SoundService) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.StarterPack) || ReferenceEquals(target, project.StarterPlayer) || ReferenceEquals(target, project.Gui)) return null;
+        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.Teams, target) ?? FindParentNode(project.Lighting, target) ?? FindParentNode(project.SoundService, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.StarterPack, target) ?? FindParentNode(project.StarterPlayer, target) ?? FindParentNode(project.Gui, target)
             ?? createdNodes.Values.Select(node => FindParentNode(node, target)).FirstOrDefault(parent => parent is not null);
     }
 
@@ -2544,7 +3281,7 @@ public sealed class LuaXRuntime
     }
 
     private List<SceneNode>? FindSourceCollection(SceneNode target) =>
-        FindParentCollection(project.Workspace, target) ?? FindParentCollection(project.Players, target) ?? FindParentCollection(project.Teams, target) ?? FindParentCollection(project.Lighting, target) ?? FindParentCollection(project.SoundService, target) ?? FindParentCollection(project.ReplicatedStorage, target) ?? FindParentCollection(project.ServerScriptService, target) ?? FindParentCollection(project.ServerStorage, target) ?? FindParentCollection(project.StarterPack, target) ?? FindParentCollection(project.Gui, target)
+        FindParentCollection(project.Workspace, target) ?? FindParentCollection(project.Players, target) ?? FindParentCollection(project.Teams, target) ?? FindParentCollection(project.Lighting, target) ?? FindParentCollection(project.SoundService, target) ?? FindParentCollection(project.ReplicatedStorage, target) ?? FindParentCollection(project.ServerScriptService, target) ?? FindParentCollection(project.ServerStorage, target) ?? FindParentCollection(project.StarterPack, target) ?? FindParentCollection(project.StarterPlayer, target) ?? FindParentCollection(project.Gui, target)
         ?? createdNodes.Values.Select(node => FindParentCollection(node, target)).FirstOrDefault(collection => collection is not null);
 
     private void RefreshLinksForMove(SceneNode source, SceneNode? oldParent, SceneNode? newParent)
@@ -2604,7 +3341,13 @@ public sealed class LuaXRuntime
             instance.Set("Parent", parent is not null && instances.TryGetValue(parent.Id, out var parentTable) ? DynValue.NewTable(parentTable) : DynValue.Nil);
             if (node.Type == "Player") instance.Set("Character", GetCharacterValue(node));
             if (node.Type == "Player") { instance.Set("Team", GetTeamValue(node)); instance.Set("TeamColor", ColorValue(FindNode(node.Team)?.TeamColor ?? "#FFFFFF")); }
-            if (node.Type == "Seat") instance.Set("Occupant", GetOccupantValue(node));
+            if (node.Type is "Seat" or "VehicleSeat") instance.Set("Occupant", GetOccupantValue(node));
+            if (node.Type == "VehicleSeat")
+            {
+                instance.Set("ThrottleFloat", DynValue.NewNumber(node.VehicleSeatThrottleFloat));
+                instance.Set("SteerFloat", DynValue.NewNumber(node.VehicleSeatSteerFloat));
+                instance.Set("AreHingesDetected", DynValue.NewNumber(node.VehicleSeatAreHingesDetected));
+            }
             if (node.Type == "Model") instance.Set("PrimaryPart", GetModelPrimaryPartReference(node));
             if (FindNode(node.Subject) is { } subjectNode && IsBasePart(subjectNode) && instances.TryGetValue(subjectNode.Id, out var subject)) instance.Set("Subject", DynValue.NewTable(subject));
             else if (!IsBasePart(ReadNodeArgument(instance.Get("Subject")))) instance.Set("Subject", DynValue.Nil);
@@ -2613,10 +3356,10 @@ public sealed class LuaXRuntime
                 instance.Set("Part0", GetPartReferenceValue(node.Part0));
                 instance.Set("Part1", GetPartReferenceValue(node.Part1));
             }
-            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity")
+            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")
             {
                 instance.Set("Attachment0", GetAttachmentReferenceValue(node.Attachment0));
-                if (node.Type is "Beam" or "Trail" or "AlignPosition" or "AlignOrientation" or "AngularVelocity") instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
+                if (node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint") instance.Set("Attachment1", GetAttachmentReferenceValue(node.Attachment1));
             }
         }
         foreach (var node in nodes)
@@ -2683,8 +3426,15 @@ public sealed class LuaXRuntime
             "archivable" => "Archivable",
             "position" => "Position",
             "rotation" => "Rotation",
+            "tooltip" => "ToolTip",
+            "requireshandle" => "RequiresHandle",
+            "canbedropped" => "CanBeDropped",
+            "manualactivationonly" => "ManualActivationOnly",
+            "gripposition" => "GripPosition",
+            "griprotation" => "GripRotation",
             "size" => "Size",
             "color" => "Color",
+            "backgroundcolor3" => "BackgroundColor3",
             "color3" => "Color3",
             "surfacecolor3" => "SurfaceColor3",
             "surfacetransparency" => "SurfaceTransparency",
@@ -2746,6 +3496,7 @@ public sealed class LuaXRuntime
             "angle" => "Angle",
             "actiontext" => "ActionText",
             "objecttext" => "ObjectText",
+            "holdduration" => "HoldDuration",
             "maxactivationdistance" => "MaxActivationDistance",
             "maxdistance" => "MaxDistance",
             "alwaystop" => "AlwaysOnTop",
@@ -2784,6 +3535,13 @@ public sealed class LuaXRuntime
             "allowteamchangeontouch" => "AllowTeamChangeOnTouch",
             "duration" => "Duration",
             "occupant" => "Occupant",
+            "disabled" => "Disabled",
+            "headsupdisplay" => "HeadsUpDisplay",
+            "maxspeed" => "MaxSpeed",
+            "turnspeed" => "TurnSpeed",
+            "throttlefloat" => "ThrottleFloat",
+            "steerfloat" => "SteerFloat",
+            "arehingesdetected" => "AreHingesDetected",
             "health" => "Health",
             "maxhealth" => "MaxHealth",
             "walkspeed" => "WalkSpeed",
@@ -2797,6 +3555,7 @@ public sealed class LuaXRuntime
             "attachment0" => "Attachment0",
             "attachment1" => "Attachment1",
             "force" => "Force",
+            "torque" => "Torque",
             "relativeto" => "RelativeTo",
             "vectorvelocity" => "VectorVelocity",
             "linedirection" => "LineDirection",
@@ -2806,7 +3565,11 @@ public sealed class LuaXRuntime
             "secondarytangentaxis" => "SecondaryTangentAxis",
             "velocityconstraintmode" => "VelocityConstraintMode",
             "forcelimitsenabled" => "ForceLimitsEnabled",
+            "reactionforceenabled" => "ReactionForceEnabled",
             "maxforce" => "MaxForce",
+            "forcelimitmode" => "ForceLimitMode",
+            "maxaxesforce" => "MaxAxesForce",
+            "maxplanaraxesforce" => "MaxPlanarAxesForce",
             "angularvelocity" => "AngularVelocity",
             "assemblyangularvelocity" => "AssemblyAngularVelocity",
             "maxtorque" => "MaxTorque",
@@ -2815,7 +3578,6 @@ public sealed class LuaXRuntime
             "maxvelocity" => "MaxVelocity",
             "responsiveness" => "Responsiveness",
             "rigidityenabled" => "RigidityEnabled",
-            "reactionforceenabled" => "ReactionForceEnabled",
             "width0" => "Width0",
             "width1" => "Width1",
             "fieldofview" => "FieldOfView",
@@ -2874,7 +3636,135 @@ public sealed class LuaXRuntime
     private DynValue SetPropertyValue(SceneNode node, string property, DynValue value)
     {
         var normalized = property.ToLowerInvariant();
-        if (node.Type == "VectorForce" && normalized is ("force" or "relativeto"))
+        if (node.Type is ("VectorForce" or "AlignPosition") && normalized == "applyatcenterofmass")
+        {
+            if (value.Type != DataType.Boolean) return DynValue.Nil;
+            node.ApplyAtCenterOfMass = value.Boolean;
+            var current = DynValue.NewBoolean(node.ApplyAtCenterOfMass);
+            if (instances.TryGetValue(node.Id, out var vectorForceInstance)) vectorForceInstance.Set("ApplyAtCenterOfMass", current);
+            propertyChanged?.Invoke(node, "ApplyAtCenterOfMass", current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "LineForce" && normalized is ("magnitude" or "maxforce" or "inversesquarelaw" or "reactionforceenabled" or "applyatcenterofmass"))
+        {
+            if (normalized is "magnitude" or "maxforce")
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)Math.Clamp(value.Number, 0, 1000000);
+                if (normalized == "magnitude") node.LineForceMagnitude = number;
+                else node.LineForceMaxForce = number;
+            }
+            else
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                if (normalized == "inversesquarelaw") node.LineForceInverseSquareLaw = value.Boolean;
+                else if (normalized == "reactionforceenabled") node.LineForceReactionForceEnabled = value.Boolean;
+                else node.ApplyAtCenterOfMass = value.Boolean;
+            }
+            var canonical = normalized switch
+            {
+                "magnitude" => "Magnitude",
+                "maxforce" => "MaxForce",
+                "inversesquarelaw" => "InverseSquareLaw",
+                "reactionforceenabled" => "ReactionForceEnabled",
+                _ => "ApplyAtCenterOfMass"
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var lineForceInstance)) lineForceInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "BodyVelocity" && normalized is ("velocity" or "maxforce" or "p"))
+        {
+            if (normalized is "velocity" or "maxforce")
+            {
+                var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+                if (value.Type != DataType.Table || vector.Length != 3 || !vector.All(float.IsFinite)) return DynValue.Nil;
+                vector = normalized == "velocity"
+                    ? vector.Select(component => Math.Clamp(component, -10000, 10000)).ToArray()
+                    : vector.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                if (normalized == "velocity") node.BodyVelocityTarget = vector; else node.BodyVelocityMaxForce = vector;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                node.BodyVelocityP = (float)Math.Clamp(value.Number, 0, 1000000);
+            }
+            var canonical = normalized switch { "velocity" => "Velocity", "maxforce" => "MaxForce", _ => "P" };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var bodyVelocityInstance)) bodyVelocityInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "BodyPosition" && normalized is ("position" or "maxforce" or "p" or "d"))
+        {
+            if (normalized is "position" or "maxforce")
+            {
+                var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+                if (value.Type != DataType.Table || vector.Length != 3 || !vector.All(float.IsFinite)) return DynValue.Nil;
+                vector = normalized == "position"
+                    ? vector.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray()
+                    : vector.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                if (normalized == "position") node.BodyPositionTarget = vector; else node.BodyPositionMaxForce = vector;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                if (normalized == "p") node.BodyPositionP = (float)Math.Clamp(value.Number, 0, 1000000);
+                else node.BodyPositionD = (float)Math.Clamp(value.Number, 0, 1000000);
+            }
+            var canonical = normalized switch { "position" => "Position", "maxforce" => "MaxForce", "p" => "P", _ => "D" };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var bodyPositionInstance)) bodyPositionInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "BodyGyro" && normalized is ("rotation" or "maxtorque" or "p" or "d"))
+        {
+            if (normalized is "rotation" or "maxtorque")
+            {
+                var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+                if (value.Type != DataType.Table || vector.Length != 3 || !vector.All(float.IsFinite)) return DynValue.Nil;
+                vector = normalized == "rotation"
+                    ? vector.Select(component => Math.Clamp(component, -360000, 360000)).ToArray()
+                    : vector.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                if (normalized == "rotation") node.BodyGyroTargetRotation = vector; else node.BodyGyroMaxTorque = vector;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                if (normalized == "p") node.BodyGyroP = (float)Math.Clamp(value.Number, 0, 1000000);
+                else node.BodyGyroD = (float)Math.Clamp(value.Number, 0, 1000000);
+            }
+            var canonical = normalized switch { "rotation" => "Rotation", "maxtorque" => "MaxTorque", "p" => "P", _ => "D" };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var bodyGyroInstance)) bodyGyroInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "BodyAngularVelocity" && normalized is ("angularvelocity" or "maxtorque" or "p"))
+        {
+            if (normalized is "angularvelocity" or "maxtorque")
+            {
+                var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+                if (value.Type != DataType.Table || vector.Length != 3 || !vector.All(float.IsFinite)) return DynValue.Nil;
+                vector = normalized == "angularvelocity"
+                    ? vector.Select(component => Math.Clamp(component, -10000, 10000)).ToArray()
+                    : vector.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                if (normalized == "angularvelocity") node.BodyAngularVelocityTarget = vector; else node.BodyAngularVelocityMaxTorque = vector;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                node.BodyAngularVelocityP = (float)Math.Clamp(value.Number, 0, 1000000);
+            }
+            var canonical = normalized switch { "angularvelocity" => "AngularVelocity", "maxtorque" => "MaxTorque", _ => "P" };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var bodyAngularVelocityInstance)) bodyAngularVelocityInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type is "VectorForce" or "BodyForce" && normalized is ("force" or "relativeto"))
         {
             if (normalized == "force")
             {
@@ -2884,12 +3774,395 @@ public sealed class LuaXRuntime
             }
             else
             {
-                if (value.Type != DataType.String || value.String is not ("World" or "Attachment0")) return DynValue.Nil;
+                if (node.Type != "VectorForce") return DynValue.Nil;
+                if (value.Type != DataType.String || value.String is not ("World" or "Attachment0" or "Attachment1")) return DynValue.Nil;
                 node.RelativeTo = value.String;
             }
             var canonical = normalized == "force" ? "Force" : "RelativeTo";
             var current = GetPropertyValue(node, canonical);
             if (instances.TryGetValue(node.Id, out var forceInstance)) forceInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "VehicleSeat" && normalized == "torque")
+        {
+            if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+            node.VehicleSeatTorque = (float)Math.Clamp(value.Number, 0, 1000000);
+            var current = GetPropertyValue(node, "Torque");
+            if (instances.TryGetValue(node.Id, out var vehicleSeatInstance)) vehicleSeatInstance.Set("Torque", current);
+            propertyChanged?.Invoke(node, "Torque", current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "Torque" && normalized is ("torque" or "relativeto"))
+        {
+            if (normalized == "torque")
+            {
+                var torque = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+                if (value.Type != DataType.Table || !torque.All(float.IsFinite)) return DynValue.Nil;
+                node.TorqueTarget = torque.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+            }
+            else
+            {
+                if (value.Type != DataType.String || value.String is not ("World" or "Attachment0" or "Attachment1")) return DynValue.Nil;
+                node.RelativeTo = value.String;
+            }
+            var canonical = normalized == "torque" ? "Torque" : "RelativeTo";
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var torqueInstance)) torqueInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "SpringConstraint" && normalized is ("damping" or "freelength" or "limitsenabled" or "maxforce" or "maxlength" or "minlength" or "stiffness"))
+        {
+            if (normalized == "limitsenabled")
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                node.SpringLimitsEnabled = value.Boolean;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)value.Number;
+                switch (normalized)
+                {
+                    case "damping": node.SpringDamping = Math.Clamp(number, 0, 10000); break;
+                    case "freelength": node.SpringFreeLength = Math.Clamp(number, 0, 10000); break;
+                    case "maxforce": node.SpringMaxForce = Math.Clamp(number, 0, 1000000); break;
+                    case "maxlength": node.SpringMaxLength = Math.Clamp(number, node.SpringMinLength, 10000); break;
+                    case "minlength": node.SpringMinLength = Math.Clamp(number, 0, node.SpringMaxLength); break;
+                    case "stiffness": node.SpringStiffness = Math.Clamp(number, 0, 100000); break;
+                }
+            }
+            var canonical = normalized switch
+            {
+                "limitsenabled" => "LimitsEnabled",
+                "freelength" => "FreeLength",
+                "maxlength" => "MaxLength",
+                "minlength" => "MinLength",
+                _ => char.ToUpperInvariant(normalized[0]) + normalized[1..]
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var springInstance)) springInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "TorsionSpringConstraint" && normalized is ("coils" or "damping" or "limitsenabled" or "maxangle" or "maxtorque" or "radius" or "restitution" or "stiffness"))
+        {
+            if (normalized == "limitsenabled")
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                node.TorsionSpringLimitsEnabled = value.Boolean;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)value.Number;
+                switch (normalized)
+                {
+                    case "coils": node.TorsionSpringCoils = Math.Clamp(number, 0, 8); break;
+                    case "damping": node.TorsionSpringDamping = Math.Clamp(number, 0, 100000); break;
+                    case "maxangle": node.TorsionSpringMaxAngle = Math.Clamp(number, 0, 180); break;
+                    case "maxtorque": node.TorsionSpringMaxTorque = Math.Clamp(number, 0, 1000000); break;
+                    case "radius": node.TorsionSpringRadius = Math.Clamp(number, 0, 100); break;
+                    case "restitution": node.TorsionSpringRestitution = Math.Clamp(number, 0, 1); break;
+                    case "stiffness": node.TorsionSpringStiffness = Math.Clamp(number, 0, 100000); break;
+                }
+            }
+            var canonical = normalized == "limitsenabled" ? "LimitsEnabled" : char.ToUpperInvariant(normalized[0]) + normalized[1..];
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var torsionInstance)) torsionInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "RopeConstraint" && normalized is ("length" or "restitution" or "winchenabled" or "winchforce" or "winchresponsiveness" or "winchspeed" or "winchtarget"))
+        {
+            if (normalized == "winchenabled")
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                node.RopeWinchEnabled = value.Boolean;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)value.Number;
+                switch (normalized)
+                {
+                    case "length": node.RopeLength = Math.Clamp(number, 0, 10000); break;
+                    case "restitution": node.RopeRestitution = Math.Clamp(number, 0, 1); break;
+                    case "winchforce": node.RopeWinchForce = Math.Clamp(number, 0, 1000000); break;
+                    case "winchresponsiveness": node.RopeWinchResponsiveness = Math.Clamp(number, 0, 200); break;
+                    case "winchspeed": node.RopeWinchSpeed = Math.Clamp(number, 0, 10000); break;
+                    case "winchtarget": node.RopeWinchTarget = Math.Clamp(number, 0, 10000); break;
+                }
+            }
+            var canonical = normalized switch
+            {
+                "length" => "Length",
+                "restitution" => "Restitution",
+                "winchenabled" => "WinchEnabled",
+                "winchforce" => "WinchForce",
+                "winchresponsiveness" => "WinchResponsiveness",
+                "winchspeed" => "WinchSpeed",
+                _ => "WinchTarget"
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var ropeInstance)) ropeInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "RodConstraint" && normalized is ("length" or "limitangle0" or "limitangle1" or "limitsenabled" or "thickness"))
+        {
+            if (normalized == "limitsenabled")
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                node.RodLimitsEnabled = value.Boolean;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)value.Number;
+                switch (normalized)
+                {
+                    case "length": node.RodLength = Math.Clamp(number, 0, 10000); break;
+                    case "limitangle0": node.RodLimitAngle0 = Math.Clamp(number, 0, 180); break;
+                    case "limitangle1": node.RodLimitAngle1 = Math.Clamp(number, 0, 180); break;
+                    case "thickness": node.RodThickness = Math.Clamp(number, 0, 100); break;
+                }
+            }
+            var canonical = normalized switch
+            {
+                "length" => "Length",
+                "limitangle0" => "LimitAngle0",
+                "limitangle1" => "LimitAngle1",
+                "limitsenabled" => "LimitsEnabled",
+                _ => "Thickness"
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var rodInstance)) rodInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "BallSocketConstraint" && normalized is ("limitsenabled" or "maxfrictiontorque" or "radius" or "restitution" or "upperangle" or "twistlimitsenabled" or "twistlowerangle" or "twistupperangle"))
+        {
+            if (normalized is "limitsenabled" or "twistlimitsenabled")
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                if (normalized == "limitsenabled") node.BallSocketLimitsEnabled = value.Boolean;
+                else node.BallSocketTwistLimitsEnabled = value.Boolean;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)value.Number;
+                switch (normalized)
+                {
+                    case "maxfrictiontorque": node.BallSocketMaxFrictionTorque = Math.Clamp(number, 0, 1000000); break;
+                    case "radius": node.BallSocketRadius = Math.Clamp(number, 0, 100); break;
+                    case "restitution": node.BallSocketRestitution = Math.Clamp(number, 0, 1); break;
+                    case "upperangle": node.BallSocketUpperAngle = Math.Clamp(number, 0, 180); break;
+                    case "twistlowerangle": node.BallSocketTwistLowerAngle = Math.Clamp(number, -180, node.BallSocketTwistUpperAngle); break;
+                    case "twistupperangle": node.BallSocketTwistUpperAngle = Math.Clamp(number, node.BallSocketTwistLowerAngle, 180); break;
+                }
+            }
+            var canonical = normalized switch
+            {
+                "limitsenabled" => "LimitsEnabled",
+                "maxfrictiontorque" => "MaxFrictionTorque",
+                "radius" => "Radius",
+                "restitution" => "Restitution",
+                "upperangle" => "UpperAngle",
+                "twistlimitsenabled" => "TwistLimitsEnabled",
+                "twistlowerangle" => "TwistLowerAngle",
+                _ => "TwistUpperAngle"
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var ballSocketInstance)) ballSocketInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "UniversalConstraint" && normalized is ("limitsenabled" or "maxangle" or "radius" or "restitution"))
+        {
+            if (normalized == "limitsenabled")
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                node.UniversalLimitsEnabled = value.Boolean;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)value.Number;
+                switch (normalized)
+                {
+                    case "maxangle": node.UniversalMaxAngle = Math.Clamp(number, 0, 180); break;
+                    case "radius": node.UniversalRadius = Math.Clamp(number, 0, 100); break;
+                    case "restitution": node.UniversalRestitution = Math.Clamp(number, 0, 1); break;
+                }
+            }
+            var canonical = normalized == "limitsenabled" ? "LimitsEnabled" : char.ToUpperInvariant(normalized[0]) + normalized[1..];
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var universalInstance)) universalInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "HingeConstraint" && normalized is ("actuatortype" or "angularresponsiveness" or "angularspeed" or "angularvelocity" or "limitsenabled" or "lowerangle" or "motormaxacceleration" or "motormaxtorque" or "radius" or "restitution" or "servomaxtorque" or "targetangle" or "upperangle"))
+        {
+            if (normalized == "actuatortype")
+            {
+                if (value.Type != DataType.String || value.String is not ("None" or "Motor" or "Servo")) return DynValue.Nil;
+                node.HingeActuatorType = value.String;
+            }
+            else if (normalized == "limitsenabled")
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                node.HingeLimitsEnabled = value.Boolean;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)value.Number;
+                switch (normalized)
+                {
+                    case "angularresponsiveness": node.HingeAngularResponsiveness = Math.Clamp(number, 0, 200); break;
+                    case "angularspeed": node.HingeAngularSpeed = Math.Clamp(number, 0, 1000); break;
+                    case "angularvelocity": node.HingeAngularVelocity = Math.Clamp(number, -1000, 1000); break;
+                    case "lowerangle": node.HingeLowerAngle = Math.Clamp(number, -180, node.HingeUpperAngle); break;
+                    case "motormaxacceleration": node.HingeMotorMaxAcceleration = Math.Clamp(number, 0, 100000); break;
+                    case "motormaxtorque": node.HingeMotorMaxTorque = Math.Clamp(number, 0, 1000000); break;
+                    case "radius": node.HingeRadius = Math.Clamp(number, 0, 100); break;
+                    case "restitution": node.HingeRestitution = Math.Clamp(number, 0, 1); break;
+                    case "servomaxtorque": node.HingeServoMaxTorque = Math.Clamp(number, 0, 1000000); break;
+                    case "targetangle": node.HingeTargetAngle = Math.Clamp(number, -360000, 360000); break;
+                    case "upperangle": node.HingeUpperAngle = Math.Clamp(number, node.HingeLowerAngle, 180); break;
+                }
+            }
+            var canonical = normalized switch
+            {
+                "actuatortype" => "ActuatorType",
+                "angularresponsiveness" => "AngularResponsiveness",
+                "angularspeed" => "AngularSpeed",
+                "angularvelocity" => "AngularVelocity",
+                "limitsenabled" => "LimitsEnabled",
+                "lowerangle" => "LowerAngle",
+                "motormaxacceleration" => "MotorMaxAcceleration",
+                "motormaxtorque" => "MotorMaxTorque",
+                "servomaxtorque" => "ServoMaxTorque",
+                "targetangle" => "TargetAngle",
+                "upperangle" => "UpperAngle",
+                _ => char.ToUpperInvariant(normalized[0]) + normalized[1..]
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var hingeInstance)) hingeInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type is ("PrismaticConstraint" or "CylindricalConstraint") && normalized is ("actuatortype" or "limitsenabled" or "linearresponsiveness" or "lowerlimit" or "motormaxacceleration" or "motormaxforce" or "restitution" or "servomaxforce" or "size" or "speed" or "targetposition" or "upperlimit" or "velocity"))
+        {
+            if (normalized == "actuatortype")
+            {
+                if (value.Type != DataType.String || value.String is not ("None" or "Motor" or "Servo")) return DynValue.Nil;
+                node.PrismaticActuatorType = value.String;
+            }
+            else if (normalized == "limitsenabled")
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                node.PrismaticLimitsEnabled = value.Boolean;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)value.Number;
+                switch (normalized)
+                {
+                    case "linearresponsiveness": node.PrismaticLinearResponsiveness = Math.Clamp(number, 0, 200); break;
+                    case "lowerlimit":
+                        node.PrismaticLowerLimit = Math.Clamp(number, -10000, 10000);
+                        if (node.PrismaticLowerLimit > node.PrismaticUpperLimit)
+                            node.PrismaticUpperLimit = node.PrismaticLowerLimit;
+                        break;
+                    case "motormaxacceleration": node.PrismaticMotorMaxAcceleration = Math.Clamp(number, 0, 100000); break;
+                    case "motormaxforce": node.PrismaticMotorMaxForce = Math.Clamp(number, 0, 1000000); break;
+                    case "restitution": node.PrismaticRestitution = Math.Clamp(number, 0, 1); break;
+                    case "servomaxforce": node.PrismaticServoMaxForce = Math.Clamp(number, 0, 1000000); break;
+                    case "size": node.PrismaticSize = Math.Clamp(number, 0, 100); break;
+                    case "speed": node.PrismaticSpeed = Math.Clamp(number, 0, 10000); break;
+                    case "targetposition": node.PrismaticTargetPosition = Math.Clamp(number, -10000, 10000); break;
+                    case "upperlimit":
+                        node.PrismaticUpperLimit = Math.Clamp(number, -10000, 10000);
+                        if (node.PrismaticUpperLimit < node.PrismaticLowerLimit)
+                            node.PrismaticLowerLimit = node.PrismaticUpperLimit;
+                        break;
+                    case "velocity": node.PrismaticVelocity = Math.Clamp(number, -10000, 10000); break;
+                }
+            }
+            var canonical = normalized switch
+            {
+                "actuatortype" => "ActuatorType",
+                "limitsenabled" => "LimitsEnabled",
+                "linearresponsiveness" => "LinearResponsiveness",
+                "lowerlimit" => "LowerLimit",
+                "motormaxacceleration" => "MotorMaxAcceleration",
+                "motormaxforce" => "MotorMaxForce",
+                "servomaxforce" => "ServoMaxForce",
+                "targetposition" => "TargetPosition",
+                "upperlimit" => "UpperLimit",
+                _ => char.ToUpperInvariant(normalized[0]) + normalized[1..]
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var prismaticInstance)) prismaticInstance.Set(canonical, current);
+            propertyChanged?.Invoke(node, canonical, current);
+            return DynValue.Nil;
+        }
+        if (node.Type == "CylindricalConstraint" && normalized is ("angularactuatortype" or "angularlimitsenabled" or "angularrestitution" or "angularresponsiveness" or "angularspeed" or "angularvelocity" or "inclinationangle" or "lowerangle" or "motormaxangularacceleration" or "motormaxtorque" or "rotationaxisvisible" or "servomaxtorque" or "targetangle" or "upperangle"))
+        {
+            if (normalized is "angularactuatortype")
+            {
+                if (value.Type != DataType.String || value.String is not ("None" or "Motor" or "Servo")) return DynValue.Nil;
+                node.HingeActuatorType = value.String;
+            }
+            else if (normalized is "angularlimitsenabled" or "rotationaxisvisible")
+            {
+                if (value.Type != DataType.Boolean) return DynValue.Nil;
+                if (normalized == "angularlimitsenabled") node.HingeLimitsEnabled = value.Boolean;
+                else node.CylindricalRotationAxisVisible = value.Boolean;
+            }
+            else
+            {
+                if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                var number = (float)value.Number;
+                switch (normalized)
+                {
+                    case "angularrestitution": node.HingeRestitution = Math.Clamp(number, 0, 1); break;
+                    case "angularresponsiveness": node.HingeAngularResponsiveness = Math.Clamp(number, 0, 200); break;
+                    case "angularspeed": node.HingeAngularSpeed = Math.Clamp(number, 0, 1000); break;
+                    case "angularvelocity": node.HingeAngularVelocity = Math.Clamp(number, -1000, 1000); break;
+                    case "inclinationangle": node.CylindricalInclinationAngle = Math.Clamp(number, -180, 180); break;
+                    case "lowerangle": node.HingeLowerAngle = Math.Clamp(number, -180, node.HingeUpperAngle); break;
+                    case "motormaxangularacceleration": node.HingeMotorMaxAcceleration = Math.Clamp(number, 0, 100000); break;
+                    case "motormaxtorque": node.HingeMotorMaxTorque = Math.Clamp(number, 0, 1000000); break;
+                    case "servomaxtorque": node.HingeServoMaxTorque = Math.Clamp(number, 0, 1000000); break;
+                    case "targetangle": node.HingeTargetAngle = Math.Clamp(number, -180, 180); break;
+                    case "upperangle": node.HingeUpperAngle = Math.Clamp(number, node.HingeLowerAngle, 180); break;
+                }
+            }
+            var canonical = normalized switch
+            {
+                "angularactuatortype" => "AngularActuatorType",
+                "angularlimitsenabled" => "AngularLimitsEnabled",
+                "angularrestitution" => "AngularRestitution",
+                "angularresponsiveness" => "AngularResponsiveness",
+                "angularspeed" => "AngularSpeed",
+                "angularvelocity" => "AngularVelocity",
+                "inclinationangle" => "InclinationAngle",
+                "lowerangle" => "LowerAngle",
+                "motormaxangularacceleration" => "MotorMaxAngularAcceleration",
+                "motormaxtorque" => "MotorMaxTorque",
+                "rotationaxisvisible" => "RotationAxisVisible",
+                "servomaxtorque" => "ServoMaxTorque",
+                "targetangle" => "TargetAngle",
+                _ => "UpperAngle"
+            };
+            var current = GetPropertyValue(node, canonical);
+            if (instances.TryGetValue(node.Id, out var cylindricalInstance)) cylindricalInstance.Set(canonical, current);
             propertyChanged?.Invoke(node, canonical, current);
             return DynValue.Nil;
         }
@@ -2927,7 +4200,7 @@ public sealed class LuaXRuntime
             propertyChanged?.Invoke(node, canonical, current);
             return DynValue.Nil;
         }
-        if (node.Type == "LinearVelocity" && normalized is ("vectorvelocity" or "linedirection" or "linevelocity" or "planevelocity" or "primarytangentaxis" or "secondarytangentaxis" or "velocityconstraintmode" or "forcelimitsenabled" or "maxforce" or "relativeto"))
+        if (node.Type == "LinearVelocity" && normalized is ("vectorvelocity" or "linedirection" or "linevelocity" or "planevelocity" or "primarytangentaxis" or "secondarytangentaxis" or "velocityconstraintmode" or "forcelimitsenabled" or "maxforce" or "forcelimitmode" or "maxaxesforce" or "maxplanaraxesforce" or "relativeto" or "reactionforceenabled"))
         {
             if (!TrySetLinearVelocityProperty(node, normalized, value)) return DynValue.Nil;
             var canonical = normalized switch
@@ -2941,6 +4214,10 @@ public sealed class LuaXRuntime
                 "velocityconstraintmode" => "VelocityConstraintMode",
                 "forcelimitsenabled" => "ForceLimitsEnabled",
                 "maxforce" => "MaxForce",
+                "forcelimitmode" => "ForceLimitMode",
+                "maxaxesforce" => "MaxAxesForce",
+                "maxplanaraxesforce" => "MaxPlanarAxesForce",
+                "reactionforceenabled" => "ReactionForceEnabled",
                 _ => "RelativeTo"
             };
             var current = GetPropertyValue(node, canonical);
@@ -3006,6 +4283,15 @@ public sealed class LuaXRuntime
             switch (normalized)
             {
                 case "position": SetPositionProperty(node, value); break;
+                case "tooltip":
+                    if (node.Type != "Tool" || value.Type != DataType.String) return DynValue.Nil;
+                    node.ToolTip = value.String;
+                    break;
+                case "requireshandle": if (node.Type != "Tool" || value.Type != DataType.Boolean) return DynValue.Nil; node.RequiresHandle = value.Boolean; break;
+                case "canbedropped": if (node.Type != "Tool" || value.Type != DataType.Boolean) return DynValue.Nil; node.CanBeDropped = value.Boolean; break;
+                case "manualactivationonly": if (node.Type != "Tool" || value.Type != DataType.Boolean) return DynValue.Nil; node.ManualActivationOnly = value.Boolean; break;
+                case "gripposition": if (node.Type != "Tool" || value.Type != DataType.Table) return DynValue.Nil; node.GripPosition = ReadVector(value, node.GripPosition); break;
+                case "griprotation": if (node.Type != "Tool" || value.Type != DataType.Table) return DynValue.Nil; node.GripRotation = ReadVector(value, node.GripRotation).Select(component => Math.Clamp(component, -360000, 360000)).ToArray(); break;
                 case "rotation":
                     if (node.Type == "AlignOrientation") node.AlignOrientationRotation = ReadVector(value, node.AlignOrientationRotation).Select(component => Math.Clamp(component, -360000, 360000)).ToArray();
                     else if (node.Type == "Model")
@@ -3017,6 +4303,10 @@ public sealed class LuaXRuntime
                     break;
                 case "size": SetSizeProperty(node, value); break;
                 case "color": node.Color = ReadColor(value, node.Color); break;
+                case "backgroundcolor3":
+                    if (!IsGuiObject(node) || !IsTypedValue(value, "Color3")) return DynValue.Nil;
+                    node.Color = ReadColor(value, node.Color);
+                    break;
                 case "color3":
                     if (node.Type is not ("SelectionBox" or "SelectionSphere") || !IsTypedValue(value, "Color3")) return DynValue.Nil;
                     node.Color = ReadColor(value, node.Color);
@@ -3129,7 +4419,7 @@ public sealed class LuaXRuntime
                     node.OffsetStudsV = (float)Math.Clamp(value.Number, -10000, 10000);
                     break;
                 case "material":
-                    if (!IsBasePart(node) || value.CastToString() is not { } material || material is not ("Plastic" or "Metal" or "Neon" or "Glass" or "Wood" or "Concrete")) return DynValue.Nil;
+                    if (!IsBasePart(node) || value.CastToString() is not { } material || !SceneNodeTypes.IsMaterial(material)) return DynValue.Nil;
                     node.Material = material;
                     break;
                 case "transparency":
@@ -3204,12 +4494,16 @@ public sealed class LuaXRuntime
                     if (value.Type != DataType.Boolean) return DynValue.Nil;
                     var wasEnabled = node.Enabled;
                     node.Enabled = value.Boolean;
-                    if (node.Type == "Script" && wasEnabled != node.Enabled)
+                    if (SceneNodeTypes.IsBaseScript(node) && wasEnabled != node.Enabled)
                     {
                         if (node.Enabled) QueueRunnableScripts(node);
                         else StopScripts([node.Id]);
                     }
                     break;
+                case "disabled": if (node.Type != "VehicleSeat" || value.Type != DataType.Boolean) return DynValue.Nil; node.VehicleSeatDisabled = value.Boolean; break;
+                case "headsupdisplay": if (node.Type != "VehicleSeat" || value.Type != DataType.Boolean) return DynValue.Nil; node.VehicleSeatHeadsUpDisplay = value.Boolean; break;
+                case "maxspeed": if (node.Type != "VehicleSeat" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.VehicleSeatMaxSpeed = (float)Math.Clamp(value.Number, 0, 10000); break;
+                case "turnspeed": if (node.Type != "VehicleSeat" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.VehicleSeatTurnSpeed = (float)Math.Clamp(value.Number, 0, 1000); break;
                 case "alwaystop":
                     if (node.Type is not ("BillboardGui" or "SurfaceGui") || value.Type != DataType.Boolean) return DynValue.Nil;
                     node.AlwaysOnTop = value.Boolean;
@@ -3226,6 +4520,10 @@ public sealed class LuaXRuntime
                 case "angle": if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Angle = (float)Math.Clamp(value.Number, 1, 175); break;
                 case "actiontext": if (node.Type != "ProximityPrompt") return DynValue.Nil; node.ActionText = value.CastToString() ?? node.ActionText; break;
                 case "objecttext": if (node.Type != "ProximityPrompt") return DynValue.Nil; node.ObjectText = value.CastToString() ?? node.ObjectText; break;
+                case "holdduration":
+                    if (node.Type != "ProximityPrompt" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.HoldDuration = (float)Math.Clamp(value.Number, 0, 60);
+                    break;
                 case "maxactivationdistance":
                     if (node.Type is not ("ProximityPrompt" or "ClickDetector") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.MaxActivationDistance = (float)Math.Clamp(value.Number, 1, 100);
@@ -3380,7 +4678,7 @@ public sealed class LuaXRuntime
                     node.Archivable = value.Boolean;
                     break;
                 case "name":
-                    if (node.Type is "Workspace" or "Players" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui") return DynValue.Nil;
+                    if (node.Type is "Workspace" or "Players" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui") return DynValue.Nil;
                     SetNodeName(node, value.CastToString() ?? node.Name);
                     break;
                 case "cameramode":
@@ -3442,11 +4740,11 @@ public sealed class LuaXRuntime
                     break;
                 case "attachment0":
                 case "attachment1":
-                    if (node.Type is not ("Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity") || normalized == "attachment1" && node.Type is ("VectorForce" or "LinearVelocity")) return DynValue.Nil;
+                    if (node.Type is not ("Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")) return DynValue.Nil;
                     var attachment = value.Type == DataType.Nil ? null : ReadNodeArgument(value);
                     if (value.Type != DataType.Nil && attachment?.Type != "Attachment") return DynValue.Nil;
                     var attachmentId = attachment?.Id ?? string.Empty;
-                    if (node.Type is "Beam" or "Trail" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" && attachmentId.Length > 0 && attachmentId == (normalized == "attachment0" ? node.Attachment1 : node.Attachment0)) return DynValue.Nil;
+                    if (node.Type is "Beam" or "Trail" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" && attachmentId.Length > 0 && attachmentId == (normalized == "attachment0" ? node.Attachment1 : node.Attachment0)) return DynValue.Nil;
                     if (normalized == "attachment0") node.Attachment0 = attachmentId;
                     else node.Attachment1 = attachmentId;
                     break;
@@ -3612,6 +4910,8 @@ public sealed class LuaXRuntime
             textConstraintInstance.Set("MaxTextSize", DynValue.NewNumber(node.MaxTextSize));
         if (normalized is "team" or "teamcolor") SyncTeamPropertyInstances(node);
         if (normalized == "name" && FindParentNode(node) is { } parent) RefreshParentChildren(parent);
+        if (node.Type == "Player" && normalized == "character" && FindNode(node.Character) is { Type: "Model" } character)
+            AddStarterCharacterScripts(character);
         propertyChanged?.Invoke(node, property, value);
         return DynValue.Nil;
     }
@@ -3710,9 +5010,9 @@ public sealed class LuaXRuntime
 
     private void SetNodeName(SceneNode node, string name)
     {
-        if (node.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui") return;
+        if (node.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui") return;
         node.Name = name;
-        if ((node.Type is "Script" or "ModuleScript") && project.Scripts.FirstOrDefault(item => item.Id == node.Id) is { } gameScript)
+        if ((node.Type is "Script" or "LocalScript" or "ModuleScript") && project.Scripts.FirstOrDefault(item => item.Id == node.Id) is { } gameScript)
             gameScript.Name = name;
     }
 
@@ -3744,22 +5044,23 @@ public sealed class LuaXRuntime
             ? DynValue.NewTable(instance) : DynValue.Nil;
 
     private DynValue GetOccupantValue(SceneNode seat) =>
-        seat.Type == "Seat" && !string.IsNullOrEmpty(seat.Occupant)
+        seat.Type is "Seat" or "VehicleSeat" && !string.IsNullOrEmpty(seat.Occupant)
         && FindNode(seat.Occupant) is { Type: "Humanoid" } humanoid
         && instances.TryGetValue(humanoid.Id, out var instance)
             ? DynValue.NewTable(instance) : DynValue.Nil;
 
     private bool TrySetLinearVelocityProperty(SceneNode node, string property, DynValue value)
     {
-        if (property is "vectorvelocity" or "linedirection" or "primarytangentaxis" or "secondarytangentaxis")
+        if (property is "vectorvelocity" or "linedirection" or "primarytangentaxis" or "secondarytangentaxis" or "maxaxesforce")
         {
             var vector = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
             if (value.Type != DataType.Table || !vector.All(float.IsFinite)) return false;
-            vector = vector.Select(component => Math.Clamp(component, -10000, 10000)).ToArray();
+            vector = vector.Select(component => Math.Clamp(component, property == "maxaxesforce" ? 0 : -10000, property == "maxaxesforce" ? 1000000 : 10000)).ToArray();
             if (property == "vectorvelocity") node.VectorVelocity = vector;
             if (property == "linedirection") node.LineDirection = vector;
             if (property == "primarytangentaxis") node.PrimaryTangentAxis = vector;
             if (property == "secondarytangentaxis") node.SecondaryTangentAxis = vector;
+            if (property == "maxaxesforce") node.MaxAxesForce = vector;
             return true;
         }
         switch (property)
@@ -3767,11 +5068,17 @@ public sealed class LuaXRuntime
             case "planevelocity" when TryReadVector2(value, out var plane):
                 node.PlaneVelocity = plane.Select(component => Math.Clamp(component, -10000, 10000)).ToArray();
                 return true;
+            case "maxplanaraxesforce" when TryReadVector2(value, out var maxPlanarForce):
+                node.MaxPlanarAxesForce = maxPlanarForce.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                return true;
             case "linevelocity" when value.Type == DataType.Number && double.IsFinite(value.Number):
                 node.LineVelocity = (float)Math.Clamp(value.Number, -10000, 10000);
                 return true;
             case "maxforce" when value.Type == DataType.Number && double.IsFinite(value.Number):
                 node.MaxForce = (float)Math.Clamp(value.Number, 0, 1000000);
+                return true;
+            case "forcelimitmode" when value.Type == DataType.String && value.String is "Magnitude" or "PerAxis":
+                node.ForceLimitMode = value.String;
                 return true;
             case "forcelimitsenabled" when value.Type == DataType.Boolean:
                 node.ForceLimitsEnabled = value.Boolean;
@@ -3779,8 +5086,11 @@ public sealed class LuaXRuntime
             case "velocityconstraintmode" when value.Type == DataType.String && value.String is "Vector" or "Line" or "Plane":
                 node.VelocityConstraintMode = value.String;
                 return true;
-            case "relativeto" when value.Type == DataType.String && value.String is "World" or "Attachment0":
+            case "relativeto" when value.Type == DataType.String && value.String is "World" or "Attachment0" or "Attachment1":
                 node.RelativeTo = value.String;
+                return true;
+            case "reactionforceenabled" when value.Type == DataType.Boolean:
+                node.LinearVelocityReactionForceEnabled = value.Boolean;
                 return true;
             default:
                 return false;
@@ -3892,15 +5202,252 @@ public sealed class LuaXRuntime
             };
             if (trailValue.Type != DataType.Nil) return trailValue;
         }
-        if (node.Type == "VectorForce")
+        if (node.Type is "VectorForce" or "BodyForce")
         {
             var forceValue = property.ToLowerInvariant() switch
             {
                 "force" => VectorValue(node.Force),
-                "relativeto" => DynValue.NewString(node.RelativeTo),
+                "relativeto" => node.Type == "VectorForce" ? DynValue.NewString(node.RelativeTo) : DynValue.Nil,
+                "applyatcenterofmass" => node.Type == "VectorForce" ? DynValue.NewBoolean(node.ApplyAtCenterOfMass) : DynValue.Nil,
                 _ => DynValue.Nil
             };
             if (forceValue.Type != DataType.Nil) return forceValue;
+        }
+        if (node.Type == "BodyVelocity")
+        {
+            var bodyVelocityValue = property.ToLowerInvariant() switch
+            {
+                "velocity" => VectorValue(node.BodyVelocityTarget),
+                "maxforce" => VectorValue(node.BodyVelocityMaxForce),
+                "p" => DynValue.NewNumber(node.BodyVelocityP),
+                _ => DynValue.Nil
+            };
+            if (bodyVelocityValue.Type != DataType.Nil) return bodyVelocityValue;
+        }
+        if (node.Type == "BodyPosition")
+        {
+            var bodyPositionValue = property.ToLowerInvariant() switch
+            {
+                "position" => VectorValue(node.BodyPositionTarget),
+                "maxforce" => VectorValue(node.BodyPositionMaxForce),
+                "p" => DynValue.NewNumber(node.BodyPositionP),
+                "d" => DynValue.NewNumber(node.BodyPositionD),
+                _ => DynValue.Nil
+            };
+            if (bodyPositionValue.Type != DataType.Nil) return bodyPositionValue;
+        }
+        if (node.Type == "BodyGyro")
+        {
+            var bodyGyroValue = property.ToLowerInvariant() switch
+            {
+                "rotation" => VectorValue(node.BodyGyroTargetRotation),
+                "maxtorque" => VectorValue(node.BodyGyroMaxTorque),
+                "p" => DynValue.NewNumber(node.BodyGyroP),
+                "d" => DynValue.NewNumber(node.BodyGyroD),
+                _ => DynValue.Nil
+            };
+            if (bodyGyroValue.Type != DataType.Nil) return bodyGyroValue;
+        }
+        if (node.Type == "BodyAngularVelocity")
+        {
+            var bodyAngularVelocityValue = property.ToLowerInvariant() switch
+            {
+                "angularvelocity" => VectorValue(node.BodyAngularVelocityTarget),
+                "maxtorque" => VectorValue(node.BodyAngularVelocityMaxTorque),
+                "p" => DynValue.NewNumber(node.BodyAngularVelocityP),
+                _ => DynValue.Nil
+            };
+            if (bodyAngularVelocityValue.Type != DataType.Nil) return bodyAngularVelocityValue;
+        }
+        if (node.Type == "LineForce")
+        {
+            var lineForceValue = property.ToLowerInvariant() switch
+            {
+                "magnitude" => DynValue.NewNumber(node.LineForceMagnitude),
+                "maxforce" => DynValue.NewNumber(node.LineForceMaxForce),
+                "inversesquarelaw" => DynValue.NewBoolean(node.LineForceInverseSquareLaw),
+                "reactionforceenabled" => DynValue.NewBoolean(node.LineForceReactionForceEnabled),
+                "applyatcenterofmass" => DynValue.NewBoolean(node.ApplyAtCenterOfMass),
+                _ => DynValue.Nil
+            };
+            if (lineForceValue.Type != DataType.Nil) return lineForceValue;
+        }
+        if (node.Type == "Torque")
+        {
+            var torqueValue = property.ToLowerInvariant() switch
+            {
+                "torque" => VectorValue(node.TorqueTarget),
+                "relativeto" => DynValue.NewString(node.RelativeTo),
+                _ => DynValue.Nil
+            };
+            if (torqueValue.Type != DataType.Nil) return torqueValue;
+        }
+        if (node.Type == "SpringConstraint")
+        {
+            var springValue = property.ToLowerInvariant() switch
+            {
+                "currentlength" => DynValue.NewNumber(node.SpringCurrentLength),
+                "damping" => DynValue.NewNumber(node.SpringDamping),
+                "freelength" => DynValue.NewNumber(node.SpringFreeLength),
+                "limitsenabled" => DynValue.NewBoolean(node.SpringLimitsEnabled),
+                "maxforce" => DynValue.NewNumber(node.SpringMaxForce),
+                "maxlength" => DynValue.NewNumber(node.SpringMaxLength),
+                "minlength" => DynValue.NewNumber(node.SpringMinLength),
+                "stiffness" => DynValue.NewNumber(node.SpringStiffness),
+                _ => DynValue.Nil
+            };
+            if (springValue.Type != DataType.Nil) return springValue;
+        }
+        if (node.Type == "TorsionSpringConstraint")
+        {
+            var torsionSpringValue = property.ToLowerInvariant() switch
+            {
+                "coils" => DynValue.NewNumber(node.TorsionSpringCoils),
+                "currentangle" => DynValue.NewNumber(node.TorsionSpringCurrentAngle),
+                "damping" => DynValue.NewNumber(node.TorsionSpringDamping),
+                "limitsenabled" => DynValue.NewBoolean(node.TorsionSpringLimitsEnabled),
+                "maxangle" => DynValue.NewNumber(node.TorsionSpringMaxAngle),
+                "maxtorque" => DynValue.NewNumber(node.TorsionSpringMaxTorque),
+                "radius" => DynValue.NewNumber(node.TorsionSpringRadius),
+                "restitution" => DynValue.NewNumber(node.TorsionSpringRestitution),
+                "stiffness" => DynValue.NewNumber(node.TorsionSpringStiffness),
+                _ => DynValue.Nil
+            };
+            if (torsionSpringValue.Type != DataType.Nil) return torsionSpringValue;
+        }
+        if (node.Type == "BallSocketConstraint")
+        {
+            var ballSocketValue = property.ToLowerInvariant() switch
+            {
+                "limitsenabled" => DynValue.NewBoolean(node.BallSocketLimitsEnabled),
+                "maxfrictiontorque" => DynValue.NewNumber(node.BallSocketMaxFrictionTorque),
+                "radius" => DynValue.NewNumber(node.BallSocketRadius),
+                "restitution" => DynValue.NewNumber(node.BallSocketRestitution),
+                "upperangle" => DynValue.NewNumber(node.BallSocketUpperAngle),
+                "twistlimitsenabled" => DynValue.NewBoolean(node.BallSocketTwistLimitsEnabled),
+                "twistlowerangle" => DynValue.NewNumber(node.BallSocketTwistLowerAngle),
+                "twistupperangle" => DynValue.NewNumber(node.BallSocketTwistUpperAngle),
+                _ => DynValue.Nil
+            };
+            if (ballSocketValue.Type != DataType.Nil) return ballSocketValue;
+        }
+        if (node.Type == "UniversalConstraint")
+        {
+            var universalValue = property.ToLowerInvariant() switch
+            {
+                "limitsenabled" => DynValue.NewBoolean(node.UniversalLimitsEnabled),
+                "maxangle" => DynValue.NewNumber(node.UniversalMaxAngle),
+                "radius" => DynValue.NewNumber(node.UniversalRadius),
+                "restitution" => DynValue.NewNumber(node.UniversalRestitution),
+                _ => DynValue.Nil
+            };
+            if (universalValue.Type != DataType.Nil) return universalValue;
+        }
+        if (node.Type == "HingeConstraint")
+        {
+            var hingeValue = property.ToLowerInvariant() switch
+            {
+                "actuatortype" => DynValue.NewString(node.HingeActuatorType),
+                "angularresponsiveness" => DynValue.NewNumber(node.HingeAngularResponsiveness),
+                "angularspeed" => DynValue.NewNumber(node.HingeAngularSpeed),
+                "angularvelocity" => DynValue.NewNumber(node.HingeAngularVelocity),
+                "currentangle" => DynValue.NewNumber(node.HingeCurrentAngle),
+                "limitsenabled" => DynValue.NewBoolean(node.HingeLimitsEnabled),
+                "lowerangle" => DynValue.NewNumber(node.HingeLowerAngle),
+                "motormaxacceleration" => DynValue.NewNumber(node.HingeMotorMaxAcceleration),
+                "motormaxtorque" => DynValue.NewNumber(node.HingeMotorMaxTorque),
+                "radius" => DynValue.NewNumber(node.HingeRadius),
+                "restitution" => DynValue.NewNumber(node.HingeRestitution),
+                "servomaxtorque" => DynValue.NewNumber(node.HingeServoMaxTorque),
+                "targetangle" => DynValue.NewNumber(node.HingeTargetAngle),
+                "upperangle" => DynValue.NewNumber(node.HingeUpperAngle),
+                _ => DynValue.Nil
+            };
+            if (hingeValue.Type != DataType.Nil) return hingeValue;
+        }
+        if (node.Type is "PrismaticConstraint" or "CylindricalConstraint")
+        {
+            var prismaticValue = property.ToLowerInvariant() switch
+            {
+                "actuatortype" => DynValue.NewString(node.PrismaticActuatorType),
+                "currentposition" => DynValue.NewNumber(node.PrismaticCurrentPosition),
+                "limitsenabled" => DynValue.NewBoolean(node.PrismaticLimitsEnabled),
+                "linearresponsiveness" => DynValue.NewNumber(node.PrismaticLinearResponsiveness),
+                "lowerlimit" => DynValue.NewNumber(node.PrismaticLowerLimit),
+                "motormaxacceleration" => DynValue.NewNumber(node.PrismaticMotorMaxAcceleration),
+                "motormaxforce" => DynValue.NewNumber(node.PrismaticMotorMaxForce),
+                "restitution" => DynValue.NewNumber(node.PrismaticRestitution),
+                "servomaxforce" => DynValue.NewNumber(node.PrismaticServoMaxForce),
+                "size" => DynValue.NewNumber(node.PrismaticSize),
+                "speed" => DynValue.NewNumber(node.PrismaticSpeed),
+                "targetposition" => DynValue.NewNumber(node.PrismaticTargetPosition),
+                "upperlimit" => DynValue.NewNumber(node.PrismaticUpperLimit),
+                "velocity" => DynValue.NewNumber(node.PrismaticVelocity),
+                _ => DynValue.Nil
+            };
+            if (prismaticValue.Type != DataType.Nil) return prismaticValue;
+        }
+        if (node.Type == "CylindricalConstraint")
+        {
+            var inclination = node.CylindricalInclinationAngle * (MathF.PI / 180);
+            var localAxis = new Vector3(MathF.Cos(inclination), MathF.Sin(inclination), 0);
+            var worldAxis = localAxis;
+            if (FindNode(node.Attachment0) is { Type: "Attachment" } attachment && FindParentNode(attachment) is { } part)
+            {
+                var frame = RotationMath.FromDegrees(attachment.Rotation) * RotationMath.FromDegrees(part.Rotation);
+                worldAxis = Vector3.Normalize(Vector3.TransformNormal(localAxis, frame));
+            }
+            var cylindricalValue = property.ToLowerInvariant() switch
+            {
+                "angularactuatortype" => DynValue.NewString(node.HingeActuatorType),
+                "angularlimitsenabled" => DynValue.NewBoolean(node.HingeLimitsEnabled),
+                "angularrestitution" => DynValue.NewNumber(node.HingeRestitution),
+                "angularresponsiveness" => DynValue.NewNumber(node.HingeAngularResponsiveness),
+                "angularspeed" => DynValue.NewNumber(node.HingeAngularSpeed),
+                "angularvelocity" => DynValue.NewNumber(node.HingeAngularVelocity),
+                "currentangle" => DynValue.NewNumber(node.HingeCurrentAngle),
+                "inclinationangle" => DynValue.NewNumber(node.CylindricalInclinationAngle),
+                "lowerangle" => DynValue.NewNumber(node.HingeLowerAngle),
+                "motormaxangularacceleration" => DynValue.NewNumber(node.HingeMotorMaxAcceleration),
+                "motormaxtorque" => DynValue.NewNumber(node.HingeMotorMaxTorque),
+                "rotationaxisvisible" => DynValue.NewBoolean(node.CylindricalRotationAxisVisible),
+                "servomaxtorque" => DynValue.NewNumber(node.HingeServoMaxTorque),
+                "targetangle" => DynValue.NewNumber(node.HingeTargetAngle),
+                "upperangle" => DynValue.NewNumber(node.HingeUpperAngle),
+                "worldrotationaxis" => VectorValue([worldAxis.X, worldAxis.Y, worldAxis.Z]),
+                _ => DynValue.Nil
+            };
+            if (cylindricalValue.Type != DataType.Nil) return cylindricalValue;
+        }
+        if (node.Type == "RopeConstraint")
+        {
+            var ropeValue = property.ToLowerInvariant() switch
+            {
+                "currentlength" => DynValue.NewNumber(node.RopeCurrentLength),
+                "length" => DynValue.NewNumber(node.RopeLength),
+                "restitution" => DynValue.NewNumber(node.RopeRestitution),
+                "winchenabled" => DynValue.NewBoolean(node.RopeWinchEnabled),
+                "winchforce" => DynValue.NewNumber(node.RopeWinchForce),
+                "winchresponsiveness" => DynValue.NewNumber(node.RopeWinchResponsiveness),
+                "winchspeed" => DynValue.NewNumber(node.RopeWinchSpeed),
+                "winchtarget" => DynValue.NewNumber(node.RopeWinchTarget),
+                _ => DynValue.Nil
+            };
+            if (ropeValue.Type != DataType.Nil) return ropeValue;
+        }
+        if (node.Type == "RodConstraint")
+        {
+            var rodValue = property.ToLowerInvariant() switch
+            {
+                "currentdistance" => DynValue.NewNumber(node.RodCurrentDistance),
+                "length" => DynValue.NewNumber(node.RodLength),
+                "limitangle0" => DynValue.NewNumber(node.RodLimitAngle0),
+                "limitangle1" => DynValue.NewNumber(node.RodLimitAngle1),
+                "limitsenabled" => DynValue.NewBoolean(node.RodLimitsEnabled),
+                "thickness" => DynValue.NewNumber(node.RodThickness),
+                _ => DynValue.Nil
+            };
+            if (rodValue.Type != DataType.Nil) return rodValue;
         }
         if (node.Type == "LinearVelocity")
         {
@@ -3914,7 +5461,11 @@ public sealed class LuaXRuntime
                 "secondarytangentaxis" => VectorValue(node.SecondaryTangentAxis),
                 "velocityconstraintmode" => DynValue.NewString(node.VelocityConstraintMode),
                 "forcelimitsenabled" => DynValue.NewBoolean(node.ForceLimitsEnabled),
+                "reactionforceenabled" => DynValue.NewBoolean(node.LinearVelocityReactionForceEnabled),
                 "maxforce" => DynValue.NewNumber(node.MaxForce),
+                "forcelimitmode" => DynValue.NewString(node.ForceLimitMode),
+                "maxaxesforce" => VectorValue(node.MaxAxesForce),
+                "maxplanaraxesforce" => Vector2Value(node.MaxPlanarAxesForce),
                 "relativeto" => DynValue.NewString(node.RelativeTo),
                 _ => DynValue.Nil
             };
@@ -3930,6 +5481,7 @@ public sealed class LuaXRuntime
                 "maxforce" => DynValue.NewNumber(node.MaxForce),
                 "rigidityenabled" => DynValue.NewBoolean(node.RigidityEnabled),
                 "reactionforceenabled" => DynValue.NewBoolean(node.ReactionForceEnabled),
+                "applyatcenterofmass" => DynValue.NewBoolean(node.ApplyAtCenterOfMass),
                 _ => DynValue.Nil
             };
             if (alignmentValue.Type != DataType.Nil) return alignmentValue;
@@ -4002,10 +5554,17 @@ public sealed class LuaXRuntime
         "id" => DynValue.NewString(node.Id),
         "classname" or "type" => DynValue.NewString(node.Type),
         "position" => IsGuiObject(node) ? CreateUDim2Value(node.PositionScale, node.Position) : VectorValue(node.Type == "Model" ? SceneModelService.GetPivot(node) : node.Position),
+        "tooltip" => node.Type == "Tool" ? DynValue.NewString(node.ToolTip) : DynValue.Nil,
+        "requireshandle" => node.Type == "Tool" ? DynValue.NewBoolean(node.RequiresHandle) : DynValue.Nil,
+        "canbedropped" => node.Type == "Tool" ? DynValue.NewBoolean(node.CanBeDropped) : DynValue.Nil,
+        "manualactivationonly" => node.Type == "Tool" ? DynValue.NewBoolean(node.ManualActivationOnly) : DynValue.Nil,
+        "gripposition" => node.Type == "Tool" ? VectorValue(node.GripPosition) : DynValue.Nil,
+        "griprotation" => node.Type == "Tool" ? VectorValue(node.GripRotation) : DynValue.Nil,
         "anchorpoint" => IsGuiObject(node) ? Vector2Value(node.AnchorPoint) : DynValue.Nil,
         "rotation" => VectorValue(node.Type == "AlignOrientation" ? node.AlignOrientationRotation : node.Rotation),
         "size" => node.Type == "Sparkles" ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) || node.Type == "BillboardGui" ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
         "color" => ColorValue(node.Color),
+        "backgroundcolor3" => IsGuiObject(node) ? ColorValue(node.Color) : DynValue.Nil,
         "color3" => node.Type is ("SelectionBox" or "SelectionSphere") ? ColorValue(node.Color) : DynValue.Nil,
         "surfacecolor3" => node.Type is ("SelectionBox" or "SelectionSphere") ? ColorValue(node.SurfaceColor3) : DynValue.Nil,
         "surfacetransparency" => node.Type is ("SelectionBox" or "SelectionSphere") ? DynValue.NewNumber(node.SurfaceTransparency) : DynValue.Nil,
@@ -4070,6 +5629,7 @@ public sealed class LuaXRuntime
         "angle" => DynValue.NewNumber(node.Angle),
         "actiontext" => DynValue.NewString(node.ActionText),
         "objecttext" => DynValue.NewString(node.ObjectText),
+        "holdduration" => node.Type == "ProximityPrompt" ? DynValue.NewNumber(node.HoldDuration) : DynValue.Nil,
         "maxactivationdistance" => DynValue.NewNumber(node.MaxActivationDistance),
         "volume" => DynValue.NewNumber(node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume),
         "playbackspeed" => node.Type == "Sound" ? DynValue.NewNumber(node.PlaybackSpeed) : DynValue.Nil,
@@ -4107,6 +5667,14 @@ public sealed class LuaXRuntime
         "allowteamchangeontouch" => node.Type == "SpawnLocation" ? DynValue.NewBoolean(node.AllowTeamChangeOnTouch) : DynValue.Nil,
         "duration" => node.Type == "SpawnLocation" ? DynValue.NewNumber(node.Duration) : DynValue.Nil,
         "occupant" => GetOccupantValue(node),
+        "disabled" => node.Type == "VehicleSeat" ? DynValue.NewBoolean(node.VehicleSeatDisabled) : DynValue.Nil,
+        "headsupdisplay" => node.Type == "VehicleSeat" ? DynValue.NewBoolean(node.VehicleSeatHeadsUpDisplay) : DynValue.Nil,
+        "maxspeed" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatMaxSpeed) : DynValue.Nil,
+        "torque" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatTorque) : node.Type == "Torque" ? VectorValue(node.TorqueTarget) : DynValue.Nil,
+        "turnspeed" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatTurnSpeed) : DynValue.Nil,
+        "throttlefloat" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatThrottleFloat) : DynValue.Nil,
+        "steerfloat" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatSteerFloat) : DynValue.Nil,
+        "arehingesdetected" => node.Type == "VehicleSeat" ? DynValue.NewNumber(node.VehicleSeatAreHingesDetected) : DynValue.Nil,
         "health" => DynValue.NewNumber(node.Health),
         "maxhealth" => DynValue.NewNumber(node.MaxHealth),
         "walkspeed" => DynValue.NewNumber(node.WalkSpeed),
@@ -4305,18 +5873,22 @@ public sealed class LuaXRuntime
     private static bool IsA(SceneNode node, string className) => className switch
     {
         "Instance" => true,
-        "Constraint" => node.Type is "WeldConstraint" or "NoCollisionConstraint" or "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity",
+        "Accoutrement" => node.Type == "Accessory",
+        "BodyMover" => node.Type is "BodyForce" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity",
+        "Constraint" => node.Type is "WeldConstraint" or "NoCollisionConstraint" or "VectorForce" or "LineForce" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity",
+        "SlidingBallConstraint" => node.Type is "PrismaticConstraint" or "CylindricalConstraint",
         "BasePart" => IsBasePart(node),
         "Light" => SceneNodeTypes.IsLight(node),
         "SoundEffect" => node.Type == "PitchShiftSoundEffect",
         "ValueBase" => SceneNodeTypes.IsValueObject(node),
         "GuiBase3d" => node.Type is "SelectionBox" or "SelectionSphere",
         "BasePlayerGui" => node.Type == "PlayerGui",
+        "BasePlayerScripts" => node.Type == "PlayerScripts",
         "InstanceAdornment" => node.Type == "SelectionBox",
         "PVAdornment" => node.Type == "SelectionSphere",
         "UIComponent" => node.Type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIShadow" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UIAspectRatioConstraint" or "UISizeConstraint" or "UITextSizeConstraint" or "UIFlexItem",
-        "LuaSourceContainer" => node.Type is "Script" or "ModuleScript",
-        "BaseScript" => node.Type == "Script",
+        "LuaSourceContainer" => node.Type is "Script" or "LocalScript" or "ModuleScript",
+        "BaseScript" => node.Type is "Script" or "LocalScript",
         "FaceInstance" or "Decal" => node.Type is "Decal" or "Texture",
         "GuiObject" => node.Type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox",
         "GuiBase2d" => node.Type is "ScreenGui" or "BillboardGui" or "SurfaceGui" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox",
@@ -4628,7 +6200,7 @@ public sealed class LuaXRuntime
                 if (instance.Get("OffsetStudsV").Type == DataType.Number && double.IsFinite(instance.Get("OffsetStudsV").Number))
                     Assign(node, "OffsetStudsV", node.OffsetStudsV, (float)Math.Clamp(instance.Get("OffsetStudsV").Number, -10000, 10000), value => node.OffsetStudsV = value);
             }
-            if (IsBasePart(node) && instance.Get("Material").CastToString() is "Plastic" or "Metal" or "Neon" or "Glass" or "Wood" or "Concrete")
+            if (IsBasePart(node) && SceneNodeTypes.IsMaterial(instance.Get("Material").CastToString()))
                 Assign(node, "Material", node.Material, instance.Get("Material").String, value => node.Material = value);
             if (node.Type is "ParticleEmitter" or "Trail" && TryReadNumberSequence(instance.Get("Transparency"), out var particleTransparency))
             {
@@ -4652,7 +6224,7 @@ public sealed class LuaXRuntime
             {
                 var wasEnabled = node.Enabled;
                 Assign(node, "Enabled", node.Enabled, instance.Get("Enabled").Boolean, value => node.Enabled = value);
-                if (node.Type == "Script" && wasEnabled != node.Enabled)
+                if (SceneNodeTypes.IsBaseScript(node) && wasEnabled != node.Enabled)
                 {
                     if (node.Enabled) QueueRunnableScripts(node);
                     else StopScripts([node.Id]);
@@ -4715,6 +6287,8 @@ public sealed class LuaXRuntime
             {
                 if (instance.Get("ActionText").CastToString() is { } actionText) Assign(node, "ActionText", node.ActionText, actionText, value => node.ActionText = value);
                 if (instance.Get("ObjectText").CastToString() is { } objectText) Assign(node, "ObjectText", node.ObjectText, objectText, value => node.ObjectText = value);
+                if (instance.Get("HoldDuration").Type == DataType.Number && double.IsFinite(instance.Get("HoldDuration").Number))
+                    Assign(node, "HoldDuration", node.HoldDuration, (float)Math.Clamp(instance.Get("HoldDuration").Number, 0, 60), value => node.HoldDuration = value);
             }
             if (node.Type is "ProximityPrompt" or "ClickDetector"
                 && instance.Get("MaxActivationDistance").Type == DataType.Number && double.IsFinite(instance.Get("MaxActivationDistance").Number))
@@ -4761,6 +6335,87 @@ public sealed class LuaXRuntime
             {
                 Assign(node, "Octave", node.PitchShiftOctave, (float)Math.Clamp(instance.Get("Octave").Number, .5, 2), value => node.PitchShiftOctave = value);
             }
+            if (node.Type == "BodyForce")
+            {
+                var force = ReadVector(instance.Get("Force"), [float.NaN, float.NaN, float.NaN]);
+                if (force.All(float.IsFinite))
+                {
+                    var requestedForce = force.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+                    if (!node.Force.SequenceEqual(requestedForce)) { node.Force = requestedForce; MarkChanged(node, "Force"); }
+                }
+            }
+            if (node.Type == "BodyVelocity")
+            {
+                var targetVelocity = ReadVector(instance.Get("Velocity"), [float.NaN, float.NaN, float.NaN]);
+                if (targetVelocity.All(float.IsFinite))
+                {
+                    var requested = targetVelocity.Select(component => Math.Clamp(component, -10000, 10000)).ToArray();
+                    if (!node.BodyVelocityTarget.SequenceEqual(requested)) { node.BodyVelocityTarget = requested; MarkChanged(node, "Velocity"); }
+                }
+                var maxForce = ReadVector(instance.Get("MaxForce"), [float.NaN, float.NaN, float.NaN]);
+                if (maxForce.All(float.IsFinite))
+                {
+                    var requested = maxForce.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                    if (!node.BodyVelocityMaxForce.SequenceEqual(requested)) { node.BodyVelocityMaxForce = requested; MarkChanged(node, "MaxForce"); }
+                }
+                if (instance.Get("P").Type == DataType.Number && double.IsFinite(instance.Get("P").Number))
+                    Assign(node, "P", node.BodyVelocityP, (float)Math.Clamp(instance.Get("P").Number, 0, 1000000), value => node.BodyVelocityP = value);
+            }
+            if (node.Type == "BodyPosition")
+            {
+                var targetPosition = ReadVector(instance.Get("Position"), [float.NaN, float.NaN, float.NaN]);
+                if (targetPosition.All(float.IsFinite))
+                {
+                    var requested = targetPosition.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+                    if (!node.BodyPositionTarget.SequenceEqual(requested)) { node.BodyPositionTarget = requested; MarkChanged(node, "Position"); }
+                }
+                var maxForce = ReadVector(instance.Get("MaxForce"), [float.NaN, float.NaN, float.NaN]);
+                if (maxForce.All(float.IsFinite))
+                {
+                    var requested = maxForce.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                    if (!node.BodyPositionMaxForce.SequenceEqual(requested)) { node.BodyPositionMaxForce = requested; MarkChanged(node, "MaxForce"); }
+                }
+                if (instance.Get("P").Type == DataType.Number && double.IsFinite(instance.Get("P").Number))
+                    Assign(node, "P", node.BodyPositionP, (float)Math.Clamp(instance.Get("P").Number, 0, 1000000), value => node.BodyPositionP = value);
+                if (instance.Get("D").Type == DataType.Number && double.IsFinite(instance.Get("D").Number))
+                    Assign(node, "D", node.BodyPositionD, (float)Math.Clamp(instance.Get("D").Number, 0, 1000000), value => node.BodyPositionD = value);
+            }
+            if (node.Type == "BodyGyro")
+            {
+                var rotation = ReadVector(instance.Get("Rotation"), [float.NaN, float.NaN, float.NaN]);
+                if (rotation.All(float.IsFinite))
+                {
+                    var requested = rotation.Select(component => Math.Clamp(component, -360000, 360000)).ToArray();
+                    if (!node.BodyGyroTargetRotation.SequenceEqual(requested)) { node.BodyGyroTargetRotation = requested; MarkChanged(node, "Rotation"); }
+                }
+                var maxTorque = ReadVector(instance.Get("MaxTorque"), [float.NaN, float.NaN, float.NaN]);
+                if (maxTorque.All(float.IsFinite))
+                {
+                    var requested = maxTorque.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                    if (!node.BodyGyroMaxTorque.SequenceEqual(requested)) { node.BodyGyroMaxTorque = requested; MarkChanged(node, "MaxTorque"); }
+                }
+                if (instance.Get("P").Type == DataType.Number && double.IsFinite(instance.Get("P").Number))
+                    Assign(node, "P", node.BodyGyroP, (float)Math.Clamp(instance.Get("P").Number, 0, 1000000), value => node.BodyGyroP = value);
+                if (instance.Get("D").Type == DataType.Number && double.IsFinite(instance.Get("D").Number))
+                    Assign(node, "D", node.BodyGyroD, (float)Math.Clamp(instance.Get("D").Number, 0, 1000000), value => node.BodyGyroD = value);
+            }
+            if (node.Type == "BodyAngularVelocity")
+            {
+                var angularVelocity = ReadVector(instance.Get("AngularVelocity"), [float.NaN, float.NaN, float.NaN]);
+                if (angularVelocity.All(float.IsFinite))
+                {
+                    var requested = angularVelocity.Select(component => Math.Clamp(component, -10000, 10000)).ToArray();
+                    if (!node.BodyAngularVelocityTarget.SequenceEqual(requested)) { node.BodyAngularVelocityTarget = requested; MarkChanged(node, "AngularVelocity"); }
+                }
+                var maxTorque = ReadVector(instance.Get("MaxTorque"), [float.NaN, float.NaN, float.NaN]);
+                if (maxTorque.All(float.IsFinite))
+                {
+                    var requested = maxTorque.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                    if (!node.BodyAngularVelocityMaxTorque.SequenceEqual(requested)) { node.BodyAngularVelocityMaxTorque = requested; MarkChanged(node, "MaxTorque"); }
+                }
+                if (instance.Get("P").Type == DataType.Number && double.IsFinite(instance.Get("P").Number))
+                    Assign(node, "P", node.BodyAngularVelocityP, (float)Math.Clamp(instance.Get("P").Number, 0, 1000000), value => node.BodyAngularVelocityP = value);
+            }
             if (node.Type is "WeldConstraint" or "NoCollisionConstraint")
             {
                 var part0Value = instance.Get("Part0");
@@ -4774,7 +6429,7 @@ public sealed class LuaXRuntime
                     Assign(node, "Part1", node.Part1, requestedPart1.Id, value => node.Part1 = value);
                 else if (part1Value.Type == DataType.Nil) Assign(node, "Part1", node.Part1, string.Empty, value => node.Part1 = value);
             }
-            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity")
+            if (node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")
             {
                 var attachment0Value = instance.Get("Attachment0");
                 var requestedAttachment0 = ReadNodeArgument(attachment0Value);
@@ -4783,17 +6438,305 @@ public sealed class LuaXRuntime
                 else if (attachment0Value.Type == DataType.Nil) Assign(node, "Attachment0", node.Attachment0, string.Empty, value => node.Attachment0 = value);
                 if (node.Type == "VectorForce")
                 {
+                    var referenceValue = instance.Get("Attachment1");
+                    var referenceAttachment = ReadNodeArgument(referenceValue);
+                    if (referenceAttachment is { Type: "Attachment" })
+                        Assign(node, "Attachment1", node.Attachment1, referenceAttachment.Id, value => node.Attachment1 = value);
+                    else if (referenceValue.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
                     var force = ReadVector(instance.Get("Force"), [float.NaN, float.NaN, float.NaN]);
                     if (force.All(float.IsFinite))
                     {
                         var requestedForce = force.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
                         if (!node.Force.SequenceEqual(requestedForce)) { node.Force = requestedForce; MarkChanged(node, "Force"); }
                     }
-                    if (instance.Get("RelativeTo").Type == DataType.String && instance.Get("RelativeTo").String is "World" or "Attachment0")
+                    if (instance.Get("RelativeTo").Type == DataType.String && instance.Get("RelativeTo").String is "World" or "Attachment0" or "Attachment1")
                         Assign(node, "RelativeTo", node.RelativeTo, instance.Get("RelativeTo").String, value => node.RelativeTo = value);
+                    if (instance.Get("ApplyAtCenterOfMass").Type == DataType.Boolean)
+                        Assign(node, "ApplyAtCenterOfMass", node.ApplyAtCenterOfMass, instance.Get("ApplyAtCenterOfMass").Boolean, value => node.ApplyAtCenterOfMass = value);
+                }
+                else if (node.Type == "LineForce")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    AssignLineForceNumber("Magnitude", node.LineForceMagnitude, 0, 1000000, value => node.LineForceMagnitude = value);
+                    AssignLineForceNumber("MaxForce", node.LineForceMaxForce, 0, 1000000, value => node.LineForceMaxForce = value);
+                    if (instance.Get("InverseSquareLaw").Type == DataType.Boolean)
+                        Assign(node, "InverseSquareLaw", node.LineForceInverseSquareLaw, instance.Get("InverseSquareLaw").Boolean, value => node.LineForceInverseSquareLaw = value);
+                    if (instance.Get("ReactionForceEnabled").Type == DataType.Boolean)
+                        Assign(node, "ReactionForceEnabled", node.LineForceReactionForceEnabled, instance.Get("ReactionForceEnabled").Boolean, value => node.LineForceReactionForceEnabled = value);
+                    if (instance.Get("ApplyAtCenterOfMass").Type == DataType.Boolean)
+                        Assign(node, "ApplyAtCenterOfMass", node.ApplyAtCenterOfMass, instance.Get("ApplyAtCenterOfMass").Boolean, value => node.ApplyAtCenterOfMass = value);
+
+                    void AssignLineForceNumber(string propertyName, float current, float minimum, float maximum, Action<float> setter)
+                    {
+                        var requested = instance.Get(propertyName);
+                        if (requested.Type == DataType.Number && double.IsFinite(requested.Number))
+                            Assign(node, propertyName, current, (float)Math.Clamp(requested.Number, minimum, maximum), setter);
+                    }
+                }
+                else if (node.Type == "Torque")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    var torque = ReadVector(instance.Get("Torque"), [float.NaN, float.NaN, float.NaN]);
+                    if (torque.All(float.IsFinite))
+                    {
+                        var requestedTorque = torque.Select(component => Math.Clamp(component, -1000000, 1000000)).ToArray();
+                        if (!node.TorqueTarget.SequenceEqual(requestedTorque)) { node.TorqueTarget = requestedTorque; MarkChanged(node, "Torque"); }
+                    }
+                    if (instance.Get("RelativeTo").Type == DataType.String && instance.Get("RelativeTo").String is "World" or "Attachment0" or "Attachment1")
+                        Assign(node, "RelativeTo", node.RelativeTo, instance.Get("RelativeTo").String, value => node.RelativeTo = value);
+                }
+                else if (node.Type == "SpringConstraint")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    AssignSpringNumber("Damping", node.SpringDamping, 0, 10000, value => node.SpringDamping = value);
+                    AssignSpringNumber("FreeLength", node.SpringFreeLength, 0, 10000, value => node.SpringFreeLength = value);
+                    AssignSpringNumber("MaxForce", node.SpringMaxForce, 0, 1000000, value => node.SpringMaxForce = value);
+                    AssignSpringNumber("MaxLength", node.SpringMaxLength, node.SpringMinLength, 10000, value => node.SpringMaxLength = value);
+                    AssignSpringNumber("MinLength", node.SpringMinLength, 0, node.SpringMaxLength, value => node.SpringMinLength = value);
+                    AssignSpringNumber("Stiffness", node.SpringStiffness, 0, 100000, value => node.SpringStiffness = value);
+                    if (instance.Get("LimitsEnabled").Type == DataType.Boolean)
+                        Assign(node, "LimitsEnabled", node.SpringLimitsEnabled, instance.Get("LimitsEnabled").Boolean, value => node.SpringLimitsEnabled = value);
+                    instance.Set("CurrentLength", DynValue.NewNumber(node.SpringCurrentLength));
+
+                    void AssignSpringNumber(string propertyName, float current, float minimum, float maximum, Action<float> setter)
+                    {
+                        if (instance.Get(propertyName).Type != DataType.Number || !double.IsFinite(instance.Get(propertyName).Number)) return;
+                        Assign(node, propertyName, current, (float)Math.Clamp(instance.Get(propertyName).Number, minimum, maximum), setter);
+                    }
+                }
+                else if (node.Type == "TorsionSpringConstraint")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    AssignTorsionNumber("Coils", node.TorsionSpringCoils, 0, 8, value => node.TorsionSpringCoils = value);
+                    AssignTorsionNumber("Damping", node.TorsionSpringDamping, 0, 100000, value => node.TorsionSpringDamping = value);
+                    AssignTorsionNumber("MaxAngle", node.TorsionSpringMaxAngle, 0, 180, value => node.TorsionSpringMaxAngle = value);
+                    AssignTorsionNumber("MaxTorque", node.TorsionSpringMaxTorque, 0, 1000000, value => node.TorsionSpringMaxTorque = value);
+                    AssignTorsionNumber("Radius", node.TorsionSpringRadius, 0, 100, value => node.TorsionSpringRadius = value);
+                    AssignTorsionNumber("Restitution", node.TorsionSpringRestitution, 0, 1, value => node.TorsionSpringRestitution = value);
+                    AssignTorsionNumber("Stiffness", node.TorsionSpringStiffness, 0, 100000, value => node.TorsionSpringStiffness = value);
+                    if (instance.Get("LimitsEnabled").Type == DataType.Boolean)
+                        Assign(node, "LimitsEnabled", node.TorsionSpringLimitsEnabled, instance.Get("LimitsEnabled").Boolean, value => node.TorsionSpringLimitsEnabled = value);
+                    instance.Set("CurrentAngle", DynValue.NewNumber(node.TorsionSpringCurrentAngle));
+
+                    void AssignTorsionNumber(string propertyName, float current, float minimum, float maximum, Action<float> setter)
+                    {
+                        if (instance.Get(propertyName).Type != DataType.Number || !double.IsFinite(instance.Get(propertyName).Number)) return;
+                        Assign(node, propertyName, current, (float)Math.Clamp(instance.Get(propertyName).Number, minimum, maximum), setter);
+                    }
+                }
+                else if (node.Type == "RopeConstraint")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    AssignRopeNumber("Length", node.RopeLength, 0, 10000, value => node.RopeLength = value);
+                    AssignRopeNumber("Restitution", node.RopeRestitution, 0, 1, value => node.RopeRestitution = value);
+                    AssignRopeNumber("WinchForce", node.RopeWinchForce, 0, 1000000, value => node.RopeWinchForce = value);
+                    AssignRopeNumber("WinchResponsiveness", node.RopeWinchResponsiveness, 0, 200, value => node.RopeWinchResponsiveness = value);
+                    AssignRopeNumber("WinchSpeed", node.RopeWinchSpeed, 0, 10000, value => node.RopeWinchSpeed = value);
+                    AssignRopeNumber("WinchTarget", node.RopeWinchTarget, 0, 10000, value => node.RopeWinchTarget = value);
+                    if (instance.Get("WinchEnabled").Type == DataType.Boolean)
+                        Assign(node, "WinchEnabled", node.RopeWinchEnabled, instance.Get("WinchEnabled").Boolean, value => node.RopeWinchEnabled = value);
+                    instance.Set("CurrentLength", DynValue.NewNumber(node.RopeCurrentLength));
+
+                    void AssignRopeNumber(string propertyName, float current, float minimum, float maximum, Action<float> setter)
+                    {
+                        if (instance.Get(propertyName).Type != DataType.Number || !double.IsFinite(instance.Get(propertyName).Number)) return;
+                        Assign(node, propertyName, current, (float)Math.Clamp(instance.Get(propertyName).Number, minimum, maximum), setter);
+                    }
+                }
+                else if (node.Type == "RodConstraint")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    AssignRodNumber("Length", node.RodLength, 0, 10000, value => node.RodLength = value);
+                    AssignRodNumber("LimitAngle0", node.RodLimitAngle0, 0, 180, value => node.RodLimitAngle0 = value);
+                    AssignRodNumber("LimitAngle1", node.RodLimitAngle1, 0, 180, value => node.RodLimitAngle1 = value);
+                    AssignRodNumber("Thickness", node.RodThickness, 0, 100, value => node.RodThickness = value);
+                    if (instance.Get("LimitsEnabled").Type == DataType.Boolean)
+                        Assign(node, "LimitsEnabled", node.RodLimitsEnabled, instance.Get("LimitsEnabled").Boolean, value => node.RodLimitsEnabled = value);
+                    instance.Set("CurrentDistance", DynValue.NewNumber(node.RodCurrentDistance));
+
+                    void AssignRodNumber(string propertyName, float current, float minimum, float maximum, Action<float> setter)
+                    {
+                        if (instance.Get(propertyName).Type != DataType.Number || !double.IsFinite(instance.Get(propertyName).Number)) return;
+                        Assign(node, propertyName, current, (float)Math.Clamp(instance.Get(propertyName).Number, minimum, maximum), setter);
+                    }
+                }
+                else if (node.Type == "UniversalConstraint")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    AssignUniversalNumber("MaxAngle", node.UniversalMaxAngle, 0, 180, value => node.UniversalMaxAngle = value);
+                    AssignUniversalNumber("Radius", node.UniversalRadius, 0, 100, value => node.UniversalRadius = value);
+                    AssignUniversalNumber("Restitution", node.UniversalRestitution, 0, 1, value => node.UniversalRestitution = value);
+                    if (instance.Get("LimitsEnabled").Type == DataType.Boolean)
+                        Assign(node, "LimitsEnabled", node.UniversalLimitsEnabled, instance.Get("LimitsEnabled").Boolean, value => node.UniversalLimitsEnabled = value);
+
+                    void AssignUniversalNumber(string propertyName, float current, float minimum, float maximum, Action<float> setter)
+                    {
+                        if (instance.Get(propertyName).Type != DataType.Number || !double.IsFinite(instance.Get(propertyName).Number)) return;
+                        Assign(node, propertyName, current, (float)Math.Clamp(instance.Get(propertyName).Number, minimum, maximum), setter);
+                    }
+                }
+                else if (node.Type == "BallSocketConstraint")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    AssignBallSocketNumber("UpperAngle", node.BallSocketUpperAngle, 0, 180, value => node.BallSocketUpperAngle = value);
+                    AssignBallSocketNumber("MaxFrictionTorque", node.BallSocketMaxFrictionTorque, 0, 1000000, value => node.BallSocketMaxFrictionTorque = value);
+                    AssignBallSocketNumber("Radius", node.BallSocketRadius, 0, 100, value => node.BallSocketRadius = value);
+                    AssignBallSocketNumber("Restitution", node.BallSocketRestitution, 0, 1, value => node.BallSocketRestitution = value);
+                    AssignBallSocketNumber("TwistLowerAngle", node.BallSocketTwistLowerAngle, -180, node.BallSocketTwistUpperAngle, value => node.BallSocketTwistLowerAngle = value);
+                    AssignBallSocketNumber("TwistUpperAngle", node.BallSocketTwistUpperAngle, node.BallSocketTwistLowerAngle, 180, value => node.BallSocketTwistUpperAngle = value);
+                    if (instance.Get("LimitsEnabled").Type == DataType.Boolean)
+                        Assign(node, "LimitsEnabled", node.BallSocketLimitsEnabled, instance.Get("LimitsEnabled").Boolean, value => node.BallSocketLimitsEnabled = value);
+                    if (instance.Get("TwistLimitsEnabled").Type == DataType.Boolean)
+                        Assign(node, "TwistLimitsEnabled", node.BallSocketTwistLimitsEnabled, instance.Get("TwistLimitsEnabled").Boolean, value => node.BallSocketTwistLimitsEnabled = value);
+
+                    void AssignBallSocketNumber(string propertyName, float current, float minimum, float maximum, Action<float> setter)
+                    {
+                        if (instance.Get(propertyName).Type != DataType.Number || !double.IsFinite(instance.Get(propertyName).Number)) return;
+                        Assign(node, propertyName, current, (float)Math.Clamp(instance.Get(propertyName).Number, minimum, maximum), setter);
+                    }
+                }
+                else if (node.Type == "HingeConstraint")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    if (instance.Get("ActuatorType").Type == DataType.String && instance.Get("ActuatorType").String is "None" or "Motor" or "Servo")
+                        Assign(node, "ActuatorType", node.HingeActuatorType, instance.Get("ActuatorType").String, value => node.HingeActuatorType = value);
+                    AssignHingeNumber("AngularResponsiveness", node.HingeAngularResponsiveness, 0, 200, value => node.HingeAngularResponsiveness = value);
+                    AssignHingeNumber("AngularSpeed", node.HingeAngularSpeed, 0, 1000, value => node.HingeAngularSpeed = value);
+                    AssignHingeNumber("AngularVelocity", node.HingeAngularVelocity, -1000, 1000, value => node.HingeAngularVelocity = value);
+                    AssignHingeNumber("LowerAngle", node.HingeLowerAngle, -180, node.HingeUpperAngle, value => node.HingeLowerAngle = value);
+                    AssignHingeNumber("MotorMaxAcceleration", node.HingeMotorMaxAcceleration, 0, 100000, value => node.HingeMotorMaxAcceleration = value);
+                    AssignHingeNumber("MotorMaxTorque", node.HingeMotorMaxTorque, 0, 1000000, value => node.HingeMotorMaxTorque = value);
+                    AssignHingeNumber("Radius", node.HingeRadius, 0, 100, value => node.HingeRadius = value);
+                    AssignHingeNumber("Restitution", node.HingeRestitution, 0, 1, value => node.HingeRestitution = value);
+                    AssignHingeNumber("ServoMaxTorque", node.HingeServoMaxTorque, 0, 1000000, value => node.HingeServoMaxTorque = value);
+                    AssignHingeNumber("TargetAngle", node.HingeTargetAngle, -360000, 360000, value => node.HingeTargetAngle = value);
+                    AssignHingeNumber("UpperAngle", node.HingeUpperAngle, node.HingeLowerAngle, 180, value => node.HingeUpperAngle = value);
+                    if (instance.Get("LimitsEnabled").Type == DataType.Boolean)
+                        Assign(node, "LimitsEnabled", node.HingeLimitsEnabled, instance.Get("LimitsEnabled").Boolean, value => node.HingeLimitsEnabled = value);
+                    instance.Set("CurrentAngle", DynValue.NewNumber(node.HingeCurrentAngle));
+
+                    void AssignHingeNumber(string propertyName, float current, float minimum, float maximum, Action<float> setter)
+                    {
+                        if (instance.Get(propertyName).Type != DataType.Number || !double.IsFinite(instance.Get(propertyName).Number)) return;
+                        Assign(node, propertyName, current, (float)Math.Clamp(instance.Get(propertyName).Number, minimum, maximum), setter);
+                    }
+                }
+                else if (node.Type is "PrismaticConstraint" or "CylindricalConstraint")
+                {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
+                    if (instance.Get("ActuatorType").Type == DataType.String && instance.Get("ActuatorType").String is "None" or "Motor" or "Servo")
+                        Assign(node, "ActuatorType", node.PrismaticActuatorType, instance.Get("ActuatorType").String, value => node.PrismaticActuatorType = value);
+                    AssignPrismaticNumber("LinearResponsiveness", node.PrismaticLinearResponsiveness, 0, 200, value => node.PrismaticLinearResponsiveness = value);
+                    AssignPrismaticNumber("LowerLimit", node.PrismaticLowerLimit, -10000, 10000, value =>
+                    {
+                        node.PrismaticLowerLimit = value;
+                        if (node.PrismaticLowerLimit > node.PrismaticUpperLimit)
+                            node.PrismaticUpperLimit = node.PrismaticLowerLimit;
+                    });
+                    AssignPrismaticNumber("MotorMaxAcceleration", node.PrismaticMotorMaxAcceleration, 0, 100000, value => node.PrismaticMotorMaxAcceleration = value);
+                    AssignPrismaticNumber("MotorMaxForce", node.PrismaticMotorMaxForce, 0, 1000000, value => node.PrismaticMotorMaxForce = value);
+                    AssignPrismaticNumber("Restitution", node.PrismaticRestitution, 0, 1, value => node.PrismaticRestitution = value);
+                    AssignPrismaticNumber("ServoMaxForce", node.PrismaticServoMaxForce, 0, 1000000, value => node.PrismaticServoMaxForce = value);
+                    AssignPrismaticNumber("Size", node.PrismaticSize, 0, 100, value => node.PrismaticSize = value);
+                    AssignPrismaticNumber("Speed", node.PrismaticSpeed, 0, 10000, value => node.PrismaticSpeed = value);
+                    AssignPrismaticNumber("TargetPosition", node.PrismaticTargetPosition, -10000, 10000, value => node.PrismaticTargetPosition = value);
+                    AssignPrismaticNumber("UpperLimit", node.PrismaticUpperLimit, -10000, 10000, value =>
+                    {
+                        node.PrismaticUpperLimit = value;
+                        if (node.PrismaticUpperLimit < node.PrismaticLowerLimit)
+                            node.PrismaticLowerLimit = node.PrismaticUpperLimit;
+                    });
+                    AssignPrismaticNumber("Velocity", node.PrismaticVelocity, -10000, 10000, value => node.PrismaticVelocity = value);
+                    if (instance.Get("LimitsEnabled").Type == DataType.Boolean)
+                        Assign(node, "LimitsEnabled", node.PrismaticLimitsEnabled, instance.Get("LimitsEnabled").Boolean, value => node.PrismaticLimitsEnabled = value);
+                    instance.Set("CurrentPosition", DynValue.NewNumber(node.PrismaticCurrentPosition));
+                    if (node.Type == "CylindricalConstraint")
+                    {
+                        if (instance.Get("AngularActuatorType").Type == DataType.String && instance.Get("AngularActuatorType").String is "None" or "Motor" or "Servo")
+                            Assign(node, "AngularActuatorType", node.HingeActuatorType, instance.Get("AngularActuatorType").String, value => node.HingeActuatorType = value);
+                        AssignPrismaticNumber("AngularRestitution", node.HingeRestitution, 0, 1, value => node.HingeRestitution = value);
+                        AssignPrismaticNumber("AngularResponsiveness", node.HingeAngularResponsiveness, 0, 200, value => node.HingeAngularResponsiveness = value);
+                        AssignPrismaticNumber("AngularSpeed", node.HingeAngularSpeed, 0, 1000, value => node.HingeAngularSpeed = value);
+                        AssignPrismaticNumber("AngularVelocity", node.HingeAngularVelocity, -1000, 1000, value => node.HingeAngularVelocity = value);
+                        AssignPrismaticNumber("InclinationAngle", node.CylindricalInclinationAngle, -180, 180, value => node.CylindricalInclinationAngle = value);
+                        AssignPrismaticNumber("LowerAngle", node.HingeLowerAngle, -180, node.HingeUpperAngle, value => node.HingeLowerAngle = value);
+                        AssignPrismaticNumber("MotorMaxAngularAcceleration", node.HingeMotorMaxAcceleration, 0, 100000, value => node.HingeMotorMaxAcceleration = value);
+                        AssignPrismaticNumber("MotorMaxTorque", node.HingeMotorMaxTorque, 0, 1000000, value => node.HingeMotorMaxTorque = value);
+                        AssignPrismaticNumber("ServoMaxTorque", node.HingeServoMaxTorque, 0, 1000000, value => node.HingeServoMaxTorque = value);
+                        AssignPrismaticNumber("TargetAngle", node.HingeTargetAngle, -180, 180, value => node.HingeTargetAngle = value);
+                        AssignPrismaticNumber("UpperAngle", node.HingeUpperAngle, node.HingeLowerAngle, 180, value => node.HingeUpperAngle = value);
+                        if (instance.Get("AngularLimitsEnabled").Type == DataType.Boolean)
+                            Assign(node, "AngularLimitsEnabled", node.HingeLimitsEnabled, instance.Get("AngularLimitsEnabled").Boolean, value => node.HingeLimitsEnabled = value);
+                        if (instance.Get("RotationAxisVisible").Type == DataType.Boolean)
+                            Assign(node, "RotationAxisVisible", node.CylindricalRotationAxisVisible, instance.Get("RotationAxisVisible").Boolean, value => node.CylindricalRotationAxisVisible = value);
+                        instance.Set("CurrentAngle", DynValue.NewNumber(node.HingeCurrentAngle));
+                    }
+
+                    void AssignPrismaticNumber(string propertyName, float current, float minimum, float maximum, Action<float> setter)
+                    {
+                        if (instance.Get(propertyName).Type != DataType.Number || !double.IsFinite(instance.Get(propertyName).Number)) return;
+                        Assign(node, propertyName, current, (float)Math.Clamp(instance.Get(propertyName).Number, minimum, maximum), setter);
+                    }
                 }
                 else if (node.Type == "LinearVelocity")
                 {
+                    var attachment1Value = instance.Get("Attachment1");
+                    var requestedAttachment1 = ReadNodeArgument(attachment1Value);
+                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                        Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
+                    else if (attachment1Value.Type == DataType.Nil)
+                        Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
                     void SyncVector(string property, float[] current, Action<float[]> assign)
                     {
                         var requested = ReadVector(instance.Get(property), [float.NaN, float.NaN, float.NaN]);
@@ -4807,10 +6750,21 @@ public sealed class LuaXRuntime
                     SyncVector("LineDirection", node.LineDirection, value => node.LineDirection = value);
                     SyncVector("PrimaryTangentAxis", node.PrimaryTangentAxis, value => node.PrimaryTangentAxis = value);
                     SyncVector("SecondaryTangentAxis", node.SecondaryTangentAxis, value => node.SecondaryTangentAxis = value);
+                    var maxAxesForce = ReadVector(instance.Get("MaxAxesForce"), [float.NaN, float.NaN, float.NaN]);
+                    if (maxAxesForce.All(float.IsFinite))
+                    {
+                        var requested = maxAxesForce.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                        if (!node.MaxAxesForce.SequenceEqual(requested)) { node.MaxAxesForce = requested; MarkChanged(node, "MaxAxesForce"); }
+                    }
                     if (TryReadVector2(instance.Get("PlaneVelocity"), out var plane))
                     {
                         var requested = plane.Select(component => Math.Clamp(component, -10000, 10000)).ToArray();
                         if (!node.PlaneVelocity.SequenceEqual(requested)) { node.PlaneVelocity = requested; MarkChanged(node, "PlaneVelocity"); }
+                    }
+                    if (TryReadVector2(instance.Get("MaxPlanarAxesForce"), out var maxPlanarForce))
+                    {
+                        var requested = maxPlanarForce.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+                        if (!node.MaxPlanarAxesForce.SequenceEqual(requested)) { node.MaxPlanarAxesForce = requested; MarkChanged(node, "MaxPlanarAxesForce"); }
                     }
                     if (instance.Get("LineVelocity").Type == DataType.Number && double.IsFinite(instance.Get("LineVelocity").Number))
                         Assign(node, "LineVelocity", node.LineVelocity, (float)Math.Clamp(instance.Get("LineVelocity").Number, -10000, 10000), value => node.LineVelocity = value);
@@ -4818,9 +6772,13 @@ public sealed class LuaXRuntime
                         Assign(node, "MaxForce", node.MaxForce, (float)Math.Clamp(instance.Get("MaxForce").Number, 0, 1000000), value => node.MaxForce = value);
                     if (instance.Get("ForceLimitsEnabled").Type == DataType.Boolean)
                         Assign(node, "ForceLimitsEnabled", node.ForceLimitsEnabled, instance.Get("ForceLimitsEnabled").Boolean, value => node.ForceLimitsEnabled = value);
+                    if (instance.Get("ForceLimitMode").Type == DataType.String && instance.Get("ForceLimitMode").String is "Magnitude" or "PerAxis")
+                        Assign(node, "ForceLimitMode", node.ForceLimitMode, instance.Get("ForceLimitMode").String, value => node.ForceLimitMode = value);
+                    if (instance.Get("ReactionForceEnabled").Type == DataType.Boolean)
+                        Assign(node, "ReactionForceEnabled", node.LinearVelocityReactionForceEnabled, instance.Get("ReactionForceEnabled").Boolean, value => node.LinearVelocityReactionForceEnabled = value);
                     if (instance.Get("VelocityConstraintMode").Type == DataType.String && instance.Get("VelocityConstraintMode").String is "Vector" or "Line" or "Plane")
                         Assign(node, "VelocityConstraintMode", node.VelocityConstraintMode, instance.Get("VelocityConstraintMode").String, value => node.VelocityConstraintMode = value);
-                    if (instance.Get("RelativeTo").Type == DataType.String && instance.Get("RelativeTo").String is "World" or "Attachment0")
+                    if (instance.Get("RelativeTo").Type == DataType.String && instance.Get("RelativeTo").String is "World" or "Attachment0" or "Attachment1")
                         Assign(node, "RelativeTo", node.RelativeTo, instance.Get("RelativeTo").String, value => node.RelativeTo = value);
                 }
                 else if (node.Type == "AlignPosition")
@@ -4843,6 +6801,8 @@ public sealed class LuaXRuntime
                         Assign(node, "RigidityEnabled", node.RigidityEnabled, instance.Get("RigidityEnabled").Boolean, value => node.RigidityEnabled = value);
                     if (instance.Get("ReactionForceEnabled").Type == DataType.Boolean)
                         Assign(node, "ReactionForceEnabled", node.ReactionForceEnabled, instance.Get("ReactionForceEnabled").Boolean, value => node.ReactionForceEnabled = value);
+                    if (instance.Get("ApplyAtCenterOfMass").Type == DataType.Boolean)
+                        Assign(node, "ApplyAtCenterOfMass", node.ApplyAtCenterOfMass, instance.Get("ApplyAtCenterOfMass").Boolean, value => node.ApplyAtCenterOfMass = value);
                 }
                 else if (node.Type == "AlignOrientation")
                 {
@@ -5139,6 +7099,51 @@ public sealed class LuaXRuntime
                 Assign(node, "Gravity", node.Gravity, (float)Math.Clamp(instance.Get("Gravity").Number, 0, 1000), value => node.Gravity = value);
             if (node.Type == "Workspace" && instance.Get("AutoManageCharacter").Type == DataType.Boolean)
                 Assign(node, "AutoManageCharacter", node.AutoManageCharacter, instance.Get("AutoManageCharacter").Boolean, value => node.AutoManageCharacter = value);
+            if (node.Type == "Tool")
+            {
+                if (instance.Get("ToolTip").Type == DataType.String)
+                    Assign(node, "ToolTip", node.ToolTip, instance.Get("ToolTip").String, value => node.ToolTip = value);
+                if (instance.Get("RequiresHandle").Type == DataType.Boolean)
+                    Assign(node, "RequiresHandle", node.RequiresHandle, instance.Get("RequiresHandle").Boolean, value => node.RequiresHandle = value);
+                if (instance.Get("CanBeDropped").Type == DataType.Boolean)
+                    Assign(node, "CanBeDropped", node.CanBeDropped, instance.Get("CanBeDropped").Boolean, value => node.CanBeDropped = value);
+                if (instance.Get("ManualActivationOnly").Type == DataType.Boolean)
+                    Assign(node, "ManualActivationOnly", node.ManualActivationOnly, instance.Get("ManualActivationOnly").Boolean, value => node.ManualActivationOnly = value);
+                if (instance.Get("GripPosition").Type == DataType.Table)
+                {
+                    var gripPosition = ReadVector(instance.Get("GripPosition"), node.GripPosition);
+                    if (!node.GripPosition.SequenceEqual(gripPosition)) { node.GripPosition = gripPosition; MarkChanged(node, "GripPosition"); }
+                }
+                if (instance.Get("GripRotation").Type == DataType.Table)
+                {
+                    var gripRotation = ReadVector(instance.Get("GripRotation"), node.GripRotation).Select(component => Math.Clamp(component, -360000, 360000)).ToArray();
+                    if (!node.GripRotation.SequenceEqual(gripRotation)) { node.GripRotation = gripRotation; MarkChanged(node, "GripRotation"); }
+                }
+                instance.Set("ToolTip", DynValue.NewString(node.ToolTip));
+                instance.Set("RequiresHandle", DynValue.NewBoolean(node.RequiresHandle));
+                instance.Set("CanBeDropped", DynValue.NewBoolean(node.CanBeDropped));
+                instance.Set("ManualActivationOnly", DynValue.NewBoolean(node.ManualActivationOnly));
+                instance.Set("GripPosition", VectorValue(node.GripPosition));
+                instance.Set("GripRotation", VectorValue(node.GripRotation));
+            }
+            if (node.Type == "VehicleSeat")
+            {
+                if (instance.Get("Disabled").Type == DataType.Boolean)
+                    Assign(node, "Disabled", node.VehicleSeatDisabled, instance.Get("Disabled").Boolean, value => node.VehicleSeatDisabled = value);
+                if (instance.Get("HeadsUpDisplay").Type == DataType.Boolean)
+                    Assign(node, "HeadsUpDisplay", node.VehicleSeatHeadsUpDisplay, instance.Get("HeadsUpDisplay").Boolean, value => node.VehicleSeatHeadsUpDisplay = value);
+                if (instance.Get("MaxSpeed").Type == DataType.Number && double.IsFinite(instance.Get("MaxSpeed").Number))
+                    Assign(node, "MaxSpeed", node.VehicleSeatMaxSpeed, (float)Math.Clamp(instance.Get("MaxSpeed").Number, 0, 10000), value => node.VehicleSeatMaxSpeed = value);
+                if (instance.Get("Torque").Type == DataType.Number && double.IsFinite(instance.Get("Torque").Number))
+                    Assign(node, "Torque", node.VehicleSeatTorque, (float)Math.Clamp(instance.Get("Torque").Number, 0, 1000000), value => node.VehicleSeatTorque = value);
+                if (instance.Get("TurnSpeed").Type == DataType.Number && double.IsFinite(instance.Get("TurnSpeed").Number))
+                    Assign(node, "TurnSpeed", node.VehicleSeatTurnSpeed, (float)Math.Clamp(instance.Get("TurnSpeed").Number, 0, 1000), value => node.VehicleSeatTurnSpeed = value);
+                instance.Set("Disabled", DynValue.NewBoolean(node.VehicleSeatDisabled));
+                instance.Set("HeadsUpDisplay", DynValue.NewBoolean(node.VehicleSeatHeadsUpDisplay));
+                instance.Set("MaxSpeed", DynValue.NewNumber(node.VehicleSeatMaxSpeed));
+                instance.Set("Torque", DynValue.NewNumber(node.VehicleSeatTorque));
+                instance.Set("TurnSpeed", DynValue.NewNumber(node.VehicleSeatTurnSpeed));
+            }
             if (node.Type == "Player")
             {
                 var characterValue = instance.Get("Character");
@@ -5192,9 +7197,9 @@ public sealed class LuaXRuntime
                 instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
                 instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
             }
-            if (node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "StarterGui") && instance.Get("Name").CastToString() is { } name)
+            if (node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Terrain" or "Gui" or "StarterGui") && instance.Get("Name").CastToString() is { } name)
                 Assign(node, "Name", node.Name, name, value => SetNodeName(node, value));
-            else if (node.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Gui" or "StarterGui")
+            else if (node.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "Terrain" or "Gui" or "StarterGui")
                 instance.Set("Name", DynValue.NewString(node.Name));
             if (instance.Get("Archivable").Type == DataType.Boolean)
                 Assign(node, "Archivable", node.Archivable, instance.Get("Archivable").Boolean, value => node.Archivable = value);

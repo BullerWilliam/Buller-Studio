@@ -38,6 +38,7 @@ public partial class MainWindow : Window
     private GameProject? project;
     private SceneRenderService? renderer;
     private SceneNode? selected;
+    private readonly List<string> selectedObjectIds = [];
     private GameScript? selectedScript;
     private TextEditor? scriptEditor;
     private TextBox? outputBox;
@@ -58,6 +59,9 @@ public partial class MainWindow : Window
     private float[] transformStartSize = [1, 1, 1];
     private float[] transformStartModelPivot = [0, 0, 0];
     private List<(SceneNode Node, float[] Position, float[] Size)> transformStartModelNodes = [];
+    private List<(SceneNode Node, float[] Position, float[] Rotation)> transformStartSelectionNodes = [];
+    private List<(SceneNode Root, float[] Pivot, List<(SceneNode Node, float[] Position, float[] Size)> Nodes)> transformStartSelectionScaleGroups = [];
+    private float[] transformStartSelectionPivot = [0, 0, 0];
     private float transformModelScaleBasis = 1;
     private bool isGuiTransformDragging;
     private bool guiTransformChanged;
@@ -141,6 +145,14 @@ public partial class MainWindow : Window
         if (project is null) return;
         GameProjectStore.EnsureProject(project);
         if (selected is not null) selected = FindSceneNode(selected.Id);
+        selectedObjectIds.RemoveAll(id => FindSceneNode(id) is null);
+        if (selected is not null && !selectedObjectIds.Contains(selected.Id))
+        {
+            selectedObjectIds.Clear();
+            selectedObjectIds.Add(selected.Id);
+        }
+        else if (selected is null && selectedObjectIds.Count > 0) selected = FindSceneNode(selectedObjectIds[^1]);
+        RefreshExplorerSelectionAppearance();
         UpdateExplorerFilter(project.Workspace, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Players, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Teams, ExplorerSearch.Text.Trim());
@@ -150,13 +162,13 @@ public partial class MainWindow : Window
         UpdateExplorerFilter(project.ServerScriptService, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.ServerStorage, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.StarterPack, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.StarterPlayer, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Gui, ExplorerSearch.Text.Trim());
         isSuppressingExplorerSelection = true;
-        try { ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.Teams, project.Lighting, project.SoundService, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.StarterPack, project.Gui }; }
+        try { ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.Teams, project.Lighting, project.SoundService, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.StarterPack, project.StarterPlayer, project.Gui }; }
         finally { isSuppressingExplorerSelection = false; }
         ObjectCount.Text = GameProjectStore.Flatten(project).Count.ToString();
         renderer?.Refresh(project);
-        renderer?.SetSelection(selected?.Id);
         RefreshGuiPreview();
         RenderProperties();
         if (selected is not null) SelectTreeNode(selected.Id);
@@ -175,24 +187,69 @@ public partial class MainWindow : Window
         UpdateExplorerFilter(project.ServerScriptService, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.ServerStorage, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.StarterPack, ExplorerSearch.Text.Trim());
+        UpdateExplorerFilter(project.StarterPlayer, ExplorerSearch.Text.Trim());
         UpdateExplorerFilter(project.Gui, ExplorerSearch.Text.Trim());
         isSuppressingExplorerSelection = true;
         try
         {
             ExplorerTree.ItemsSource = null;
-            ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.Teams, project.Lighting, project.SoundService, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.StarterPack, project.Gui };
+            ExplorerTree.ItemsSource = new[] { project.Workspace, project.Players, project.Teams, project.Lighting, project.SoundService, project.ReplicatedStorage, project.ServerScriptService, project.ServerStorage, project.StarterPack, project.StarterPlayer, project.Gui };
         }
         finally { isSuppressingExplorerSelection = false; }
         if (selected is not null) SelectTreeNode(selected.Id);
     }
 
-    private static bool UpdateExplorerFilter(SceneNode node, string filter)
+    private static bool UpdateExplorerFilter(SceneNode node, string filter, bool hiddenByTerrain = false)
     {
+        if (hiddenByTerrain)
+        {
+            node.IsExplorerVisible = false;
+            foreach (var child in node.Children) UpdateExplorerFilter(child, filter, hiddenByTerrain: true);
+            return false;
+        }
         var matchesNode = string.IsNullOrEmpty(filter) || node.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) || node.Type.Contains(filter, StringComparison.OrdinalIgnoreCase);
         var matchesChild = false;
-        foreach (var child in node.Children) matchesChild |= UpdateExplorerFilter(child, filter);
+        foreach (var child in node.Children) matchesChild |= UpdateExplorerFilter(child, filter, hiddenByTerrain || node.Type == "Terrain");
         node.IsExplorerVisible = matchesNode || matchesChild;
         return node.IsExplorerVisible;
+    }
+
+    private void RefreshExplorerSelectionAppearance()
+    {
+        if (project is null) return;
+        var selectedIds = selectedObjectIds.ToHashSet(StringComparer.Ordinal);
+        foreach (var node in GameProjectStore.Flatten(project)) node.IsExplorerSelected = selectedIds.Contains(node.Id);
+        renderer?.SetSelections(selectedObjectIds, selected?.Id);
+    }
+
+    private void SelectOnly(SceneNode? node)
+    {
+        selectedObjectIds.Clear();
+        if (node is not null) selectedObjectIds.Add(node.Id);
+        selected = node;
+        RefreshExplorerSelectionAppearance();
+    }
+
+    private void ToggleSceneSelection(SceneNode node)
+    {
+        if (selectedObjectIds.Remove(node.Id))
+        {
+            selected = selectedObjectIds.Count == 0 ? null : FindSceneNode(selectedObjectIds[^1]);
+        }
+        else
+        {
+            selectedObjectIds.Add(node.Id);
+            selected = node;
+        }
+        RefreshExplorerSelectionAppearance();
+        if (selected is not null) SelectTreeNode(selected.Id);
+        else if (ExplorerTree.SelectedItem is SceneNode previous && FindTreeItem(ExplorerTree, previous.Id) is { } item)
+        {
+            isSuppressingExplorerSelection = true;
+            try { item.IsSelected = false; }
+            finally { isSuppressingExplorerSelection = false; }
+        }
+        RenderProperties();
     }
 
     private void ExplorerTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
@@ -203,8 +260,7 @@ public partial class MainWindow : Window
             CompleteObjectReferencePick(e.NewValue as SceneNode);
             return;
         }
-        selected = e.NewValue as SceneNode;
-        renderer?.SetSelection(selected?.Id);
+        SelectOnly(e.NewValue as SceneNode);
         RefreshGuiPreview();
         RenderProperties();
     }
@@ -215,14 +271,13 @@ public partial class MainWindow : Window
         var item = GetTreeItem(e.OriginalSource as DependencyObject);
         if (item?.DataContext is not SceneNode node) return;
         item.IsSelected = true;
-        selected = node;
-        renderer?.SetSelection(node.Id);
+        SelectOnly(node);
         RenderProperties();
         var menu = new ContextMenu { PlacementTarget = item };
-        var insert = new MenuItem { Header = "Insert Object", IsEnabled = node.Type != "Players" };
+        var insert = new MenuItem { Header = "Insert Object", IsEnabled = node.Type is not ("Players" or "Terrain") };
         insert.Click += (_, _) => ShowInsertMenu(node, item);
         menu.Items.Add(insert);
-        var canEdit = node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui" or "Camera");
+        var canEdit = node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera");
         var duplicate = new MenuItem { Header = "Duplicate    Ctrl+D", IsEnabled = canEdit && node.Type != "Sky" };
         duplicate.Click += (_, _) => DuplicateSelected();
         menu.Items.Add(duplicate);
@@ -238,7 +293,7 @@ public partial class MainWindow : Window
                 menu.Items.Add(ungroup);
             }
         }
-        var rename = new MenuItem { Header = "Rename    F2", IsEnabled = node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui") };
+        var rename = new MenuItem { Header = "Rename    F2", IsEnabled = node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui") };
         rename.Click += (_, _) => RenameSelected();
         menu.Items.Add(rename);
         menu.Items.Add(new Separator());
@@ -253,6 +308,14 @@ public partial class MainWindow : Window
     {
         var source = e.OriginalSource as DependencyObject;
         var item = GetTreeItem(source);
+        if (propertyPickerTargetId is null && item?.DataContext is SceneNode clickedNode
+            && !IsExplorerInteractiveSource(source, item) && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            explorerDragSource = null;
+            ToggleSceneSelection(clickedNode);
+            e.Handled = true;
+            return;
+        }
         explorerDragSource = propertyPickerTargetId is null && item is not null && !IsExplorerInteractiveSource(source, item)
             ? item.DataContext as SceneNode
             : null;
@@ -297,7 +360,7 @@ public partial class MainWindow : Window
             && Math.Abs(pointer.Y - explorerDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
         var source = explorerDragSource;
         explorerDragSource = null;
-        if (source.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui" or "Camera") return;
+        if (source.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera") return;
         DragDrop.DoDragDrop(ExplorerTree, new DataObject(typeof(SceneNode), source), DragDropEffects.Move);
     }
 
@@ -420,7 +483,7 @@ public partial class MainWindow : Window
         var item = GetTreeItem(source);
         if (item is null || IsExplorerInteractiveSource(source, item)) return;
         var node = item.DataContext as SceneNode;
-        if (node is not { Type: "Script" or "ModuleScript" }) return;
+        if (node is not { Type: "Script" or "LocalScript" or "ModuleScript" }) return;
         var script = project.Scripts.FirstOrDefault(item => item.Id == node.Id);
         if (script is not null) ShowScript(script);
     }
@@ -471,6 +534,7 @@ public partial class MainWindow : Window
         if (ReferenceEquals(target, project.ServerScriptService) || target.Id == project.ServerScriptService.Id) return CanMoveNode(source, project.ServerScriptService);
         if (ReferenceEquals(target, project.ServerStorage) || target.Id == project.ServerStorage.Id) return CanMoveNode(source, project.ServerStorage);
         if (ReferenceEquals(target, project.StarterPack) || target.Id == project.StarterPack.Id) return CanMoveNode(source, project.StarterPack);
+        if (ReferenceEquals(target, project.StarterPlayer) || target.Id == project.StarterPlayer.Id) return CanMoveNode(source, project.StarterPlayer);
         if (ReferenceEquals(target, project.Gui) || target.Id == project.Gui.Id) return CanMoveNode(source, project.Gui);
         var container = FindTreeItem(ExplorerTree, target.Id);
         var header = container?.Template.FindName("PART_Header", container) as FrameworkElement;
@@ -497,10 +561,10 @@ public partial class MainWindow : Window
         var dataSection = AddPropertySection("Data");
         propertyTarget = dataSection;
         AddLabel($"Class: {selected.Type}", "Class");
-        if (selected.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui") AddLabel($"Name: {selected.Name}");
+        if (selected.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui") AddLabel($"Name: {selected.Name}");
         else AddTextField("Name", selected.Name);
-        if (selected.Type is not ("Players" or "Teams" or "SoundService" or "StarterGui")) AddObjectReferenceField("Parent", selected, FindParentNode(selected));
-        if (selected.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui")) AddCheckField("Archivable", selected.Archivable);
+        if (selected.Type is not ("Players" or "Teams" or "SoundService" or "StarterGui" or "Terrain")) AddObjectReferenceField("Parent", selected, FindParentNode(selected));
+        if (selected.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui")) AddCheckField("Archivable", selected.Archivable);
         if (selected.Type == "Team")
         {
             propertyTarget = AddPropertySection("Team");
@@ -581,6 +645,26 @@ public partial class MainWindow : Window
             AddTextField("SkyboxBottom", selected.SkyboxBottom);
             AddLabel("Image paths are relative to the project assets folder.", "Skybox");
         }
+        if (selected.Type == "Tool")
+        {
+            propertyTarget = AddPropertySection("Tool");
+            AddTextField("ToolTip", selected.ToolTip);
+            AddCheckField("RequiresHandle", selected.RequiresHandle);
+            AddCheckField("CanBeDropped", selected.CanBeDropped);
+            AddCheckField("ManualActivationOnly", selected.ManualActivationOnly);
+            AddTextField("GripPosition", VectorText(selected.GripPosition));
+            AddTextField("GripRotation", VectorText(selected.GripRotation));
+        }
+        if (selected.Type == "VehicleSeat")
+        {
+            propertyTarget = AddPropertySection("Vehicle");
+            AddCheckField("Disabled", selected.VehicleSeatDisabled);
+            AddCheckField("HeadsUpDisplay", selected.VehicleSeatHeadsUpDisplay);
+            AddTextField("MaxSpeed", selected.VehicleSeatMaxSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Torque", selected.VehicleSeatTorque.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("TurnSpeed", selected.VehicleSeatTurnSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddLabel($"Throttle: {selected.VehicleSeatThrottleFloat:0.##}  Steer: {selected.VehicleSeatSteerFloat:0.##}  Motor hinges: {selected.VehicleSeatAreHingesDetected}", "ThrottleFloat");
+        }
         if (selected.Type == "Lighting")
         {
             propertyTarget = AddPropertySection("Lighting");
@@ -623,7 +707,7 @@ public partial class MainWindow : Window
                 AddTextField("Color", selected.Color);
                 if (SceneNodeTypes.IsBasePart(selected))
                 {
-                    AddComboField("Material", ["Plastic", "Metal", "Neon", "Glass", "Wood", "Concrete"], selected.Material);
+                    AddComboField("Material", SceneNodeTypes.Materials, selected.Material);
                     AddTextField("Transparency", selected.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 }
                 if (selected.Type == "Part") AddComboField("Shape", ["Block", "Ball", "Cylinder"], selected.Shape);
@@ -641,7 +725,7 @@ public partial class MainWindow : Window
                     AddTextField("Velocity", VectorText(selected.Velocity));
                     AddTextField("AssemblyAngularVelocity", VectorText(selected.AssemblyAngularVelocity));
                 }
-                if (selected.Type == "Seat")
+                if (selected.Type is "Seat" or "VehicleSeat")
                     AddLabel($"Occupant: {(string.IsNullOrEmpty(selected.Occupant) ? "None" : "Player")}", "Occupant");
             }
             if (selected.Type is "MeshPart" or "ImageLabel")
@@ -697,8 +781,9 @@ public partial class MainWindow : Window
             AddCheckField("Enabled", selected.Enabled);
             AddTextField("ActionText", selected.ActionText);
             AddTextField("ObjectText", selected.ObjectText);
+            AddTextField("HoldDuration", selected.HoldDuration.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("MaxActivationDistance", selected.MaxActivationDistance.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            AddLabel("Press E near this part during play to fire Triggered.", "Triggered");
+            AddLabel("Press or hold E near this part during play to fire Triggered.", "Triggered");
         }
         if (selected.Type == "ClickDetector")
         {
@@ -877,16 +962,72 @@ public partial class MainWindow : Window
             propertyTarget = AddPropertySection("VectorForce");
             AddCheckField("Enabled", selected.Enabled);
             AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } forceAttachment ? forceAttachment : null);
+            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } forceReferenceAttachment ? forceReferenceAttachment : null);
             AddTextField("Force", VectorText(selected.Force));
-            AddComboField("RelativeTo", ["World", "Attachment0"], selected.RelativeTo);
-            AddLabel("Applies translational force to Attachment0's part during play.", "Force");
+            AddComboField("RelativeTo", ["World", "Attachment0", "Attachment1"], selected.RelativeTo);
+            AddCheckField("ApplyAtCenterOfMass", selected.ApplyAtCenterOfMass);
+            AddLabel("When off, an offset Attachment0 can also rotate the assembly.", "ApplyAtCenterOfMass");
+        }
+        if (selected.Type == "LineForce")
+        {
+            propertyTarget = AddPropertySection("LineForce");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } lineForceAttachment0 ? lineForceAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } lineForceAttachment1 ? lineForceAttachment1 : null);
+            AddTextField("Magnitude", selected.LineForceMagnitude.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("InverseSquareLaw", selected.LineForceInverseSquareLaw);
+            AddTextField("MaxForce", selected.LineForceMaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("ReactionForceEnabled", selected.LineForceReactionForceEnabled);
+            AddCheckField("ApplyAtCenterOfMass", selected.ApplyAtCenterOfMass);
+        }
+        if (selected.Type == "BodyForce")
+        {
+            propertyTarget = AddPropertySection("BodyForce");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("Force", VectorText(selected.Force));
+            AddLabel("Applies a constant world-axis force to the parent part during play.", "Force");
+        }
+        if (selected.Type == "BodyVelocity")
+        {
+            propertyTarget = AddPropertySection("BodyVelocity");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("Velocity", VectorText(selected.BodyVelocityTarget));
+            AddTextField("MaxForce", VectorText(selected.BodyVelocityMaxForce));
+            AddTextField("P", selected.BodyVelocityP.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (selected.Type == "BodyPosition")
+        {
+            propertyTarget = AddPropertySection("BodyPosition");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("Position", VectorText(selected.BodyPositionTarget));
+            AddTextField("MaxForce", VectorText(selected.BodyPositionMaxForce));
+            AddTextField("P", selected.BodyPositionP.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("D", selected.BodyPositionD.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (selected.Type == "BodyGyro")
+        {
+            propertyTarget = AddPropertySection("BodyGyro");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("Rotation", VectorText(selected.BodyGyroTargetRotation));
+            AddTextField("MaxTorque", VectorText(selected.BodyGyroMaxTorque));
+            AddTextField("P", selected.BodyGyroP.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("D", selected.BodyGyroD.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (selected.Type == "BodyAngularVelocity")
+        {
+            propertyTarget = AddPropertySection("BodyAngularVelocity");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("AngularVelocity", VectorText(selected.BodyAngularVelocityTarget));
+            AddTextField("MaxTorque", VectorText(selected.BodyAngularVelocityMaxTorque));
+            AddTextField("P", selected.BodyAngularVelocityP.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         if (selected.Type == "LinearVelocity")
         {
             propertyTarget = AddPropertySection("LinearVelocity");
             AddCheckField("Enabled", selected.Enabled);
             AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } velocityAttachment ? velocityAttachment : null);
-            AddComboField("RelativeTo", ["World", "Attachment0"], selected.RelativeTo);
+            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } velocityReferenceAttachment ? velocityReferenceAttachment : null);
+            AddComboField("RelativeTo", ["World", "Attachment0", "Attachment1"], selected.RelativeTo);
             AddComboField("VelocityConstraintMode", ["Vector", "Line", "Plane"], selected.VelocityConstraintMode);
             if (selected.VelocityConstraintMode == "Vector") AddTextField("VectorVelocity", VectorText(selected.VectorVelocity));
             if (selected.VelocityConstraintMode == "Line")
@@ -901,7 +1042,14 @@ public partial class MainWindow : Window
                 AddTextField("PlaneVelocity", VectorText(selected.PlaneVelocity));
             }
             AddCheckField("ForceLimitsEnabled", selected.ForceLimitsEnabled);
-            if (selected.ForceLimitsEnabled) AddTextField("MaxForce", selected.MaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("ReactionForceEnabled", selected.LinearVelocityReactionForceEnabled);
+            if (selected.ForceLimitsEnabled)
+            {
+                AddComboField("ForceLimitMode", ["Magnitude", "PerAxis"], selected.ForceLimitMode);
+                if (selected.ForceLimitMode == "Magnitude" || selected.VelocityConstraintMode == "Line") AddTextField("MaxForce", selected.MaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                else if (selected.VelocityConstraintMode == "Vector") AddTextField("MaxAxesForce", VectorText(selected.MaxAxesForce));
+                else if (selected.VelocityConstraintMode == "Plane") AddTextField("MaxPlanarAxesForce", VectorText(selected.MaxPlanarAxesForce));
+            }
         }
         if (selected.Type == "AlignPosition")
         {
@@ -917,6 +1065,7 @@ public partial class MainWindow : Window
             AddTextField("MaxForce", selected.MaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddCheckField("RigidityEnabled", selected.RigidityEnabled);
             AddCheckField("ReactionForceEnabled", selected.ReactionForceEnabled);
+            AddCheckField("ApplyAtCenterOfMass", selected.ApplyAtCenterOfMass);
         }
         if (selected.Type == "AlignOrientation")
         {
@@ -945,6 +1094,253 @@ public partial class MainWindow : Window
             AddCheckField("ReactionTorqueEnabled", selected.ReactionTorqueEnabled);
             AddLabel("Angular velocity is measured in radians per second.", "AngularVelocity");
         }
+        if (selected.Type == "Torque")
+        {
+            propertyTarget = AddPropertySection("Torque");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } torqueAttachment0 ? torqueAttachment0 : null);
+            AddComboField("RelativeTo", ["World", "Attachment0", "Attachment1"], selected.RelativeTo);
+            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } torqueAttachment1 ? torqueAttachment1 : null);
+            AddTextField("Torque", VectorText(selected.TorqueTarget));
+            AddLabel("Applies constant torque to Attachment0's part during play.", "Torque");
+        }
+        if (selected.Type == "SpringConstraint")
+        {
+            propertyTarget = AddPropertySection("SpringConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } springAttachment0 ? springAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } springAttachment1 ? springAttachment1 : null);
+            AddTextField("FreeLength", selected.SpringFreeLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Stiffness", selected.SpringStiffness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Damping", selected.SpringDamping.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("MaxForce", selected.SpringMaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("LimitsEnabled", selected.SpringLimitsEnabled);
+            if (selected.SpringLimitsEnabled)
+            {
+                AddTextField("MinLength", selected.SpringMinLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("MaxLength", selected.SpringMaxLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddLabel("Pulls its two Attachments toward FreeLength during play.", "Stiffness");
+        }
+        if (selected.Type == "TorsionSpringConstraint")
+        {
+            propertyTarget = AddPropertySection("TorsionSpringConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } torsionAttachment0 ? torsionAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } torsionAttachment1 ? torsionAttachment1 : null);
+            AddLabel($"CurrentAngle: {selected.TorsionSpringCurrentAngle:0.##}", "CurrentAngle");
+            AddTextField("Stiffness", selected.TorsionSpringStiffness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Damping", selected.TorsionSpringDamping.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("MaxTorque", selected.TorsionSpringMaxTorque.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("LimitsEnabled", selected.TorsionSpringLimitsEnabled);
+            if (selected.TorsionSpringLimitsEnabled)
+            {
+                AddTextField("MaxAngle", selected.TorsionSpringMaxAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("Restitution", selected.TorsionSpringRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddTextField("Coils", selected.TorsionSpringCoils.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Radius", selected.TorsionSpringRadius.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddLabel("Aligns the attachments’ secondary axes with a damped torsional spring.", "Stiffness");
+        }
+        if (selected.Type == "BallSocketConstraint")
+        {
+            propertyTarget = AddPropertySection("BallSocketConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } ballSocketAttachment0 ? ballSocketAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } ballSocketAttachment1 ? ballSocketAttachment1 : null);
+            AddTextField("Radius", selected.BallSocketRadius.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Restitution", selected.BallSocketRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("MaxFrictionTorque", selected.BallSocketMaxFrictionTorque.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("LimitsEnabled", selected.BallSocketLimitsEnabled);
+            if (selected.BallSocketLimitsEnabled) AddTextField("UpperAngle", selected.BallSocketUpperAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("TwistLimitsEnabled", selected.BallSocketTwistLimitsEnabled);
+            if (selected.BallSocketTwistLimitsEnabled)
+            {
+                AddTextField("TwistLowerAngle", selected.BallSocketTwistLowerAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("TwistUpperAngle", selected.BallSocketTwistUpperAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddLabel("Keeps attachment points together and limits swing and twist during play.", "LimitsEnabled");
+        }
+        if (selected.Type == "UniversalConstraint")
+        {
+            propertyTarget = AddPropertySection("UniversalConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } universalAttachment0 ? universalAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } universalAttachment1 ? universalAttachment1 : null);
+            AddTextField("Radius", selected.UniversalRadius.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Restitution", selected.UniversalRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("LimitsEnabled", selected.UniversalLimitsEnabled);
+            if (selected.UniversalLimitsEnabled) AddTextField("MaxAngle", selected.UniversalMaxAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddLabel("Keeps the attachment secondary axes perpendicular, with an optional primary-axis tilt limit.", "LimitsEnabled");
+        }
+        if (selected.Type == "HingeConstraint")
+        {
+            propertyTarget = AddPropertySection("HingeConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } hingeAttachment0 ? hingeAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } hingeAttachment1 ? hingeAttachment1 : null);
+            AddComboField("ActuatorType", ["None", "Motor", "Servo"], selected.HingeActuatorType);
+            AddLabel($"CurrentAngle: {selected.HingeCurrentAngle:0.##}°", "CurrentAngle");
+            AddTextField("Radius", selected.HingeRadius.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("LimitsEnabled", selected.HingeLimitsEnabled);
+            if (selected.HingeLimitsEnabled)
+            {
+                AddTextField("LowerAngle", selected.HingeLowerAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("UpperAngle", selected.HingeUpperAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("Restitution", selected.HingeRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            if (selected.HingeActuatorType == "Motor")
+            {
+                AddTextField("AngularVelocity", selected.HingeAngularVelocity.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("MotorMaxAcceleration", selected.HingeMotorMaxAcceleration.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("MotorMaxTorque", selected.HingeMotorMaxTorque.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            else if (selected.HingeActuatorType == "Servo")
+            {
+                AddTextField("TargetAngle", selected.HingeTargetAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("AngularSpeed", selected.HingeAngularSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("AngularResponsiveness", selected.HingeAngularResponsiveness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("ServoMaxTorque", selected.HingeServoMaxTorque.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddLabel("Joins the attachment points, aligns their X axes, and optionally drives rotation with a motor or servo.", "ActuatorType");
+        }
+        if (selected.Type == "PrismaticConstraint")
+        {
+            propertyTarget = AddPropertySection("PrismaticConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } prismaticAttachment0 ? prismaticAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } prismaticAttachment1 ? prismaticAttachment1 : null);
+            AddComboField("ActuatorType", ["None", "Motor", "Servo"], selected.PrismaticActuatorType);
+            AddLabel($"CurrentPosition: {selected.PrismaticCurrentPosition:0.##}", "CurrentPosition");
+            AddTextField("Size", selected.PrismaticSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("LimitsEnabled", selected.PrismaticLimitsEnabled);
+            if (selected.PrismaticLimitsEnabled)
+            {
+                AddTextField("LowerLimit", selected.PrismaticLowerLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("UpperLimit", selected.PrismaticUpperLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("Restitution", selected.PrismaticRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            if (selected.PrismaticActuatorType == "Motor")
+            {
+                AddTextField("Velocity", selected.PrismaticVelocity.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("MotorMaxAcceleration", selected.PrismaticMotorMaxAcceleration.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("MotorMaxForce", selected.PrismaticMotorMaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            else if (selected.PrismaticActuatorType == "Servo")
+            {
+                AddTextField("TargetPosition", selected.PrismaticTargetPosition.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("Speed", selected.PrismaticSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("LinearResponsiveness", selected.PrismaticLinearResponsiveness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("ServoMaxForce", selected.PrismaticServoMaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddLabel("Joins attachment points, locks relative rotation, and allows translation along their X axes.", "ActuatorType");
+        }
+        if (selected.Type == "CylindricalConstraint")
+        {
+            propertyTarget = AddPropertySection("CylindricalConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } cylindricalAttachment0 ? cylindricalAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } cylindricalAttachment1 ? cylindricalAttachment1 : null);
+            AddComboField("ActuatorType", ["None", "Motor", "Servo"], selected.PrismaticActuatorType);
+            AddLabel($"CurrentPosition: {selected.PrismaticCurrentPosition:0.##}", "CurrentPosition");
+            AddTextField("Size", selected.PrismaticSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("LimitsEnabled", selected.PrismaticLimitsEnabled);
+            if (selected.PrismaticLimitsEnabled)
+            {
+                AddTextField("LowerLimit", selected.PrismaticLowerLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("UpperLimit", selected.PrismaticUpperLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("Restitution", selected.PrismaticRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            if (selected.PrismaticActuatorType == "Motor")
+            {
+                AddTextField("Velocity", selected.PrismaticVelocity.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("MotorMaxAcceleration", selected.PrismaticMotorMaxAcceleration.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("MotorMaxForce", selected.PrismaticMotorMaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            else if (selected.PrismaticActuatorType == "Servo")
+            {
+                AddTextField("TargetPosition", selected.PrismaticTargetPosition.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("Speed", selected.PrismaticSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("LinearResponsiveness", selected.PrismaticLinearResponsiveness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("ServoMaxForce", selected.PrismaticServoMaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddComboField("AngularActuatorType", ["None", "Motor", "Servo"], selected.HingeActuatorType);
+            AddLabel($"CurrentAngle: {selected.HingeCurrentAngle:0.##}", "CurrentAngle");
+            AddCheckField("AngularLimitsEnabled", selected.HingeLimitsEnabled);
+            if (selected.HingeLimitsEnabled)
+            {
+                AddTextField("LowerAngle", selected.HingeLowerAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("UpperAngle", selected.HingeUpperAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("AngularRestitution", selected.HingeRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            if (selected.HingeActuatorType == "Motor")
+            {
+                AddTextField("AngularVelocity", selected.HingeAngularVelocity.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("MotorMaxAngularAcceleration", selected.HingeMotorMaxAcceleration.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("MotorMaxTorque", selected.HingeMotorMaxTorque.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            else if (selected.HingeActuatorType == "Servo")
+            {
+                AddTextField("TargetAngle", selected.HingeTargetAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("AngularSpeed", selected.HingeAngularSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("AngularResponsiveness", selected.HingeAngularResponsiveness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("ServoMaxTorque", selected.HingeServoMaxTorque.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddTextField("InclinationAngle", selected.CylindricalInclinationAngle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("RotationAxisVisible", selected.CylindricalRotationAxisVisible);
+            AddLabel("Combines sliding along Attachment0 X with rotation around the inclined axis.", "InclinationAngle");
+        }
+        if (selected.Type == "PlaneConstraint")
+        {
+            propertyTarget = AddPropertySection("PlaneConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } planeAttachment0 ? planeAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } planeAttachment1 ? planeAttachment1 : null);
+            AddLabel("Keeps Attachment1 on the plane through Attachment0, using Attachment0's X axis as the normal.", "Attachment0");
+        }
+        if (selected.Type == "RigidConstraint")
+        {
+            propertyTarget = AddPropertySection("RigidConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } rigidAttachment0 ? rigidAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } rigidAttachment1 ? rigidAttachment1 : null);
+            AddLabel("Keeps both attachment frames aligned during play.", "Attachment0");
+        }
+        if (selected.Type == "RopeConstraint")
+        {
+            propertyTarget = AddPropertySection("RopeConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } ropeAttachment0 ? ropeAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } ropeAttachment1 ? ropeAttachment1 : null);
+            AddTextField("Length", selected.RopeLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Restitution", selected.RopeRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("WinchEnabled", selected.RopeWinchEnabled);
+            if (selected.RopeWinchEnabled)
+            {
+                AddTextField("WinchTarget", selected.RopeWinchTarget.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("WinchSpeed", selected.RopeWinchSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("WinchResponsiveness", selected.RopeWinchResponsiveness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("WinchForce", selected.RopeWinchForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddLabel("Limits separation to Length and can use a winch to change the distance.", "Length");
+        }
+        if (selected.Type == "RodConstraint")
+        {
+            propertyTarget = AddPropertySection("RodConstraint");
+            AddCheckField("Enabled", selected.Enabled);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } rodAttachment0 ? rodAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } rodAttachment1 ? rodAttachment1 : null);
+            AddTextField("Length", selected.RodLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddLabel($"CurrentDistance: {selected.RodCurrentDistance:0.##}", "CurrentDistance");
+            AddTextField("Thickness", selected.RodThickness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("LimitsEnabled", selected.RodLimitsEnabled);
+            if (selected.RodLimitsEnabled)
+            {
+                AddTextField("LimitAngle0", selected.RodLimitAngle0.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                AddTextField("LimitAngle1", selected.RodLimitAngle1.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddLabel("Keeps two attachments at a fixed distance; optional angle limits are exposed for scripts.", "Length");
+        }
         if (selected.Type == "Humanoid")
         {
             propertyTarget = AddPropertySection("Humanoid");
@@ -955,13 +1351,13 @@ public partial class MainWindow : Window
             AddLabel("The generated character uses these values for movement and respawns at zero Health.", "Health");
         }
         if (IsGuiNode(selected) && selected.Type != "StarterGui") RenderGuiProperties(selected);
-        if (selected.Type is "Script" or "ModuleScript")
+        if (selected.Type is "Script" or "LocalScript" or "ModuleScript")
         {
             var script = project.Scripts.FirstOrDefault(item => item.Id == selected.Id);
             if (script is not null)
             {
                 propertyTarget = AddPropertySection(selected.Type);
-                if (selected.Type == "Script") AddCheckField("Enabled", selected.Enabled);
+                if (selected.Type is "Script" or "LocalScript") AddCheckField("Enabled", selected.Enabled);
                 AddLabel("Double-click this script in Explorer to open it.", "Source");
             }
         }
@@ -1297,7 +1693,7 @@ public partial class MainWindow : Window
             Padding = new Thickness(6, 3, 6, 3),
             MinWidth = 100,
             Tag = property,
-            IsEnabled = !(property == "Parent" && (ReferenceEquals(target, project?.Workspace) || ReferenceEquals(target, project?.Players) || ReferenceEquals(target, project?.Lighting) || ReferenceEquals(target, project?.ReplicatedStorage) || ReferenceEquals(target, project?.ServerScriptService) || ReferenceEquals(target, project?.ServerStorage) || ReferenceEquals(target, project?.StarterPack) || ReferenceEquals(target, project?.Gui))),
+            IsEnabled = !(property == "Parent" && (ReferenceEquals(target, project?.Workspace) || ReferenceEquals(target, project?.Players) || ReferenceEquals(target, project?.Lighting) || ReferenceEquals(target, project?.ReplicatedStorage) || ReferenceEquals(target, project?.ServerScriptService) || ReferenceEquals(target, project?.ServerStorage) || ReferenceEquals(target, project?.StarterPack) || ReferenceEquals(target, project?.StarterPlayer) || ReferenceEquals(target, project?.Gui))),
             ToolTip = isPicking ? "Choose an object in Explorer or the viewport. Press Escape to cancel." : value is null ? "Select an object in Explorer or the 3D viewport" : $"{GetObjectPath(value)}\nClick to select another object"
         };
         if (isPicking)
@@ -1373,6 +1769,37 @@ public partial class MainWindow : Window
             return;
         }
         var text = box.Text.Trim();
+        if (property is "GripPosition" or "GripRotation" && target.Type == "Tool")
+        {
+            var vector = ParseVector(text);
+            if (vector is null)
+            {
+                SetStatus("Enter three comma-separated numbers.");
+                box.Text = VectorText(property == "GripPosition" ? target.GripPosition : target.GripRotation);
+                return;
+            }
+            if (property == "GripPosition") target.GripPosition = vector;
+            else target.GripRotation = vector.Select(value => Math.Clamp(value, -360000, 360000)).ToArray();
+            renderer?.Refresh(project);
+            RecordEdit();
+            return;
+        }
+        if (property == "ToolTip" && target.Type == "Tool") { target.ToolTip = box.Text; RecordEdit(); return; }
+        if (target.Type == "VehicleSeat" && property is "MaxSpeed" or "Torque" or "TurnSpeed")
+        {
+            if (!float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var vehicleNumber) || !float.IsFinite(vehicleNumber))
+            {
+                SetStatus($"Enter a valid number for {property}.");
+                box.Text = (property == "MaxSpeed" ? target.VehicleSeatMaxSpeed : property == "Torque" ? target.VehicleSeatTorque : target.VehicleSeatTurnSpeed).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return;
+            }
+            if (property == "MaxSpeed") target.VehicleSeatMaxSpeed = Math.Clamp(vehicleNumber, 0, 10000);
+            else if (property == "Torque") target.VehicleSeatTorque = Math.Clamp(vehicleNumber, 0, 1000000);
+            else target.VehicleSeatTurnSpeed = Math.Clamp(vehicleNumber, 0, 1000);
+            renderer?.UpdateNode(target, project);
+            RecordEdit();
+            return;
+        }
         var currentNumber = NumericPropertyText(target, property);
         if (property == "Value" && target.Type == "IntValue")
         {
@@ -1650,11 +2077,12 @@ public partial class MainWindow : Window
             else if (property == "Lifetime") target.LifetimeRange = [Math.Clamp(values[0], .05f, 30), Math.Clamp(values[1], Math.Clamp(values[0], .05f, 30), 30)];
             else target.SpreadAngle = [Math.Clamp(values[0], 0, 360), Math.Clamp(values[1], 0, 360)];
         }
-        else if (target.Type == "LinearVelocity" && property == "PlaneVelocity")
+        else if (target.Type == "LinearVelocity" && property is ("PlaneVelocity" or "MaxPlanarAxesForce"))
         {
             var values = ParsePair(text);
-            if (values is null) { SetStatus("Enter two comma-separated numbers."); box.Text = VectorText(target.PlaneVelocity); return; }
-            target.PlaneVelocity = values.Select(value => Math.Clamp(value, -10000, 10000)).ToArray();
+            if (values is null) { SetStatus("Enter two comma-separated numbers."); box.Text = VectorText(property == "PlaneVelocity" ? target.PlaneVelocity : target.MaxPlanarAxesForce); return; }
+            if (property == "PlaneVelocity") target.PlaneVelocity = values.Select(value => Math.Clamp(value, -10000, 10000)).ToArray();
+            else target.MaxPlanarAxesForce = values.Select(value => Math.Clamp(value, 0, 1000000)).ToArray();
         }
         else if (target.Type == "UISizeConstraint" && property is "MinSize" or "MaxSize")
         {
@@ -1667,20 +2095,34 @@ public partial class MainWindow : Window
             }
             else target.MaxSize = [Math.Clamp(values[0], target.MinSize[0], 1000000), Math.Clamp(values[1], target.MinSize[1], 1000000)];
         }
-        else if (property is "Position" or "Rotation" or "Size" or "Velocity" or "AssemblyAngularVelocity" or "Force" or "VectorVelocity" or "AngularVelocity" or "LineDirection" or "PrimaryTangentAxis" or "SecondaryTangentAxis")
+        else if (property is "Position" or "Rotation" or "Size" or "Velocity" or "AssemblyAngularVelocity" or "Force" or "VectorVelocity" or "AngularVelocity" or "Torque" or "LineDirection" or "PrimaryTangentAxis" or "SecondaryTangentAxis" or "MaxAxesForce" or "MaxForce" or "MaxTorque"
+            && !(property == "AngularVelocity" && target.Type is ("HingeConstraint" or "CylindricalConstraint"))
+            && !((property is "Size" or "Velocity") && target.Type is ("PrismaticConstraint" or "CylindricalConstraint"))
+            && !(property == "MaxForce" && target.Type is not ("BodyVelocity" or "BodyPosition"))
+            && !(property == "MaxTorque" && target.Type is not ("BodyGyro" or "BodyAngularVelocity")))
         {
             var values = ParseVector(text);
-            if (values is null) { SetStatus("Enter three comma-separated numbers."); box.Text = property switch { "Position" => VectorText(target.Position), "Rotation" => VectorText(target.Type == "AlignOrientation" ? target.AlignOrientationRotation : target.Rotation), "Velocity" => VectorText(target.Velocity), "AssemblyAngularVelocity" => VectorText(target.AssemblyAngularVelocity), "AngularVelocity" => VectorText(target.AngularVelocityTarget), "Force" => VectorText(target.Force), "VectorVelocity" => VectorText(target.VectorVelocity), "LineDirection" => VectorText(target.LineDirection), "PrimaryTangentAxis" => VectorText(target.PrimaryTangentAxis), "SecondaryTangentAxis" => VectorText(target.SecondaryTangentAxis), _ => VectorText(target.Size) }; return; }
-            if (property == "Position") target.Position = values;
-            if (property == "Rotation" && target.Type == "AlignOrientation") target.AlignOrientationRotation = values.Select(value => Math.Clamp(value, -360000, 360000)).ToArray();
+            if (values is null) { SetStatus("Enter three comma-separated numbers."); box.Text = property switch { "Position" => VectorText(target.Type == "BodyPosition" ? target.BodyPositionTarget : target.Position), "Rotation" => VectorText(target.Type == "BodyGyro" ? target.BodyGyroTargetRotation : target.Type == "AlignOrientation" ? target.AlignOrientationRotation : target.Rotation), "Velocity" => VectorText(target.Type == "BodyVelocity" ? target.BodyVelocityTarget : target.Velocity), "AssemblyAngularVelocity" => VectorText(target.AssemblyAngularVelocity), "AngularVelocity" => VectorText(target.Type == "BodyAngularVelocity" ? target.BodyAngularVelocityTarget : target.AngularVelocityTarget), "Force" => VectorText(target.Force), "Torque" => VectorText(target.TorqueTarget), "VectorVelocity" => VectorText(target.VectorVelocity), "LineDirection" => VectorText(target.LineDirection), "PrimaryTangentAxis" => VectorText(target.PrimaryTangentAxis), "SecondaryTangentAxis" => VectorText(target.SecondaryTangentAxis), "MaxAxesForce" => VectorText(target.MaxAxesForce), "MaxForce" when target.Type is "BodyVelocity" or "BodyPosition" => VectorText(target.Type == "BodyVelocity" ? target.BodyVelocityMaxForce : target.BodyPositionMaxForce), "MaxTorque" when target.Type == "BodyGyro" => VectorText(target.BodyGyroMaxTorque), "MaxTorque" when target.Type == "BodyAngularVelocity" => VectorText(target.BodyAngularVelocityMaxTorque), _ => VectorText(target.Size) }; return; }
+            if (property == "Position" && target.Type == "BodyPosition") target.BodyPositionTarget = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
+            else if (property == "Position") target.Position = values;
+            if (property == "Rotation" && target.Type == "BodyGyro") target.BodyGyroTargetRotation = values.Select(value => Math.Clamp(value, -360000, 360000)).ToArray();
+            else if (property == "Rotation" && target.Type == "AlignOrientation") target.AlignOrientationRotation = values.Select(value => Math.Clamp(value, -360000, 360000)).ToArray();
             else if (property == "Rotation") target.Rotation = values;
             if (property == "Size") target.Size = values.Select(value => Math.Max(.01f, Math.Abs(value))).ToArray();
             if (property == "Velocity" && SceneNodeTypes.IsBasePart(target)) target.Velocity = values;
+            if (property == "Velocity" && target.Type == "BodyVelocity") target.BodyVelocityTarget = values.Select(value => Math.Clamp(value, -10000, 10000)).ToArray();
+            if (property == "MaxForce" && target.Type == "BodyVelocity") target.BodyVelocityMaxForce = values.Select(value => Math.Clamp(value, 0, 1000000)).ToArray();
+            if (property == "MaxForce" && target.Type == "BodyPosition") target.BodyPositionMaxForce = values.Select(value => Math.Clamp(value, 0, 1000000)).ToArray();
+            if (property == "MaxTorque" && target.Type == "BodyGyro") target.BodyGyroMaxTorque = values.Select(value => Math.Clamp(value, 0, 1000000)).ToArray();
+            if (property == "AngularVelocity" && target.Type == "BodyAngularVelocity") target.BodyAngularVelocityTarget = values.Select(value => Math.Clamp(value, -10000, 10000)).ToArray();
+            if (property == "MaxTorque" && target.Type == "BodyAngularVelocity") target.BodyAngularVelocityMaxTorque = values.Select(value => Math.Clamp(value, 0, 1000000)).ToArray();
             if (property == "AssemblyAngularVelocity" && SceneNodeTypes.IsBasePart(target)) target.AssemblyAngularVelocity = values.Select(value => Math.Clamp(value, -1000, 1000)).ToArray();
             if (property == "AngularVelocity" && target.Type == "AngularVelocity") target.AngularVelocityTarget = values.Select(value => Math.Clamp(value, -1000, 1000)).ToArray();
-            if (property == "Force" && target.Type == "VectorForce") target.Force = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
+            if (property == "Force" && target.Type is ("VectorForce" or "BodyForce")) target.Force = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
+            if (property == "Torque" && target.Type == "Torque") target.TorqueTarget = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
             if (target.Type == "LinearVelocity")
             {
+                if (property == "MaxAxesForce") target.MaxAxesForce = values.Select(value => Math.Clamp(value, 0, 1000000)).ToArray();
                 var normalized = values.Select(value => Math.Clamp(value, -10000, 10000)).ToArray();
                 if (property == "VectorVelocity") target.VectorVelocity = normalized;
                 if (property == "LineDirection") target.LineDirection = normalized;
@@ -1841,6 +2283,12 @@ public partial class MainWindow : Window
             if (property == "LineVelocity") target.LineVelocity = Math.Clamp(velocityNumber, -10000, 10000);
             else target.MaxForce = Math.Clamp(velocityNumber, 0, 1000000);
         }
+        else if (target.Type == "LineForce" && property is ("Magnitude" or "MaxForce")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var lineForceNumber) && float.IsFinite(lineForceNumber))
+        {
+            if (property == "Magnitude") target.LineForceMagnitude = Math.Clamp(lineForceNumber, 0, 1000000);
+            else target.LineForceMaxForce = Math.Clamp(lineForceNumber, 0, 1000000);
+        }
         else if (target.Type == "AlignPosition" && property is ("Responsiveness" or "MaxVelocity" or "MaxForce")
             && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var alignmentNumber) && float.IsFinite(alignmentNumber))
         {
@@ -1856,6 +2304,119 @@ public partial class MainWindow : Window
             else target.MaxTorque = Math.Clamp(orientationNumber, 0, 1000000);
         }
         else if (property == "MaxTorque" && target.Type == "AngularVelocity" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var angularTorque) && float.IsFinite(angularTorque)) target.MaxTorque = Math.Clamp(angularTorque, 0, 1000000);
+        else if (target.Type == "SpringConstraint" && property is ("FreeLength" or "Stiffness" or "Damping" or "MaxForce" or "MinLength" or "MaxLength")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var springNumber) && float.IsFinite(springNumber))
+        {
+            if (property == "FreeLength") target.SpringFreeLength = Math.Clamp(springNumber, 0, 10000);
+            else if (property == "Stiffness") target.SpringStiffness = Math.Clamp(springNumber, 0, 100000);
+            else if (property == "Damping") target.SpringDamping = Math.Clamp(springNumber, 0, 10000);
+            else if (property == "MaxForce") target.SpringMaxForce = Math.Clamp(springNumber, 0, 1000000);
+            else if (property == "MinLength") target.SpringMinLength = Math.Clamp(springNumber, 0, target.SpringMaxLength);
+            else target.SpringMaxLength = Math.Clamp(springNumber, target.SpringMinLength, 10000);
+        }
+        else if (target.Type == "TorsionSpringConstraint" && property is ("Stiffness" or "Damping" or "MaxTorque" or "MaxAngle" or "Restitution" or "Coils" or "Radius")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var torsionNumber) && float.IsFinite(torsionNumber))
+        {
+            if (property == "Stiffness") target.TorsionSpringStiffness = Math.Clamp(torsionNumber, 0, 100000);
+            else if (property == "Damping") target.TorsionSpringDamping = Math.Clamp(torsionNumber, 0, 100000);
+            else if (property == "MaxTorque") target.TorsionSpringMaxTorque = Math.Clamp(torsionNumber, 0, 1000000);
+            else if (property == "MaxAngle") target.TorsionSpringMaxAngle = Math.Clamp(torsionNumber, 0, 180);
+            else if (property == "Restitution") target.TorsionSpringRestitution = Math.Clamp(torsionNumber, 0, 1);
+            else if (property == "Coils") target.TorsionSpringCoils = Math.Clamp(torsionNumber, 0, 8);
+            else target.TorsionSpringRadius = Math.Clamp(torsionNumber, 0, 100);
+        }
+        else if (target.Type == "RopeConstraint" && property is ("Length" or "Restitution" or "WinchTarget" or "WinchSpeed" or "WinchResponsiveness" or "WinchForce")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ropeNumber) && float.IsFinite(ropeNumber))
+        {
+            if (property == "Length") target.RopeLength = Math.Clamp(ropeNumber, 0, 10000);
+            else if (property == "Restitution") target.RopeRestitution = Math.Clamp(ropeNumber, 0, 1);
+            else if (property == "WinchTarget") target.RopeWinchTarget = Math.Clamp(ropeNumber, 0, 10000);
+            else if (property == "WinchSpeed") target.RopeWinchSpeed = Math.Clamp(ropeNumber, 0, 10000);
+            else if (property == "WinchResponsiveness") target.RopeWinchResponsiveness = Math.Clamp(ropeNumber, 0, 200);
+            else target.RopeWinchForce = Math.Clamp(ropeNumber, 0, 1000000);
+        }
+        else if (target.Type == "RodConstraint" && property is ("Length" or "LimitAngle0" or "LimitAngle1" or "Thickness")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var rodValue) && float.IsFinite(rodValue))
+        {
+            if (property == "Length") target.RodLength = Math.Clamp(rodValue, 0, 10000);
+            else if (property == "LimitAngle0") target.RodLimitAngle0 = Math.Clamp(rodValue, 0, 180);
+            else if (property == "LimitAngle1") target.RodLimitAngle1 = Math.Clamp(rodValue, 0, 180);
+            else target.RodThickness = Math.Clamp(rodValue, 0, 100);
+        }
+        else if (target.Type == "BallSocketConstraint" && property is ("UpperAngle" or "TwistLowerAngle" or "TwistUpperAngle" or "Radius" or "Restitution" or "MaxFrictionTorque")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ballSocketAngle) && float.IsFinite(ballSocketAngle))
+        {
+            if (property == "UpperAngle") target.BallSocketUpperAngle = Math.Clamp(ballSocketAngle, 0, 180);
+            else if (property == "TwistLowerAngle") target.BallSocketTwistLowerAngle = Math.Clamp(ballSocketAngle, -180, target.BallSocketTwistUpperAngle);
+            else if (property == "TwistUpperAngle") target.BallSocketTwistUpperAngle = Math.Clamp(ballSocketAngle, target.BallSocketTwistLowerAngle, 180);
+            else if (property == "Radius") target.BallSocketRadius = Math.Clamp(ballSocketAngle, 0, 100);
+            else if (property == "Restitution") target.BallSocketRestitution = Math.Clamp(ballSocketAngle, 0, 1);
+            else target.BallSocketMaxFrictionTorque = Math.Clamp(ballSocketAngle, 0, 1000000);
+        }
+        else if (target.Type == "UniversalConstraint" && property is ("MaxAngle" or "Radius" or "Restitution")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var universalNumber) && float.IsFinite(universalNumber))
+        {
+            if (property == "MaxAngle") target.UniversalMaxAngle = Math.Clamp(universalNumber, 0, 180);
+            else if (property == "Radius") target.UniversalRadius = Math.Clamp(universalNumber, 0, 100);
+            else target.UniversalRestitution = Math.Clamp(universalNumber, 0, 1);
+        }
+        else if (target.Type == "HingeConstraint" && property is ("AngularResponsiveness" or "AngularSpeed" or "AngularVelocity" or "LowerAngle" or "MotorMaxAcceleration" or "MotorMaxTorque" or "Radius" or "Restitution" or "ServoMaxTorque" or "TargetAngle" or "UpperAngle")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var hingeValue) && float.IsFinite(hingeValue))
+        {
+            if (property == "AngularResponsiveness") target.HingeAngularResponsiveness = Math.Clamp(hingeValue, 0, 200);
+            else if (property == "AngularSpeed") target.HingeAngularSpeed = Math.Clamp(hingeValue, 0, 1000);
+            else if (property == "AngularVelocity") target.HingeAngularVelocity = Math.Clamp(hingeValue, -1000, 1000);
+            else if (property == "LowerAngle") target.HingeLowerAngle = Math.Clamp(hingeValue, -180, target.HingeUpperAngle);
+            else if (property == "MotorMaxAcceleration") target.HingeMotorMaxAcceleration = Math.Clamp(hingeValue, 0, 100000);
+            else if (property == "MotorMaxTorque") target.HingeMotorMaxTorque = Math.Clamp(hingeValue, 0, 1000000);
+            else if (property == "Radius") target.HingeRadius = Math.Clamp(hingeValue, 0, 100);
+            else if (property == "Restitution") target.HingeRestitution = Math.Clamp(hingeValue, 0, 1);
+            else if (property == "ServoMaxTorque") target.HingeServoMaxTorque = Math.Clamp(hingeValue, 0, 1000000);
+            else if (property == "TargetAngle") target.HingeTargetAngle = Math.Clamp(hingeValue, -360000, 360000);
+            else target.HingeUpperAngle = Math.Clamp(hingeValue, target.HingeLowerAngle, 180);
+        }
+        else if (target.Type == "CylindricalConstraint" && property is ("AngularResponsiveness" or "AngularSpeed" or "AngularVelocity" or "LowerAngle" or "MotorMaxAngularAcceleration" or "MotorMaxTorque" or "AngularRestitution" or "ServoMaxTorque" or "TargetAngle" or "UpperAngle")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var cylindricalAngularValue) && float.IsFinite(cylindricalAngularValue))
+        {
+            if (property == "AngularResponsiveness") target.HingeAngularResponsiveness = Math.Clamp(cylindricalAngularValue, 0, 200);
+            else if (property == "AngularSpeed") target.HingeAngularSpeed = Math.Clamp(cylindricalAngularValue, 0, 1000);
+            else if (property == "AngularVelocity") target.HingeAngularVelocity = Math.Clamp(cylindricalAngularValue, -1000, 1000);
+            else if (property == "LowerAngle") target.HingeLowerAngle = Math.Clamp(cylindricalAngularValue, -180, target.HingeUpperAngle);
+            else if (property == "MotorMaxAngularAcceleration") target.HingeMotorMaxAcceleration = Math.Clamp(cylindricalAngularValue, 0, 100000);
+            else if (property == "MotorMaxTorque") target.HingeMotorMaxTorque = Math.Clamp(cylindricalAngularValue, 0, 1000000);
+            else if (property == "AngularRestitution") target.HingeRestitution = Math.Clamp(cylindricalAngularValue, 0, 1);
+            else if (property == "ServoMaxTorque") target.HingeServoMaxTorque = Math.Clamp(cylindricalAngularValue, 0, 1000000);
+            else if (property == "TargetAngle") target.HingeTargetAngle = Math.Clamp(cylindricalAngularValue, -180, 180);
+            else target.HingeUpperAngle = Math.Clamp(cylindricalAngularValue, target.HingeLowerAngle, 180);
+        }
+        else if (target.Type == "CylindricalConstraint" && property == "InclinationAngle"
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var inclinationAngle) && float.IsFinite(inclinationAngle))
+            target.CylindricalInclinationAngle = Math.Clamp(inclinationAngle, -180, 180);
+        else if (target.Type is ("PrismaticConstraint" or "CylindricalConstraint") && property is ("LinearResponsiveness" or "LowerLimit" or "MotorMaxAcceleration" or "MotorMaxForce" or "Restitution" or "ServoMaxForce" or "Size" or "Speed" or "TargetPosition" or "UpperLimit" or "Velocity")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var prismaticValue) && float.IsFinite(prismaticValue))
+        {
+            if (property == "LinearResponsiveness") target.PrismaticLinearResponsiveness = Math.Clamp(prismaticValue, 0, 200);
+            else if (property == "LowerLimit")
+            {
+                target.PrismaticLowerLimit = Math.Clamp(prismaticValue, -10000, 10000);
+                if (target.PrismaticLowerLimit > target.PrismaticUpperLimit)
+                    target.PrismaticUpperLimit = target.PrismaticLowerLimit;
+            }
+            else if (property == "MotorMaxAcceleration") target.PrismaticMotorMaxAcceleration = Math.Clamp(prismaticValue, 0, 100000);
+            else if (property == "MotorMaxForce") target.PrismaticMotorMaxForce = Math.Clamp(prismaticValue, 0, 1000000);
+            else if (property == "Restitution") target.PrismaticRestitution = Math.Clamp(prismaticValue, 0, 1);
+            else if (property == "ServoMaxForce") target.PrismaticServoMaxForce = Math.Clamp(prismaticValue, 0, 1000000);
+            else if (property == "Size") target.PrismaticSize = Math.Clamp(prismaticValue, 0, 100);
+            else if (property == "Speed") target.PrismaticSpeed = Math.Clamp(prismaticValue, 0, 10000);
+            else if (property == "TargetPosition") target.PrismaticTargetPosition = Math.Clamp(prismaticValue, -10000, 10000);
+            else if (property == "UpperLimit")
+            {
+                target.PrismaticUpperLimit = Math.Clamp(prismaticValue, -10000, 10000);
+                if (target.PrismaticUpperLimit < target.PrismaticLowerLimit)
+                    target.PrismaticLowerLimit = target.PrismaticUpperLimit;
+            }
+            else target.PrismaticVelocity = Math.Clamp(prismaticValue, -10000, 10000);
+        }
         else if (property == "Gravity" && target.Type == "Workspace" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gravity) && float.IsFinite(gravity)) target.Gravity = Math.Clamp(gravity, 0, 1000);
         else if (target.Type == "Humanoid" && property is ("Health" or "MaxHealth" or "WalkSpeed" or "JumpPower")
             && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var humanoidValue) && float.IsFinite(humanoidValue))
@@ -1888,6 +2449,13 @@ public partial class MainWindow : Window
         else if (property == "Range" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var range) && float.IsFinite(range)) target.Range = Math.Clamp(range, 1, 1000);
         else if (property == "Angle" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var angle) && float.IsFinite(angle)) target.Angle = Math.Clamp(angle, 1, 175);
         else if (property == "MaxActivationDistance" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var maxActivationDistance) && float.IsFinite(maxActivationDistance)) target.MaxActivationDistance = Math.Clamp(maxActivationDistance, 1, 100);
+        else if (property == "HoldDuration" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var holdDuration) && float.IsFinite(holdDuration)) target.HoldDuration = Math.Clamp(holdDuration, 0, 60);
+        else if (property == "P" && target.Type == "BodyVelocity" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var bodyVelocityP) && float.IsFinite(bodyVelocityP)) target.BodyVelocityP = Math.Clamp(bodyVelocityP, 0, 1000000);
+        else if (property == "P" && target.Type == "BodyPosition" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var bodyPositionP) && float.IsFinite(bodyPositionP)) target.BodyPositionP = Math.Clamp(bodyPositionP, 0, 1000000);
+        else if (property == "D" && target.Type == "BodyPosition" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var bodyPositionD) && float.IsFinite(bodyPositionD)) target.BodyPositionD = Math.Clamp(bodyPositionD, 0, 1000000);
+        else if (property == "P" && target.Type == "BodyGyro" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var bodyGyroP) && float.IsFinite(bodyGyroP)) target.BodyGyroP = Math.Clamp(bodyGyroP, 0, 1000000);
+        else if (property == "D" && target.Type == "BodyGyro" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var bodyGyroD) && float.IsFinite(bodyGyroD)) target.BodyGyroD = Math.Clamp(bodyGyroD, 0, 1000000);
+        else if (property == "P" && target.Type == "BodyAngularVelocity" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var bodyAngularVelocityP) && float.IsFinite(bodyAngularVelocityP)) target.BodyAngularVelocityP = Math.Clamp(bodyAngularVelocityP, 0, 1000000);
         else if (property == "MaxDistance" && (target.Type is "BillboardGui" or "SurfaceGui") && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var billboardMaxDistance) && float.IsFinite(billboardMaxDistance)) target.MaxDistance = Math.Clamp(billboardMaxDistance, 0, 100000);
         else if (property == "PixelsPerStud" && target.Type == "SurfaceGui" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pixelsPerStud) && float.IsFinite(pixelsPerStud)) target.PixelsPerStud = Math.Clamp(pixelsPerStud, 1, 1000);
         else if (property == "Volume" && target.Type == "Sound" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var volume) && float.IsFinite(volume)) target.Volume = Math.Clamp(volume, 0, 1);
@@ -1934,10 +2502,10 @@ public partial class MainWindow : Window
             }
             renderer?.Refresh(project);
         }
-        else if (property == "Name" && target.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui") && !string.IsNullOrWhiteSpace(text))
+        else if (property == "Name" && target.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui") && !string.IsNullOrWhiteSpace(text))
         {
             target.Name = text;
-            if (target.Type is "Script" or "ModuleScript")
+            if (target.Type is "Script" or "LocalScript" or "ModuleScript")
             {
                 var gameScript = project.Scripts.FirstOrDefault(script => script.Id == target.Id);
                 if (gameScript is not null)
@@ -2027,15 +2595,59 @@ public partial class MainWindow : Window
             "JumpPower" => node.JumpPower,
             "Brightness" => node.Brightness,
             "Range" => node.Range,
-            "Size" => SceneNodeTypes.IsSizedParticleEffect(node) || node.Type == "ParticleEmitter" ? node.EffectSize : (float?)null,
+            "Magnitude" => node.Type == "LineForce" ? node.LineForceMagnitude : (float?)null,
+            "Size" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticSize : SceneNodeTypes.IsSizedParticleEffect(node) || node.Type == "ParticleEmitter" ? node.EffectSize : (float?)null,
+            "Velocity" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticVelocity : (float?)null,
+            "Speed" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticSpeed : (float?)null,
             "Rate" => node.Type == "ParticleEmitter" ? node.Rate : (float?)null,
             "TextureLength" => node.Type == "Trail" ? node.TextureLength : (float?)null,
             "LineVelocity" => node.Type == "LinearVelocity" ? node.LineVelocity : (float?)null,
-            "MaxForce" => node.Type is "LinearVelocity" or "AlignPosition" ? node.MaxForce : (float?)null,
+            "MaxForce" => node.Type == "LineForce" ? node.LineForceMaxForce : node.Type == "SpringConstraint" ? node.SpringMaxForce : node.Type is "LinearVelocity" or "AlignPosition" ? node.MaxForce : (float?)null,
+            "FreeLength" => node.Type == "SpringConstraint" ? node.SpringFreeLength : (float?)null,
+            "Stiffness" => node.Type == "SpringConstraint" ? node.SpringStiffness : node.Type == "TorsionSpringConstraint" ? node.TorsionSpringStiffness : (float?)null,
+            "Damping" => node.Type == "SpringConstraint" ? node.SpringDamping : node.Type == "TorsionSpringConstraint" ? node.TorsionSpringDamping : (float?)null,
+            "MinLength" => node.Type == "SpringConstraint" ? node.SpringMinLength : (float?)null,
+            "MaxLength" => node.Type == "SpringConstraint" ? node.SpringMaxLength : (float?)null,
+            "MaxAngle" => node.Type == "TorsionSpringConstraint" ? node.TorsionSpringMaxAngle : node.Type == "UniversalConstraint" ? node.UniversalMaxAngle : (float?)null,
+            "Coils" => node.Type == "TorsionSpringConstraint" ? node.TorsionSpringCoils : (float?)null,
+            "Length" => node.Type == "RopeConstraint" ? node.RopeLength : (float?)null,
+            "CurrentDistance" => node.Type == "RodConstraint" ? node.RodCurrentDistance : (float?)null,
+            "LimitAngle0" => node.Type == "RodConstraint" ? node.RodLimitAngle0 : (float?)null,
+            "LimitAngle1" => node.Type == "RodConstraint" ? node.RodLimitAngle1 : (float?)null,
+            "Thickness" => node.Type == "RodConstraint" ? node.RodThickness : (float?)null,
+            "Restitution" => node.Type == "RopeConstraint" ? node.RopeRestitution : node.Type == "BallSocketConstraint" ? node.BallSocketRestitution : node.Type == "HingeConstraint" ? node.HingeRestitution : node.Type == "TorsionSpringConstraint" ? node.TorsionSpringRestitution : node.Type == "UniversalConstraint" ? node.UniversalRestitution : node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticRestitution : (float?)null,
+            "AngularRestitution" => node.Type == "CylindricalConstraint" ? node.HingeRestitution : (float?)null,
+            "WinchTarget" => node.Type == "RopeConstraint" ? node.RopeWinchTarget : (float?)null,
+            "WinchSpeed" => node.Type == "RopeConstraint" ? node.RopeWinchSpeed : (float?)null,
+            "WinchResponsiveness" => node.Type == "RopeConstraint" ? node.RopeWinchResponsiveness : (float?)null,
+            "WinchForce" => node.Type == "RopeConstraint" ? node.RopeWinchForce : (float?)null,
+            "UpperAngle" => node.Type == "BallSocketConstraint" ? node.BallSocketUpperAngle : node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeUpperAngle : (float?)null,
+            "TwistLowerAngle" => node.Type == "BallSocketConstraint" ? node.BallSocketTwistLowerAngle : (float?)null,
+            "TwistUpperAngle" => node.Type == "BallSocketConstraint" ? node.BallSocketTwistUpperAngle : (float?)null,
+            "Radius" => node.Type == "BallSocketConstraint" ? node.BallSocketRadius : node.Type == "TorsionSpringConstraint" ? node.TorsionSpringRadius : node.Type == "UniversalConstraint" ? node.UniversalRadius : node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeRadius : (float?)null,
+            "MaxFrictionTorque" => node.Type == "BallSocketConstraint" ? node.BallSocketMaxFrictionTorque : (float?)null,
+            "AngularResponsiveness" => node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeAngularResponsiveness : (float?)null,
+            "AngularSpeed" => node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeAngularSpeed : (float?)null,
+            "AngularVelocity" => node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeAngularVelocity : (float?)null,
+            "CurrentAngle" => node.Type == "TorsionSpringConstraint" ? node.TorsionSpringCurrentAngle : node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeCurrentAngle : (float?)null,
+            "LowerAngle" => node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeLowerAngle : (float?)null,
+            "MotorMaxAcceleration" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticMotorMaxAcceleration : node.Type == "HingeConstraint" ? node.HingeMotorMaxAcceleration : (float?)null,
+            "MotorMaxAngularAcceleration" => node.Type == "CylindricalConstraint" ? node.HingeMotorMaxAcceleration : (float?)null,
+            "MotorMaxTorque" => node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeMotorMaxTorque : (float?)null,
+            "ServoMaxTorque" => node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeServoMaxTorque : (float?)null,
+            "TargetAngle" => node.Type is "HingeConstraint" or "CylindricalConstraint" ? node.HingeTargetAngle : (float?)null,
+            "InclinationAngle" => node.Type == "CylindricalConstraint" ? node.CylindricalInclinationAngle : (float?)null,
             "MaxVelocity" => node.Type == "AlignPosition" ? node.MaxVelocity : (float?)null,
             "Responsiveness" => node.Type == "AlignPosition" ? node.Responsiveness : (float?)null,
-            "MaxTorque" => node.Type is "AlignOrientation" or "AngularVelocity" ? node.MaxTorque : (float?)null,
+            "MaxTorque" => node.Type == "TorsionSpringConstraint" ? node.TorsionSpringMaxTorque : node.Type is "AlignOrientation" or "AngularVelocity" ? node.MaxTorque : (float?)null,
             "MaxAngularVelocity" => node.Type == "AlignOrientation" ? node.MaxAngularVelocity : (float?)null,
+            "CurrentPosition" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticCurrentPosition : (float?)null,
+            "LinearResponsiveness" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticLinearResponsiveness : (float?)null,
+            "LowerLimit" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticLowerLimit : (float?)null,
+            "MotorMaxForce" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticMotorMaxForce : (float?)null,
+            "ServoMaxForce" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticServoMaxForce : (float?)null,
+            "TargetPosition" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticTargetPosition : (float?)null,
+            "UpperLimit" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticUpperLimit : (float?)null,
             "TimeScale" => SceneNodeTypes.IsParticleEffect(node) ? node.TimeScale : (float?)null,
             "Heat" => node.Type == "Fire" ? node.Heat : (float?)null,
             "RiseVelocity" => node.Type == "Smoke" ? node.RiseVelocity : (float?)null,
@@ -2045,6 +2657,7 @@ public partial class MainWindow : Window
             "DestroyJointRadiusPercent" => node.DestroyJointRadiusPercent,
             "Angle" => node.Angle,
             "MaxActivationDistance" => node.MaxActivationDistance,
+            "HoldDuration" => node.HoldDuration,
             "MaxDistance" => node.Type is "BillboardGui" or "SurfaceGui" ? node.MaxDistance : (float?)null,
             "PixelsPerStud" => node.Type == "SurfaceGui" ? node.PixelsPerStud : (float?)null,
             "Volume" => node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume,
@@ -2090,19 +2703,41 @@ public partial class MainWindow : Window
         if (property == "TextEditable" && target.Type == "TextBox") target.TextEditable = box.IsChecked == true;
         if (property == "ClearTextOnFocus" && target.Type == "TextBox") target.ClearTextOnFocus = box.IsChecked == true;
         if (property == "Enabled") target.Enabled = box.IsChecked == true;
+        if (property == "ApplyAtCenterOfMass" && target.Type is ("VectorForce" or "AlignPosition")) target.ApplyAtCenterOfMass = box.IsChecked == true;
         if (property == "AlwaysOnTop" && (target.Type is "BillboardGui" or "SurfaceGui")) target.AlwaysOnTop = box.IsChecked == true;
         if (property == "Inset" && target.Type == "UIShadow") target.ShadowInset = box.IsChecked == true;
         if (property == "ShowBehindParent" && target.Type == "UIShadow") target.ShadowShowBehindParent = box.IsChecked == true;
         if (property == "FaceCamera" && target.Type == "Trail") target.FaceCamera = box.IsChecked == true;
+        if (property == "InverseSquareLaw" && target.Type == "LineForce") target.LineForceInverseSquareLaw = box.IsChecked == true;
+        if (property == "ReactionForceEnabled" && target.Type == "LineForce") target.LineForceReactionForceEnabled = box.IsChecked == true;
+        if (property == "ApplyAtCenterOfMass" && target.Type == "LineForce") target.ApplyAtCenterOfMass = box.IsChecked == true;
         if (property == "ForceLimitsEnabled" && target.Type == "LinearVelocity") target.ForceLimitsEnabled = box.IsChecked == true;
+        if (property == "LimitsEnabled" && target.Type == "SpringConstraint") target.SpringLimitsEnabled = box.IsChecked == true;
+        if (property == "LimitsEnabled" && target.Type == "TorsionSpringConstraint") target.TorsionSpringLimitsEnabled = box.IsChecked == true;
+        if (property == "LimitsEnabled" && target.Type == "BallSocketConstraint") target.BallSocketLimitsEnabled = box.IsChecked == true;
+        if (property == "LimitsEnabled" && target.Type == "UniversalConstraint") target.UniversalLimitsEnabled = box.IsChecked == true;
+        if (property == "LimitsEnabled" && target.Type == "HingeConstraint") target.HingeLimitsEnabled = box.IsChecked == true;
+        if (property == "LimitsEnabled" && target.Type == "PrismaticConstraint") target.PrismaticLimitsEnabled = box.IsChecked == true;
+        if (property == "LimitsEnabled" && target.Type == "CylindricalConstraint") target.PrismaticLimitsEnabled = box.IsChecked == true;
+        if (property == "AngularLimitsEnabled" && target.Type == "CylindricalConstraint") target.HingeLimitsEnabled = box.IsChecked == true;
+        if (property == "RotationAxisVisible" && target.Type == "CylindricalConstraint") target.CylindricalRotationAxisVisible = box.IsChecked == true;
+        if (property == "TwistLimitsEnabled" && target.Type == "BallSocketConstraint") target.BallSocketTwistLimitsEnabled = box.IsChecked == true;
+        if (property == "WinchEnabled" && target.Type == "RopeConstraint") target.RopeWinchEnabled = box.IsChecked == true;
+        if (property == "LimitsEnabled" && target.Type == "RodConstraint") target.RodLimitsEnabled = box.IsChecked == true;
         if (property == "RigidityEnabled" && target.Type == "AlignPosition") target.RigidityEnabled = box.IsChecked == true;
         if (property == "ReactionForceEnabled" && target.Type == "AlignPosition") target.ReactionForceEnabled = box.IsChecked == true;
+        if (property == "ReactionForceEnabled" && target.Type == "LinearVelocity") target.LinearVelocityReactionForceEnabled = box.IsChecked == true;
         if (property == "RigidityEnabled" && target.Type == "AlignOrientation") target.RigidityEnabled = box.IsChecked == true;
         if (property == "ReactionTorqueEnabled" && target.Type == "AlignOrientation") target.ReactionTorqueEnabled = box.IsChecked == true;
         if (property == "ReactionTorqueEnabled" && target.Type == "AngularVelocity") target.ReactionTorqueEnabled = box.IsChecked == true;
         if (property == "Looped") target.Looped = box.IsChecked == true;
         if (property == "Playing") target.Playing = box.IsChecked == true;
         if (property == "AutoManageCharacter" && target.Type == "Workspace") target.AutoManageCharacter = box.IsChecked == true;
+        if (property == "RequiresHandle" && target.Type == "Tool") target.RequiresHandle = box.IsChecked == true;
+        if (property == "CanBeDropped" && target.Type == "Tool") target.CanBeDropped = box.IsChecked == true;
+        if (property == "ManualActivationOnly" && target.Type == "Tool") target.ManualActivationOnly = box.IsChecked == true;
+        if (property == "Disabled" && target.Type == "VehicleSeat") target.VehicleSeatDisabled = box.IsChecked == true;
+        if (property == "HeadsUpDisplay" && target.Type == "VehicleSeat") target.VehicleSeatHeadsUpDisplay = box.IsChecked == true;
         if (property == "AutoAssignable" && target.Type == "Team") target.AutoAssignable = box.IsChecked == true;
         if (property == "Neutral" && target.Type == "SpawnLocation") target.Neutral = box.IsChecked == true;
         if (property == "AllowTeamChangeOnTouch" && target.Type == "SpawnLocation") target.AllowTeamChangeOnTouch = box.IsChecked == true;
@@ -2112,7 +2747,7 @@ public partial class MainWindow : Window
         if (IsGuiNode(target)) RefreshGuiPreview();
         renderer?.UpdateNode(target, project);
         RecordEdit();
-        if (property == "ForceLimitsEnabled") RenderProperties();
+        if (property is "ForceLimitsEnabled" or "LimitsEnabled" or "WinchEnabled") RenderProperties();
     }
 
     private void PropertyCombo_Changed(object sender, SelectionChangedEventArgs e)
@@ -2127,15 +2762,22 @@ public partial class MainWindow : Window
         if (property == "Mode" && target.Type == "Camera") target.CameraMode = value;
         if (property == "Mode" && target.Type == "AlignPosition" && value is ("OneAttachment" or "TwoAttachment")) target.AlignmentMode = value;
         if (property == "Mode" && target.Type == "AlignOrientation" && value is ("OneAttachment" or "TwoAttachment")) target.AlignmentMode = value;
+        if (property == "ActuatorType" && target.Type == "HingeConstraint" && value is ("None" or "Motor" or "Servo")) target.HingeActuatorType = value;
+        if (property == "ActuatorType" && target.Type == "PrismaticConstraint" && value is ("None" or "Motor" or "Servo")) target.PrismaticActuatorType = value;
+        if (property == "ActuatorType" && target.Type == "CylindricalConstraint" && value is ("None" or "Motor" or "Servo")) target.PrismaticActuatorType = value;
+        if (property == "AngularActuatorType" && target.Type == "CylindricalConstraint" && value is ("None" or "Motor" or "Servo")) target.HingeActuatorType = value;
         if (property == "Mode" && target.Type == "UIShadow" && value is ("Shape" or "Text")) target.ShadowMode = value;
         if (property == "Shape" && target.Type == "Part") target.Shape = value;
         if (property == "Material" && SceneNodeTypes.IsBasePart(target)) target.Material = value;
         if (property == "Face" && target.Type is ("Decal" or "Texture" or "SurfaceLight" or "SurfaceGui") && SceneNodeTypes.IsFace(value)) target.Face = value;
         if (property == "EmissionDirection" && target.Type == "ParticleEmitter" && SceneNodeTypes.IsFace(value)) target.EmissionDirection = value;
         if (property == "TextureMode" && target.Type == "Trail" && value is ("Stretch" or "Wrap" or "Static")) target.TextureMode = value;
-        if (property == "RelativeTo" && target.Type is ("VectorForce" or "LinearVelocity") && value is ("World" or "Attachment0")) target.RelativeTo = value;
+        if (property == "RelativeTo" && target.Type == "VectorForce" && value is ("World" or "Attachment0" or "Attachment1")) target.RelativeTo = value;
+        if (property == "RelativeTo" && target.Type == "LinearVelocity" && value is ("World" or "Attachment0" or "Attachment1")) target.RelativeTo = value;
         if (property == "RelativeTo" && target.Type == "AngularVelocity" && value is ("World" or "Attachment0" or "Attachment1")) target.RelativeTo = value;
+        if (property == "RelativeTo" && target.Type == "Torque" && value is ("World" or "Attachment0" or "Attachment1")) target.RelativeTo = value;
         if (property == "VelocityConstraintMode" && target.Type == "LinearVelocity" && value is ("Vector" or "Line" or "Plane")) target.VelocityConstraintMode = value;
+        if (property == "ForceLimitMode" && target.Type == "LinearVelocity" && value is ("Magnitude" or "PerAxis")) target.ForceLimitMode = value;
         if (property == "LayoutDirection") target.LayoutDirection = value;
         if (property == "FillDirection" && target.Type == "UIListLayout" && value is ("Horizontal" or "Vertical")) target.LayoutDirection = value;
         if (property == "HorizontalAlignment" && target.Type == "UIListLayout" && value is ("Left" or "Center" or "Right")) target.HorizontalAlignment = value;
@@ -2296,7 +2938,7 @@ public partial class MainWindow : Window
         propertyPickerProperty = null;
         SetObjectReferencePickerActive(false);
         selected = targetId is null ? selected : FindSceneNode(targetId);
-        renderer?.SetSelection(selected?.Id);
+        SelectOnly(selected);
         RenderProperties();
         if (selected is not null) SelectTreeNode(selected.Id);
         SetStatus("Object selection cancelled");
@@ -2314,14 +2956,15 @@ public partial class MainWindow : Window
         if (project.ServerScriptService.Id == id) return project.ServerScriptService;
         if (project.ServerStorage.Id == id) return project.ServerStorage;
         if (project.StarterPack.Id == id) return project.StarterPack;
+        if (project.StarterPlayer.Id == id) return project.StarterPlayer;
         if (project.Gui.Id == id) return project.Gui;
         return GameProjectStore.Flatten(project).FirstOrDefault(node => node.Id == id);
     }
 
     private SceneNode? FindParentNode(SceneNode target)
     {
-        if (project is null || ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.Teams) || ReferenceEquals(target, project.Lighting) || ReferenceEquals(target, project.SoundService) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.StarterPack) || ReferenceEquals(target, project.Gui)) return null;
-        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.Teams, target) ?? FindParentNode(project.Lighting, target) ?? FindParentNode(project.SoundService, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.StarterPack, target) ?? FindParentNode(project.Gui, target);
+        if (project is null || ReferenceEquals(target, project.Workspace) || ReferenceEquals(target, project.Players) || ReferenceEquals(target, project.Teams) || ReferenceEquals(target, project.Lighting) || ReferenceEquals(target, project.SoundService) || ReferenceEquals(target, project.ReplicatedStorage) || ReferenceEquals(target, project.ServerScriptService) || ReferenceEquals(target, project.ServerStorage) || ReferenceEquals(target, project.StarterPack) || ReferenceEquals(target, project.StarterPlayer) || ReferenceEquals(target, project.Gui)) return null;
+        return FindParentNode(project.Workspace, target) ?? FindParentNode(project.Players, target) ?? FindParentNode(project.Teams, target) ?? FindParentNode(project.Lighting, target) ?? FindParentNode(project.SoundService, target) ?? FindParentNode(project.ReplicatedStorage, target) ?? FindParentNode(project.ServerScriptService, target) ?? FindParentNode(project.ServerStorage, target) ?? FindParentNode(project.StarterPack, target) ?? FindParentNode(project.StarterPlayer, target) ?? FindParentNode(project.Gui, target);
     }
 
     private static SceneNode? FindParentNode(SceneNode parent, SceneNode target)
@@ -2377,7 +3020,7 @@ public partial class MainWindow : Window
     private async Task AddNodeToParentAsync(SceneNode parent, string type, string name)
     {
         if (project is null) return;
-        if (type is "Script" or "ModuleScript")
+        if (type is "Script" or "LocalScript" or "ModuleScript")
         {
             var script = new GameScript { Name = name, Source = type == "ModuleScript" ? "local module = {}\nreturn module" : "print('Hello from Lua X')" };
             var scriptNode = new SceneNode { Id = script.Id, Type = type, Name = script.Name };
@@ -2394,7 +3037,7 @@ public partial class MainWindow : Window
         }
         var node = new SceneNode { Type = type is "Ball" or "Cylinder" ? "Part" : type, Name = name };
         if (type == "Atmosphere") { node.Color = "#C6D9FF"; node.AtmosphereDecay = "#607080"; }
-        if (type == "Tool") node.Children.Add(new SceneNode { Type = "Part", Name = "Handle", Size = [1, 1, 1], Position = [0, 1, 0], Color = "#8A8F9C", Material = "Metal" });
+        if (type is "Tool" or "Accessory") node.Children.Add(new SceneNode { Type = "Part", Name = "Handle", Size = [1, 1, 1], Position = [0, 1, 0], Color = "#8A8F9C", Material = "Metal" });
         if (type is "Ball" or "Cylinder") node.Shape = type;
         if (type is "SelectionBox" or "SelectionSphere" or "Highlight")
         {
@@ -2404,12 +3047,12 @@ public partial class MainWindow : Window
         if (type == "UICorner") UICornerRadiusService.Set(node, "CornerRadius", 0, 8);
         if (type == "UIShadow") { node.Color = "#000000"; node.Transparency = .5f; node.ZIndex = -1; }
         if (type is "WeldConstraint" or "NoCollisionConstraint" && SceneNodeTypes.IsBasePart(parent)) node.Part0 = parent.Id;
-        if (type == "VectorForce") node.RelativeTo = "Attachment0";
-        if (type is "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity") node.Attachment0 = parent.Type == "Attachment" ? parent.Id
+        if (type is "VectorForce" or "Torque") node.RelativeTo = "Attachment0";
+        if (type is "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint") node.Attachment0 = parent.Type == "Attachment" ? parent.Id
             : SceneNodeTypes.IsBasePart(parent) ? parent.Children.FirstOrDefault(child => child.Type == "Attachment")?.Id ?? string.Empty : string.Empty;
         if (SceneNodeTypes.IsBasePart(node)) node.Position = [0, 1, 0];
         if (type == "SpawnLocation") { node.Size = [6, 1, 6]; node.Position = [0, .5f, 0]; node.Color = "#72BF9D"; node.Material = "Metal"; }
-        if (type == "Seat") { node.Size = [2, 1, 2]; node.Position = [0, .5f, 0]; node.Color = "#596B89"; node.Material = "Metal"; }
+        if (type is "Seat" or "VehicleSeat") { node.Size = [2, 1, 2]; node.Position = [0, .5f, 0]; node.Color = "#596B89"; node.Material = "Metal"; }
         if (type == "TrussPart") { node.Size = [2, 6, 2]; node.Position = [0, 3, 0]; node.Color = "#AD9682"; node.Material = "Metal"; }
         if (type is "Decal" or "Texture") node.Color = "#FFFFFF";
         if (type == "Fire") { node.Color = "#FF6A00"; node.EffectSize = 5; }
@@ -2446,9 +3089,9 @@ public partial class MainWindow : Window
         if (project is null) return;
         var choices = IsGuiNode(parent)
             ? (parent.Type == "StarterGui"
-                ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") }
-                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIShadow", "UIShadow"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatioConstraint", "UIAspectRatioConstraint"), ("UISizeConstraint", "UISizeConstraint"), ("UITextSizeConstraint", "UITextSizeConstraint"), ("UIFlexItem", "UIFlexItem"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}") })
-            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("VectorForce", "VectorForce"), ("LinearVelocity", "LinearVelocity"), ("AlignPosition", "AlignPosition"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("SelectionBox", "SelectionBox"), ("SelectionSphere", "SelectionSphere"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("NoCollisionConstraint", "NoCollisionConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("Tool", "Tool"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}") };
+                ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}"), ("LocalScript", $"LocalScript{project.Scripts.Count + 1}") }
+                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIShadow", "UIShadow"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatioConstraint", "UIAspectRatioConstraint"), ("UISizeConstraint", "UISizeConstraint"), ("UITextSizeConstraint", "UITextSizeConstraint"), ("UIFlexItem", "UIFlexItem"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}"), ("LocalScript", $"LocalScript{project.Scripts.Count + 1}") })
+            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("VehicleSeat", "VehicleSeat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("BodyForce", "BodyForce"), ("BodyVelocity", "BodyVelocity"), ("BodyPosition", "BodyPosition"), ("BodyGyro", "BodyGyro"), ("BodyAngularVelocity", "BodyAngularVelocity"), ("VectorForce", "VectorForce"), ("LineForce", "LineForce"), ("Torque", "Torque"), ("SpringConstraint", "SpringConstraint"), ("TorsionSpringConstraint", "TorsionSpringConstraint"), ("RopeConstraint", "RopeConstraint"), ("RodConstraint", "RodConstraint"), ("BallSocketConstraint", "BallSocketConstraint"), ("HingeConstraint", "HingeConstraint"), ("PrismaticConstraint", "PrismaticConstraint"), ("CylindricalConstraint", "CylindricalConstraint"), ("PlaneConstraint", "PlaneConstraint"), ("UniversalConstraint", "UniversalConstraint"), ("RigidConstraint", "RigidConstraint"), ("LinearVelocity", "LinearVelocity"), ("AlignPosition", "AlignPosition"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("SelectionBox", "SelectionBox"), ("SelectionSphere", "SelectionSphere"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("NoCollisionConstraint", "NoCollisionConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("Tool", "Tool"), ("Accessory", "Accessory"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}"), ("LocalScript", $"LocalScript{project.Scripts.Count + 1}") };
         choices = choices.Concat(new (string Type, string Name)[] { ("Team", "Team"), ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("RemoteEvent", "RemoteEvent"), ("RemoteFunction", "RemoteFunction"), ("AlignOrientation", "AlignOrientation"), ("AngularVelocity", "AngularVelocity"), ("SoundGroup", "SoundGroup"), ("PitchShiftSoundEffect", "PitchShiftSoundEffect"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector2Value", "Vector2Value"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky"), ("Atmosphere", "Atmosphere"), ("Fire", "Fire"), ("Smoke", "Smoke"), ("Sparkles", "Sparkles"), ("ParticleEmitter", "ParticleEmitter"), ("BillboardGui", "BillboardGui"), ("SurfaceGui", "SurfaceGui") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
@@ -3170,9 +3813,10 @@ public partial class MainWindow : Window
             var imageAssetContext = Regex.IsMatch(source, @"\b(?:Texture|Skybox(?:Front|Back|Left|Right|Top|Bottom))\s*=\s*(?:GetAssetPath\s*\(\s*)?(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase);
             return GetLuaXAssetPathCompletions(imageAssetContext);
         }
-        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "Gui", "StarterGui", "Debris", "CollectionService", "RunService"];
-        if (Regex.IsMatch(source, @"\bInstance\.new\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXCreatableClassNameCompletions;
+        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "Gui", "StarterGui", "Debris", "CollectionService", "RunService", "TweenService"];
+        if (Regex.IsMatch(source, @"\bInstance\.new\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXCreatableClassNameCompletions.Concat(["LocalScript"]).ToArray();
         if (Regex.IsMatch(source, @"\bCameraMode\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject"];
+        if (Regex.IsMatch(source, @"\bMaterial\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return SceneNodeTypes.Materials.ToArray();
         if (Regex.IsMatch(source, @"\bMode\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject", "OneAttachment", "TwoAttachment"];
         if (Regex.IsMatch(source, @"\bLayoutDirection\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Vertical", "Horizontal"];
         if (Regex.IsMatch(source, @"\bHorizontalAlignment\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Left", "Center", "Right"];
@@ -3181,7 +3825,7 @@ public partial class MainWindow : Window
         if (Regex.IsMatch(source, @"\bFlexMode\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["None", "Grow", "Shrink", "Fill", "Custom"];
         if (Regex.IsMatch(source, @"\bItemLineAlignment\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Automatic", "Start", "Center", "End", "Stretch"];
         if (Regex.IsMatch(source, @"\bFillDirection\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Horizontal", "Vertical"];
-        if (Regex.IsMatch(source, @"\bIsA\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXClassNameCompletions;
+        if (Regex.IsMatch(source, @"\bIsA\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXClassNameCompletions.Concat(["LocalScript"]).ToArray();
         var propertyMatch = Regex.Match(source, @"(?:SetProperty|GetProperty)\s*\(\s*['""][^'""\r\n]*$", RegexOptions.IgnoreCase);
         if (propertyMatch.Success)
         {
@@ -3520,7 +4164,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Constraint", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Model", "Camera", "Workspace", "Players", "Player", "Teams", "Team", "Lighting", "SoundService", "Sky", "Atmosphere", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterGui", "PlayerGui", "BasePlayerGui", "DataModel", "CollectionService", "RunService", "Folder", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Constraint", "BodyMover", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "VehicleSeat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "BodyForce", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Model", "Camera", "Workspace", "Players", "Player", "Teams", "Team", "Lighting", "SoundService", "Sky", "Atmosphere", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "PlayerGui", "BasePlayerGui", "Backpack", "PlayerScripts", "BasePlayerScripts", "Terrain", "DataModel", "CollectionService", "RunService", "TweenService", "Tween", "TweenInfo", "Folder", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "ModuleScript", "LocalScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -3563,13 +4207,19 @@ public partial class MainWindow : Window
 
     private string[] GetLuaXMembers(string receiver, TextEditor editor)
     {
-        if (receiver == "game") return ["GetService", "Gui", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterGui", "Workspace", "Debris", "CollectionService", "RunService"];
+        if (receiver == "game") return ["GetService", "Gui", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "Workspace", "Debris", "CollectionService", "RunService", "TweenService"];
         if (receiver == "game.SoundService") return ["Name", "ClassName", "Volume", "Children", "GetChildren", "FindFirstChild", "WaitForChild"];
         if (receiver == "game.Debris") return ["Name", "ClassName", "AddItem"];
         if (receiver == "game.CollectionService") return ["Name", "ClassName", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
         if (receiver == "game.RunService") return ["Name", "ClassName", "IsRunning", "IsEdit", "IsStudio", "PreSimulation", "Stepped", "PostSimulation", "Heartbeat", "PreRender", "RenderStepped"];
+        if (receiver == "game.TweenService") return ["Name", "ClassName", "Create"];
+        if (receiver == "TweenInfo") return ["new"];
+        if (receiver == "Enum.EasingStyle") return ["Linear", "Sine", "Quad", "Cubic", "Quart", "Quint", "Exponential", "Circular", "Back", "Bounce", "Elastic"];
+        if (receiver == "Enum.EasingDirection") return ["In", "Out", "InOut"];
+        if (receiver == "Enum.PlaybackState") return ["Begin", "Delayed", "Playing", "Paused", "Completed", "Cancelled"];
         if (receiver == "Instance") return ["new"];
-        if (receiver == "Enum") return ["CameraMode", "LayoutDirection", "FillDirection", "PositionAlignmentMode", "OrientationAlignmentMode", "ActuatorRelativeTo", "RaycastFilterType", "NormalId"];
+        if (receiver == "Enum") return ["CameraMode", "LayoutDirection", "FillDirection", "PositionAlignmentMode", "OrientationAlignmentMode", "ActuatorRelativeTo", "RaycastFilterType", "NormalId", "Material", "EasingStyle", "EasingDirection", "PlaybackState"];
+        if (receiver == "Enum.Material") return SceneNodeTypes.EnumMaterials.ToArray();
         if (receiver == "Enum.NormalId") return ["Top", "Bottom", "Front", "Back", "Left", "Right"];
         if (receiver == "Enum.CameraMode") return ["Custom", "Subject"];
         if (receiver == "Enum.LayoutDirection") return ["Horizontal", "Vertical"];
@@ -3601,6 +4251,8 @@ public partial class MainWindow : Window
             if (inferredType == "UDim2") return ["X", "Y"];
             if (inferredType == "RaycastParams") return ["FilterDescendantsInstances", "FilterType"];
             if (inferredType == "RaycastResult") return ["Instance", "Position", "Normal", "Distance", "Material"];
+            if (inferredType == "Tween") return ["Instance", "PlaybackState", "Completed", "Play", "Pause", "Cancel"];
+            if (inferredType == "TweenInfo") return ["Time", "EasingStyle", "EasingDirection", "RepeatCount", "Reverses", "DelayTime"];
             if (inferredType == "RBXScriptSignal") return ["Connect"];
             if (inferredType == "RunService") return ["Name", "ClassName", "IsRunning", "IsEdit", "IsStudio", "PreSimulation", "Stepped", "PostSimulation", "Heartbeat", "PreRender", "RenderStepped"];
             if (inferredType is "number" or "string" or "boolean" or "table") return [];
@@ -3611,12 +4263,16 @@ public partial class MainWindow : Window
         }
 
         var members = new List<string> { "Name", "Parent", "Archivable", "ClassName", "Id", "Children", "SetProperty", "GetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags" };
+        if (node.Type == "Tween") members.AddRange(["Instance", "PlaybackState", "Completed", "Play", "Pause", "Cancel"]);
+        if (node.Type == "TweenInfo") members.AddRange(["Time", "EasingStyle", "EasingDirection", "RepeatCount", "Reverses", "DelayTime"]);
+        if (node.Type == "TweenService") members.Add("Create");
         if (node.Type == "Model") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "Model") members.Add("PrimaryPart");
         if (node.Type == "BasePart" || SceneNodeTypes.IsBasePart(node)) members.AddRange(["Position", "Rotation", "Size", "Color", "Material", "Transparency", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Touched", "touched"]);
         if (node.Type == "Part") members.AddRange(["Shape", "Texture"]);
         if (node.Type == "SpawnLocation") members.Add("Enabled");
         if (node.Type == "Seat") members.Add("Occupant");
+        if (node.Type == "VehicleSeat") members.AddRange(["Occupant", "Disabled", "HeadsUpDisplay", "MaxSpeed", "Torque", "TurnSpeed", "ThrottleFloat", "SteerFloat", "AreHingesDetected"]);
         if (node.Type == "Humanoid") members.AddRange(["Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "TakeDamage"]);
         if (node.Type == "ForceField") members.Add("Visible");
         if (node.Type == "Explosion") members.AddRange(["Position", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Visible", "Hit"]);
@@ -3645,7 +4301,7 @@ public partial class MainWindow : Window
         if (node.Type == "SoundGroup") members.Add("Volume");
         if (node.Type == "SoundService") members.Add("Volume");
         if (node.Type == "PitchShiftSoundEffect") members.Add("Octave");
-        if (node.Type == "ProximityPrompt") members.AddRange(["Enabled", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered"]);
+        if (node.Type == "ProximityPrompt") members.AddRange(["Enabled", "ActionText", "ObjectText", "HoldDuration", "MaxActivationDistance", "Triggered"]);
         if (node.Type == "ClickDetector") members.AddRange(["Enabled", "MaxActivationDistance", "MouseClick"]);
         if (node.Type == "Highlight") members.AddRange(["Adornee", "Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency"]);
         if (node.Type == "SelectionBox") members.AddRange(["Adornee", "Visible", "Color3", "Transparency", "LineThickness", "SurfaceColor3", "SurfaceTransparency"]);
@@ -3653,26 +4309,47 @@ public partial class MainWindow : Window
         if (node.Type is "WeldConstraint" or "NoCollisionConstraint") members.AddRange(["Enabled", "Part0", "Part1"]);
         if (node.Type == "Beam") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Width0", "Width1", "Color", "Transparency"]);
         if (node.Type == "Trail") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Lifetime", "MinLength", "MaxLength", "WidthScale", "Color", "Transparency", "Texture", "FaceCamera", "TextureMode", "TextureLength", "Clear"]);
-        if (node.Type == "VectorForce") members.AddRange(["Enabled", "Attachment0", "Force", "RelativeTo"]);
-        if (node.Type == "LinearVelocity") members.AddRange(["Enabled", "Attachment0", "RelativeTo", "VelocityConstraintMode", "VectorVelocity", "LineDirection", "LineVelocity", "PlaneVelocity", "PrimaryTangentAxis", "SecondaryTangentAxis", "ForceLimitsEnabled", "MaxForce"]);
-        if (node.Type == "AlignPosition") members.AddRange(["Enabled", "Mode", "Attachment0", "Attachment1", "Position", "Responsiveness", "MaxVelocity", "MaxForce", "RigidityEnabled", "ReactionForceEnabled"]);
+        if (node.Type == "VectorForce") members.AddRange(["Enabled", "Attachment0", "Force", "RelativeTo", "ApplyAtCenterOfMass"]);
+        if (node.Type == "LineForce") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Magnitude", "MaxForce", "InverseSquareLaw", "ReactionForceEnabled", "ApplyAtCenterOfMass"]);
+        if (node.Type is "Script" or "LocalScript") members.Add("Enabled");
+        if (node.Type == "BodyForce") members.AddRange(["Enabled", "Force"]);
+        if (node.Type == "BodyVelocity") members.AddRange(["Enabled", "Velocity", "MaxForce", "P"]);
+        if (node.Type == "BodyPosition") members.AddRange(["Enabled", "Position", "MaxForce", "P", "D"]);
+        if (node.Type == "BodyGyro") members.AddRange(["Enabled", "Rotation", "MaxTorque", "P", "D"]);
+        if (node.Type == "BodyAngularVelocity") members.AddRange(["Enabled", "AngularVelocity", "MaxTorque", "P"]);
+        if (node.Type == "LinearVelocity") members.AddRange(["Enabled", "Attachment0", "Attachment1", "RelativeTo", "VelocityConstraintMode", "VectorVelocity", "LineDirection", "LineVelocity", "PlaneVelocity", "PrimaryTangentAxis", "SecondaryTangentAxis", "ForceLimitsEnabled", "ForceLimitMode", "MaxForce", "MaxAxesForce", "MaxPlanarAxesForce", "ReactionForceEnabled"]);
+        if (node.Type == "AlignPosition") members.AddRange(["Enabled", "Mode", "Attachment0", "Attachment1", "Position", "Responsiveness", "MaxVelocity", "MaxForce", "RigidityEnabled", "ReactionForceEnabled", "ApplyAtCenterOfMass"]);
         if (node.Type == "AlignOrientation") members.AddRange(["Enabled", "Mode", "Attachment0", "Attachment1", "Rotation", "Responsiveness", "MaxAngularVelocity", "MaxTorque", "RigidityEnabled", "ReactionTorqueEnabled"]);
-        if (node.Type == "AngularVelocity") members.AddRange(["Enabled", "Attachment0", "AngularVelocity", "RelativeTo", "MaxTorque", "ReactionTorqueEnabled"]);
+        if (node.Type == "AngularVelocity") members.AddRange(["Enabled", "Attachment0", "Attachment1", "AngularVelocity", "RelativeTo", "MaxTorque", "ReactionTorqueEnabled"]);
+        if (node.Type == "Torque") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Torque", "RelativeTo"]);
+        if (node.Type == "SpringConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "CurrentLength", "FreeLength", "Stiffness", "Damping", "MaxForce", "LimitsEnabled", "MinLength", "MaxLength"]);
+        if (node.Type == "TorsionSpringConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Coils", "CurrentAngle", "Damping", "LimitsEnabled", "MaxAngle", "MaxTorque", "Radius", "Restitution", "Stiffness"]);
+        if (node.Type == "BallSocketConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "LimitsEnabled", "UpperAngle", "TwistLimitsEnabled", "TwistLowerAngle", "TwistUpperAngle", "Restitution", "MaxFrictionTorque", "Radius"]);
+        if (node.Type == "UniversalConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "LimitsEnabled", "MaxAngle", "Radius", "Restitution"]);
+        if (node.Type == "RigidConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1"]);
+        if (node.Type == "HingeConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "ActuatorType", "AngularResponsiveness", "AngularSpeed", "AngularVelocity", "CurrentAngle", "LimitsEnabled", "LowerAngle", "MotorMaxAcceleration", "MotorMaxTorque", "Radius", "Restitution", "ServoMaxTorque", "TargetAngle", "UpperAngle"]);
+        if (node.Type == "PrismaticConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "ActuatorType", "CurrentPosition", "LimitsEnabled", "LinearResponsiveness", "LowerLimit", "MotorMaxAcceleration", "MotorMaxForce", "Restitution", "ServoMaxForce", "Size", "Speed", "TargetPosition", "UpperLimit", "Velocity"]);
+        if (node.Type == "CylindricalConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "ActuatorType", "AngularActuatorType", "AngularLimitsEnabled", "AngularRestitution", "AngularResponsiveness", "AngularSpeed", "AngularVelocity", "CurrentAngle", "CurrentPosition", "InclinationAngle", "LimitsEnabled", "LinearResponsiveness", "LowerAngle", "LowerLimit", "MotorMaxAcceleration", "MotorMaxAngularAcceleration", "MotorMaxForce", "MotorMaxTorque", "Restitution", "RotationAxisVisible", "ServoMaxForce", "ServoMaxTorque", "Size", "Speed", "TargetAngle", "TargetPosition", "UpperAngle", "UpperLimit", "Velocity", "WorldRotationAxis"]);
+        if (node.Type == "PlaneConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1"]);
+        if (node.Type == "RopeConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Length", "CurrentLength", "Restitution", "WinchEnabled", "WinchForce", "WinchResponsiveness", "WinchSpeed", "WinchTarget"]);
+        if (node.Type == "RodConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "CurrentDistance", "Length", "LimitAngle0", "LimitAngle1", "LimitsEnabled", "Thickness"]);
         if (node.Type == "Attachment") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
         if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "Raycast", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
+        if (node.Type == "Terrain") members.AddRange(["FillBlock", "FillBall", "ClearBlock", "Clear"]);
         if (node.Type == "Lighting") members.AddRange(["Ambient", "Brightness", "ClockTime", "GlobalShadows"]);
         if (node.Type == "Atmosphere") members.AddRange(["Color", "Decay", "Density", "Haze", "Glare", "Offset", "Enabled"]);
         if (node.Type == "Sky") members.AddRange(["SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn"]);
         if (node.Type == "Players") members.Add("LocalPlayer");
-        if (node.Type == "Player") members.AddRange(["Character", "Team", "TeamColor"]);
+        if (node.Type == "Tool") members.AddRange(["ToolTip", "RequiresHandle", "CanBeDropped", "ManualActivationOnly", "GripPosition", "GripRotation", "Activated", "Deactivated", "Equipped", "Unequipped", "Activate", "Deactivate"]);
+        if (node.Type == "Player") members.AddRange(["Backpack", "Character", "PlayerScripts", "Team", "TeamColor"]);
         if (node.Type == "Team") members.AddRange(["TeamColor", "AutoAssignable"]);
         if (node.Type == "SpawnLocation") members.AddRange(["Neutral", "TeamColor", "AllowTeamChangeOnTouch", "Duration"]);
         if (node.Type == "ScreenGui") members.AddRange(["Enabled", "DisplayOrder"]);
         if (node.Type == "BillboardGui") members.AddRange(["Enabled", "Adornee", "Size", "MaxDistance", "AlwaysOnTop"]);
         if (node.Type == "SurfaceGui") members.AddRange(["Enabled", "Adornee", "Face", "MaxDistance", "PixelsPerStud", "AlwaysOnTop"]);
         if (node.Type is "GuiBase2d" or "GuiObject" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Visible", "Position", "Size", "ZIndex", "LayoutOrder"]);
-        if (node.Type is "GuiObject" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Color", "Rotation", "BackgroundTransparency"]);
+        if (node.Type is "GuiObject" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Color", "BackgroundColor3", "Rotation", "BackgroundTransparency"]);
         if (node.Type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.Add("AnchorPoint");
         if (node.Type is "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Text", "TextColor", "TextSize", "TextTransparency", "TextScaled"]);
         if (node.Type == "TextBox") members.AddRange(["MultiLine", "TextEditable", "ClearTextOnFocus", "PlaceholderText"]);
@@ -3702,6 +4379,8 @@ public partial class MainWindow : Window
     {
         if (receiver == "game") return ["GetService"];
         if (receiver == "game.RunService") return ["IsRunning", "IsEdit", "IsStudio"];
+        if (receiver == "game.TweenService") return ["Create"];
+        if (receiver == "TweenInfo") return ["new"];
         if (receiver == "workspace" || receiver == "game.Workspace") return ["Raycast", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA"];
         if (receiver.Equals("Touched", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Touched", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".Activated", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".MouseButton1Click", StringComparison.OrdinalIgnoreCase)
@@ -3720,9 +4399,12 @@ public partial class MainWindow : Window
         if (inferredType == "Color3") return ["Lerp", "ToHex", "ToHSV"];
         if (inferredType == "RBXScriptSignal") return ["Connect"];
         if (inferredType == "RunService") return ["IsRunning", "IsEdit", "IsStudio"];
+        if (inferredType == "TweenService") return ["Create"];
+        if (inferredType == "Tween") return ["Play", "Pause", "Cancel"];
         if (inferredType == "Workspace") return ["Raycast", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA"];
         if (inferredType is "number" or "string" or "boolean" or "table") return [];
         var receiverNode = ResolveLuaXNode(receiver) ?? ResolveLuaXReceiverNode(receiver, editor);
+        if (inferredType is "Seat" or "VehicleSeat" || receiverNode?.Type is "Seat" or "VehicleSeat") return ["Sit"];
         if (inferredType == "Humanoid" || receiverNode?.Type == "Humanoid") return ["TakeDamage", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
         if (inferredType == "Sound" || receiverNode?.Type == "Sound") return ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Play", "Stop"];
         if (inferredType == "ParticleEmitter" || receiverNode?.Type == "ParticleEmitter") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Emit", "Clear"];
@@ -3933,6 +4615,104 @@ public partial class MainWindow : Window
             };
             if (forceType is not null) return forceType;
         }
+        if (node?.Type == "BodyForce")
+        {
+            if (member.Equals("Force", StringComparison.OrdinalIgnoreCase)) return "Vector3";
+            if (member.Equals("Enabled", StringComparison.OrdinalIgnoreCase)) return "boolean";
+        }
+        if (node?.Type == "BodyVelocity")
+        {
+            if (member.Equals("Velocity", StringComparison.OrdinalIgnoreCase) || member.Equals("MaxForce", StringComparison.OrdinalIgnoreCase)) return "Vector3";
+            if (member.Equals("P", StringComparison.OrdinalIgnoreCase)) return "number";
+            if (member.Equals("Enabled", StringComparison.OrdinalIgnoreCase)) return "boolean";
+        }
+        if (node?.Type == "BodyPosition")
+        {
+            if (member.Equals("Position", StringComparison.OrdinalIgnoreCase) || member.Equals("MaxForce", StringComparison.OrdinalIgnoreCase)) return "Vector3";
+            if (member.Equals("P", StringComparison.OrdinalIgnoreCase) || member.Equals("D", StringComparison.OrdinalIgnoreCase)) return "number";
+            if (member.Equals("Enabled", StringComparison.OrdinalIgnoreCase)) return "boolean";
+        }
+        if (node?.Type == "BodyGyro")
+        {
+            if (member.Equals("Rotation", StringComparison.OrdinalIgnoreCase) || member.Equals("MaxTorque", StringComparison.OrdinalIgnoreCase)) return "Vector3";
+            if (member.Equals("P", StringComparison.OrdinalIgnoreCase) || member.Equals("D", StringComparison.OrdinalIgnoreCase)) return "number";
+            if (member.Equals("Enabled", StringComparison.OrdinalIgnoreCase)) return "boolean";
+        }
+        if (node?.Type == "BodyAngularVelocity")
+        {
+            if (member.Equals("AngularVelocity", StringComparison.OrdinalIgnoreCase) || member.Equals("MaxTorque", StringComparison.OrdinalIgnoreCase)) return "Vector3";
+            if (member.Equals("P", StringComparison.OrdinalIgnoreCase)) return "number";
+            if (member.Equals("Enabled", StringComparison.OrdinalIgnoreCase)) return "boolean";
+        }
+        if (node?.Type == "Torque")
+        {
+            var torqueType = member.ToLowerInvariant() switch
+            {
+                "attachment0" or "attachment1" => "Attachment",
+                "torque" => "Vector3",
+                "relativeto" => "string",
+                "enabled" => "boolean",
+                _ => null
+            };
+            if (torqueType is not null) return torqueType;
+        }
+        if (node?.Type == "SpringConstraint")
+        {
+            var springType = member.ToLowerInvariant() switch
+            {
+                "attachment0" or "attachment1" => "Attachment",
+                "currentlength" or "freelength" or "stiffness" or "damping" or "maxforce" or "minlength" or "maxlength" => "number",
+                "limitsenabled" or "enabled" => "boolean",
+                _ => null
+            };
+            if (springType is not null) return springType;
+        }
+        if (node?.Type == "BallSocketConstraint")
+        {
+            var ballSocketType = member.ToLowerInvariant() switch
+            {
+                "attachment0" or "attachment1" => "Attachment",
+                "limitsenabled" or "twistlimitsenabled" or "enabled" => "boolean",
+                "upperangle" or "twistlowerangle" or "twistupperangle" or "restitution" or "maxfrictiontorque" or "radius" => "number",
+                _ => null
+            };
+            if (ballSocketType is not null) return ballSocketType;
+        }
+        if (node?.Type == "HingeConstraint")
+        {
+            var hingeType = member.ToLowerInvariant() switch
+            {
+                "attachment0" or "attachment1" => "Attachment",
+                "limitsenabled" or "enabled" => "boolean",
+                "actuatortype" => "string",
+                "angularresponsiveness" or "angularspeed" or "angularvelocity" or "currentangle" or "lowerangle" or "motormaxacceleration" or "motormaxtorque" or "radius" or "restitution" or "servomaxtorque" or "targetangle" or "upperangle" => "number",
+                _ => null
+            };
+            if (hingeType is not null) return hingeType;
+        }
+        if (node?.Type == "PrismaticConstraint")
+        {
+            var prismaticType = member.ToLowerInvariant() switch
+            {
+                "attachment0" or "attachment1" => "Attachment",
+                "limitsenabled" or "enabled" => "boolean",
+                "actuatortype" => "string",
+                "currentposition" or "linearresponsiveness" or "lowerlimit" or "motormaxacceleration" or "motormaxforce" or "restitution" or "servomaxforce" or "size" or "speed" or "targetposition" or "upperlimit" or "velocity" => "number",
+                _ => null
+            };
+            if (prismaticType is not null) return prismaticType;
+        }
+        if (node?.Type == "RopeConstraint")
+        {
+            var ropeType = member.ToLowerInvariant() switch
+            {
+                "attachment0" or "attachment1" => "Attachment",
+                "length" or "currentlength" or "restitution" or "winchforce" or "winchresponsiveness" or "winchspeed" or "winchtarget" => "number",
+                "winchenabled" or "enabled" => "boolean",
+                _ => null
+            };
+            if (ropeType is not null) return ropeType;
+        }
         if (node?.Type == "LinearVelocity")
         {
             var velocityType = member.ToLowerInvariant() switch
@@ -3987,6 +4767,12 @@ public partial class MainWindow : Window
 
         return (receiverType, member.ToLowerInvariant()) switch
         {
+            ("Tool", "tooltip") => "string",
+            ("Tool", "requireshandle" or "canbedropped" or "manualactivationonly") => "boolean",
+            ("Tool", "gripposition" or "griprotation") => "Vector3",
+            ("VehicleSeat", "occupant") => "Humanoid?",
+            ("VehicleSeat", "disabled" or "headsupdisplay") => "boolean",
+            ("VehicleSeat", "maxspeed" or "torque" or "turnspeed" or "throttlefloat" or "steerfloat" or "arehingesdetected") => "number",
             ("ParticleEmitter", "color") => "ColorSequence",
             ("ParticleEmitter", "size" or "transparency") => "NumberSequence",
             ("ParticleEmitter", "speed" or "lifetime") => "NumberRange",
@@ -4001,16 +4787,55 @@ public partial class MainWindow : Window
             ("VectorForce", "attachment0") => "Attachment",
             ("VectorForce", "force") => "Vector3",
             ("VectorForce", "relativeto") => "string",
-            ("LinearVelocity", "attachment0") => "Attachment",
+            ("Torque", "attachment0" or "attachment1") => "Attachment",
+            ("Torque", "torque") => "Vector3",
+            ("Torque", "relativeto") => "string",
+            ("SpringConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("SpringConstraint", "currentlength" or "freelength" or "stiffness" or "damping" or "maxforce" or "minlength" or "maxlength") => "number",
+            ("SpringConstraint", "limitsenabled") => "boolean",
+            ("TorsionSpringConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("TorsionSpringConstraint", "limitsenabled") => "boolean",
+            ("TorsionSpringConstraint", "coils" or "currentangle" or "damping" or "maxangle" or "maxtorque" or "radius" or "restitution" or "stiffness") => "number",
+            ("BallSocketConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("BallSocketConstraint", "limitsenabled" or "twistlimitsenabled") => "boolean",
+            ("BallSocketConstraint", "upperangle" or "twistlowerangle" or "twistupperangle" or "restitution" or "maxfrictiontorque" or "radius") => "number",
+            ("UniversalConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("UniversalConstraint", "limitsenabled") => "boolean",
+            ("UniversalConstraint", "maxangle" or "radius" or "restitution") => "number",
+            ("RigidConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("HingeConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("HingeConstraint", "actuatortype") => "string",
+            ("HingeConstraint", "limitsenabled") => "boolean",
+            ("HingeConstraint", "angularresponsiveness" or "angularspeed" or "angularvelocity" or "currentangle" or "lowerangle" or "motormaxacceleration" or "motormaxtorque" or "radius" or "restitution" or "servomaxtorque" or "targetangle" or "upperangle") => "number",
+            ("PrismaticConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("PrismaticConstraint", "actuatortype") => "string",
+            ("PrismaticConstraint", "limitsenabled") => "boolean",
+            ("PrismaticConstraint", "currentposition" or "linearresponsiveness" or "lowerlimit" or "motormaxacceleration" or "motormaxforce" or "restitution" or "servomaxforce" or "size" or "speed" or "targetposition" or "upperlimit" or "velocity") => "number",
+            ("CylindricalConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("PlaneConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("CylindricalConstraint", "actuatortype" or "angularactuatortype") => "string",
+            ("CylindricalConstraint", "angularlimitsenabled" or "limitsenabled" or "rotationaxisvisible") => "boolean",
+            ("CylindricalConstraint", "worldrotationaxis") => "Vector3",
+            ("CylindricalConstraint", "angularrestitution" or "angularresponsiveness" or "angularspeed" or "angularvelocity" or "currentangle" or "currentposition" or "inclinationangle" or "lowerangle" or "lowerlimit" or "motormaxacceleration" or "motormaxangularacceleration" or "motormaxforce" or "motormaxtorque" or "restitution" or "servomaxforce" or "servomaxtorque" or "size" or "speed" or "targetangle" or "targetposition" or "upperangle" or "upperlimit" or "velocity") => "number",
+            ("RopeConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("RopeConstraint", "length" or "currentlength" or "restitution" or "winchforce" or "winchresponsiveness" or "winchspeed" or "winchtarget") => "number",
+            ("RopeConstraint", "winchenabled") => "boolean",
+            ("RodConstraint", "attachment0" or "attachment1") => "Attachment",
+            ("RodConstraint", "limitsenabled") => "boolean",
+            ("RodConstraint", "currentdistance" or "length" or "limitangle0" or "limitangle1" or "thickness") => "number",
+            ("LinearVelocity", "attachment0" or "attachment1") => "Attachment",
             ("LinearVelocity", "vectorvelocity" or "linedirection" or "primarytangentaxis" or "secondarytangentaxis") => "Vector3",
             ("LinearVelocity", "planevelocity") => "Vector2",
             ("LinearVelocity", "linevelocity" or "maxforce") => "number",
-            ("LinearVelocity", "forcelimitsenabled") => "boolean",
+            ("LinearVelocity", "forcelimitsenabled" or "reactionforceenabled") => "boolean",
             ("LinearVelocity", "relativeto" or "velocityconstraintmode") => "string",
+            ("LineForce", "attachment0" or "attachment1") => "Attachment",
+            ("LineForce", "magnitude" or "maxforce") => "number",
+            ("LineForce", "inversesquarelaw" or "reactionforceenabled" or "applyatcenterofmass") => "boolean",
             ("AlignPosition", "attachment0" or "attachment1") => "Attachment",
             ("AlignPosition", "position") => "Vector3",
             ("AlignPosition", "responsiveness" or "maxvelocity" or "maxforce") => "number",
-            ("AlignPosition", "rigidityenabled" or "reactionforceenabled") => "boolean",
+            ("AlignPosition", "rigidityenabled" or "reactionforceenabled" or "applyatcenterofmass") => "boolean",
             ("AlignPosition", "mode") => "string",
             ("AlignOrientation", "attachment0" or "attachment1") => "Attachment",
             ("AlignOrientation", "rotation") => "Vector3",
@@ -4120,7 +4945,7 @@ public partial class MainWindow : Window
         if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']CollectionService[""']\s*\)$")) return new SceneNode { Type = "CollectionService", Name = "CollectionService" };
         if (expression == "game.RunService") return new SceneNode { Type = "RunService", Name = "RunService" };
         if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']RunService[""']\s*\)$")) return new SceneNode { Type = "RunService", Name = "RunService" };
-        var serviceMatch = Regex.Match(expression, @"^game:GetService\s*\(\s*[""'](?<service>Workspace|Players|Teams|Lighting|SoundService|ReplicatedStorage|ServerScriptService|ServerStorage|StarterPack|StarterGui|Gui)[""']\s*\)$");
+        var serviceMatch = Regex.Match(expression, @"^game:GetService\s*\(\s*[""'](?<service>Workspace|Players|Teams|Lighting|SoundService|ReplicatedStorage|ServerScriptService|ServerStorage|StarterPack|StarterPlayer|StarterGui|Gui|TweenService)[""']\s*\)$");
         if (serviceMatch.Success) return serviceMatch.Groups["service"].Value switch
         {
             "Workspace" => project?.Workspace,
@@ -4132,6 +4957,7 @@ public partial class MainWindow : Window
             "ServerScriptService" => project?.ServerScriptService,
             "ServerStorage" => project?.ServerStorage,
             "StarterPack" => project?.StarterPack,
+            "StarterPlayer" => project?.StarterPlayer,
             "StarterGui" or "Gui" => project?.Gui,
             _ => null
         };
@@ -4159,8 +4985,8 @@ public partial class MainWindow : Window
         if (member.Equals("Character", StringComparison.OrdinalIgnoreCase) && instance.Type == "Player") return FindSceneNode(instance.Character);
         if (member.Equals("Part0", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part0);
         if (member.Equals("Part1", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part1);
-        if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity")) return FindSceneNode(instance.Attachment0);
-        if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "AlignPosition" or "AlignOrientation" or "AngularVelocity")) return FindSceneNode(instance.Attachment1);
+        if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")) return FindSceneNode(instance.Attachment0);
+        if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")) return FindSceneNode(instance.Attachment1);
         if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail")) return FindSceneNode(instance.Attachment1);
         return instance.Children.FirstOrDefault(child => child.Name == member || child.Id == member);
     }
@@ -4191,13 +5017,14 @@ public partial class MainWindow : Window
         else if (segments[0] == "ServerScriptService") node = project.ServerScriptService;
         else if (segments[0] == "ServerStorage") node = project.ServerStorage;
         else if (segments[0] == "StarterPack") node = project.StarterPack;
+        else if (segments[0] == "StarterPlayer") node = project.StarterPlayer;
         else if (segments[0] == "StarterGui") node = project.Gui;
         else if (segments[0] == "Gui") node = project.Gui;
         else if (segments[0] == "script") node = selectedScript is null ? null : FindSceneNode(selectedScript.Id);
         else if (segments[0] == "game")
         {
             if (segments.Length == 1) return null;
-            node = segments[1] switch { "Workspace" => project.Workspace, "Players" => project.Players, "Teams" => project.Teams, "Lighting" => project.Lighting, "SoundService" => project.SoundService, "ReplicatedStorage" => project.ReplicatedStorage, "ServerScriptService" => project.ServerScriptService, "ServerStorage" => project.ServerStorage, "StarterPack" => project.StarterPack, "Gui" => project.Gui, "StarterGui" => project.Gui, _ => null };
+            node = segments[1] switch { "Workspace" => project.Workspace, "Players" => project.Players, "Teams" => project.Teams, "Lighting" => project.Lighting, "SoundService" => project.SoundService, "ReplicatedStorage" => project.ReplicatedStorage, "ServerScriptService" => project.ServerScriptService, "ServerStorage" => project.ServerStorage, "StarterPack" => project.StarterPack, "StarterPlayer" => project.StarterPlayer, "Gui" => project.Gui, "StarterGui" => project.Gui, _ => null };
             index = 2;
         }
         else
@@ -4214,18 +5041,18 @@ public partial class MainWindow : Window
     [
         "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
         "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs", "pcall", "print", "require", "warn", "rawequal", "rawget", "rawlen", "rawset", "select", "setmetatable", "tonumber", "tostring", "type", "typeof", "unpack", "xpcall",
-        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterGui", "Instance", "Enum", "Vector3", "Vector2", "NumberRange", "NumberSequence", "NumberSequenceKeypoint", "ColorSequence", "ColorSequenceKeypoint", "Color3", "UDim", "UDim2", "RaycastParams",
-        "SetProperty", "GetProperty", "WaitForChild", "GetAssetPath", "ConnectTouched", "LookAtRotation"
+        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "Instance", "Enum", "Vector3", "Vector2", "NumberRange", "NumberSequence", "NumberSequenceKeypoint", "ColorSequence", "ColorSequenceKeypoint", "Color3", "UDim", "UDim2", "RaycastParams", "TweenInfo", "TweenService",
+        "SetProperty", "GetProperty", "WaitForChild", "GetAssetPath", "ConnectTouched", "LookAtRotation", "Sit"
     ];
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "BackgroundTransparency", "TextTransparency", "ImageTransparency", "MinSize", "MaxSize", "AspectType", "DominantAxis", "MinTextSize", "MaxTextSize", "TextScaled", "TextSize", "Texture", "Asset", "Volume", "PlaybackSpeed", "Octave", "SoundGroup", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Raycast", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "Team", "TeamColor", "AutoAssignable", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "TakeDamage", "Enabled", "Part0", "Part1", "PrimaryPart", "Attachment0", "Attachment1", "Width0", "Width1", "Density", "Haze", "Glare", "Offset", "Decay", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal", "CollectionService"
+        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "BackgroundTransparency", "TextTransparency", "ImageTransparency", "MinSize", "MaxSize", "AspectType", "DominantAxis", "MinTextSize", "MaxTextSize", "TextScaled", "TextSize", "Texture", "Asset", "Volume", "PlaybackSpeed", "Octave", "SoundGroup", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "Raycast", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "Team", "TeamColor", "AutoAssignable", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "TakeDamage", "Enabled", "Part0", "Part1", "PrimaryPart", "Attachment0", "Attachment1", "ActuatorType", "AngularActuatorType", "AngularLimitsEnabled", "AngularRestitution", "AngularResponsiveness", "AngularSpeed", "AngularVelocity", "CurrentAngle", "MaxAngle", "MaxTorque", "Coils", "Stiffness", "Damping", "LowerAngle", "MotorMaxAcceleration", "MotorMaxAngularAcceleration", "MotorMaxTorque", "ServoMaxTorque", "TargetAngle", "UpperAngle", "CurrentPosition", "CurrentDistance", "LimitAngle0", "LimitAngle1", "Thickness", "InclinationAngle", "RotationAxisVisible", "WorldRotationAxis", "LinearResponsiveness", "LowerLimit", "MotorMaxForce", "ServoMaxForce", "TargetPosition", "UpperLimit", "Speed", "TwistLowerAngle", "TwistUpperAngle", "TwistLimitsEnabled", "LimitsEnabled", "MaxFrictionTorque", "Radius", "Restitution", "Width0", "Width1", "Density", "Haze", "Glare", "Offset", "Decay", "Brightness", "Range", "Angle", "ActionText", "ObjectText", "HoldDuration", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "PlaybackState", "Completed", "EasingStyle", "EasingDirection", "Time", "RepeatCount", "Reverses", "DelayTime", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "Deactivated", "Activate", "Deactivate", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal", "CollectionService"
     ];
 
-    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Fire", "Invoke", "Disconnect", "TakeDamage", "AddItem", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Atmosphere", "Team", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Teams", "Team", "Lighting", "SoundService", "Sky", "Atmosphere", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterGui", "PlayerGui", "BasePlayerGui", "Camera", "BasePart", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "VectorForce", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
+    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Fire", "Invoke", "Disconnect", "TakeDamage", "Sit", "AddItem", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "Script", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Atmosphere", "Team", "Attachment", "Beam", "Trail", "BodyForce", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Accessory", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Teams", "Team", "Lighting", "SoundService", "Sky", "Atmosphere", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "PlayerGui", "BasePlayerGui", "Backpack", "PlayerScripts", "BasePlayerScripts", "Terrain", "Camera", "BasePart", "BodyMover", "Accoutrement", "Accessory", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "BodyForce", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Accessory", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "RemoteFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -4291,7 +5118,7 @@ public partial class MainWindow : Window
                   <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word><Word>task</Word><Word>wait</Word>
                   <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>Teams</Word><Word>Lighting</Word><Word>SoundService</Word><Word>ReplicatedStorage</Word><Word>ServerScriptService</Word><Word>ServerStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>LookAtRotation</Word><Word>Color3</Word><Word>GetService</Word>
                 </Keywords>
-                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>NumberRange</Word><Word>NumberSequence</Word><Word>NumberSequenceKeypoint</Word><Word>ColorSequence</Word><Word>ColorSequenceKeypoint</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Players</Word><Word>Teams</Word><Word>Team</Word><Word>Lighting</Word><Word>Sky</Word><Word>Atmosphere</Word><Word>Camera</Word><Word>StarterGui</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>RemoteEvent</Word><Word>RemoteFunction</Word><Word>SoundGroup</Word><Word>PitchShiftSoundEffect</Word><Word>ModuleScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector2Value</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ParticleEmitter</Word><Word>Trail</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>UIAspectRatioConstraint</Word><Word>UISizeConstraint</Word><Word>UITextSizeConstraint</Word><Word>UIFlexItem</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
+                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>NumberRange</Word><Word>NumberSequence</Word><Word>NumberSequenceKeypoint</Word><Word>ColorSequence</Word><Word>ColorSequenceKeypoint</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Players</Word><Word>Teams</Word><Word>Team</Word><Word>Lighting</Word><Word>Sky</Word><Word>Atmosphere</Word><Word>Camera</Word><Word>StarterGui</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>RemoteEvent</Word><Word>RemoteFunction</Word><Word>SoundGroup</Word><Word>PitchShiftSoundEffect</Word><Word>ModuleScript</Word><Word>LocalScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector2Value</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ParticleEmitter</Word><Word>Trail</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>UIAspectRatioConstraint</Word><Word>UISizeConstraint</Word><Word>UITextSizeConstraint</Word><Word>UIFlexItem</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
                 <Rule color="LuauKeyword">(?m)^\s*(?:export\s+)?type\b</Rule>
                 <Rule color="Method">(?&lt;=[:.])[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
                 <Rule color="FunctionName">(?&lt;=function\s+)[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*</Rule>
@@ -4377,8 +5204,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        selected = node;
-        renderer?.SetSelection(selected.Id);
+        SelectOnly(node);
         SelectTreeNode(node.Id);
         RenderProperties();
         RefreshGuiPreview();
@@ -4704,7 +5530,7 @@ public partial class MainWindow : Window
             SetStatus("ModuleScripts run when another script calls require(module).");
             return;
         }
-        var script = selected is { Type: "Script" } ? project.Scripts.FirstOrDefault(item => item.Id == selected.Id) : selectedScript ?? project.Scripts.FirstOrDefault();
+        var script = selected is { Type: "Script" or "LocalScript" } ? project.Scripts.FirstOrDefault(item => item.Id == selected.Id) : selectedScript ?? project.Scripts.FirstOrDefault();
         if (script is null) { SetStatus("Add a Script object before running Lua X."); return; }
         if (GameProjectStore.Flatten(project).Any(node => node.Id == script.Id && node.Type == "ModuleScript"))
         {
@@ -4916,11 +5742,13 @@ public partial class MainWindow : Window
     private void SceneViewport_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (propertyPickerTargetId is not null || selectedTool == "Select" || isRightDragging || selected is null || !(SceneNodeTypes.IsBasePart(selected) || selected.Type == "Model") || renderer is null) return;
+        var transformRoots = GetSelectedRoots(node => SceneNodeTypes.IsBasePart(node) || node.Type == "Model").ToArray();
+        if (transformRoots.Length == 0) transformRoots = [selected];
         var hit = SceneViewport.FindHits(e.GetPosition(SceneViewport)).FirstOrDefault()?.ModelHit;
         if (hit is not MeshGeometryModel3D hitModel) return;
-        IEnumerable<string> selectedVisuals = selected.Type == "Model"
-            ? GameProjectStore.Flatten(selected.Children).Where(SceneNodeTypes.IsBasePart).Select(node => node.Id)
-            : [selected.Id];
+        var selectedVisuals = transformRoots.SelectMany(node => node.Type == "Model"
+            ? GameProjectStore.Flatten(node.Children).Where(SceneNodeTypes.IsBasePart).Select(part => part.Id)
+            : [node.Id]).ToHashSet(StringComparer.Ordinal);
         if (!selectedVisuals.Any(id => renderer.Visuals.TryGetValue(id, out var visual) && ReferenceEquals(hitModel, visual))) return;
         isTransformDragging = true;
         transformChanged = false;
@@ -4934,10 +5762,31 @@ public partial class MainWindow : Window
                 .Where(node => node.Type == "Model" || SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Attachment")
                 .Select(node => (node, (float[])node.Position.Clone(), (float[])node.Size.Clone())).ToList()
             : [];
-        transformModelScaleBasis = Math.Max(.05f, transformStartModelNodes
-            .Where(entry => SceneNodeTypes.IsBasePart(entry.Node) || entry.Node.Type == "ImageLabel")
-            .SelectMany(entry => Enumerable.Range(0, 3).Select(axis => Math.Abs(entry.Position[axis] - transformStartModelPivot[axis]) + Math.Abs(entry.Size[axis]) * .5f))
-            .DefaultIfEmpty(1).Max());
+        transformStartSelectionNodes = transformRoots.Length > 1 && selectedTool is "Move" or "Rotate" or "Scale"
+            ? transformRoots.Select(node => (node, (float[])(node.Type == "Model" ? SceneModelService.GetPivot(node) : (float[])node.Position.Clone()), (float[])node.Rotation.Clone())).ToList()
+            : [];
+        if (transformStartSelectionNodes.Count > 1)
+            transformStartSelectionPivot = Enumerable.Range(0, 3)
+                .Select(axis => transformStartSelectionNodes.Average(entry => entry.Position[axis])).ToArray();
+        transformStartSelectionScaleGroups = transformStartSelectionNodes.Count > 1 && selectedTool == "Scale"
+            ? transformRoots.Select(root => (root,
+                (float[])(root.Type == "Model" ? SceneModelService.GetPivot(root) : (float[])root.Position.Clone()),
+                GameProjectStore.Flatten(root.Children)
+                    .Where(node => node.Type == "Model" || SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Attachment")
+                    .Select(node => (node, (float[])node.Position.Clone(), (float[])node.Size.Clone())).ToList())).ToList()
+            : [];
+        if (transformStartSelectionScaleGroups.Count > 0)
+            transformModelScaleBasis = Math.Max(.05f, transformStartSelectionScaleGroups
+                .SelectMany(group => group.Nodes.Where(entry => SceneNodeTypes.IsBasePart(entry.Node) || entry.Node.Type == "ImageLabel")
+                    .SelectMany(entry => Enumerable.Range(0, 3).Select(axis => Math.Abs(entry.Position[axis] - transformStartSelectionPivot[axis]) + Math.Abs(entry.Size[axis]) * .5f)))
+                .Concat(transformStartSelectionNodes.Where(entry => SceneNodeTypes.IsBasePart(entry.Node))
+                    .SelectMany(entry => Enumerable.Range(0, 3).Select(axis => Math.Abs(entry.Position[axis] - transformStartSelectionPivot[axis]) + Math.Abs(entry.Node.Size[axis]) * .5f)))
+                .DefaultIfEmpty(1).Max());
+        if (transformStartSelectionScaleGroups.Count == 0)
+            transformModelScaleBasis = Math.Max(.05f, transformStartModelNodes
+                .Where(entry => SceneNodeTypes.IsBasePart(entry.Node) || entry.Node.Type == "ImageLabel")
+                .SelectMany(entry => Enumerable.Range(0, 3).Select(axis => Math.Abs(entry.Position[axis] - transformStartModelPivot[axis]) + Math.Abs(entry.Size[axis]) * .5f))
+                .DefaultIfEmpty(1).Max());
         SceneViewport.CaptureMouse();
         e.Handled = true;
     }
@@ -4964,6 +5813,92 @@ public partial class MainWindow : Window
             var pointer = e.GetPosition(SceneViewport);
             var deltaX = (float)(pointer.X - transformStartPointer.X);
             var deltaY = (float)(pointer.Y - transformStartPointer.Y);
+            if (transformStartSelectionNodes.Count > 1)
+            {
+                var changed = false;
+                if (selectedTool == "Move")
+                {
+                    var move = new[] { SnapTransformDelta(deltaX * .02f, moveSnapIncrement), SnapTransformDelta(-deltaY * .02f, moveSnapIncrement), 0f };
+                    foreach (var entry in transformStartSelectionNodes)
+                    {
+                        var position = Enumerable.Range(0, 3).Select(axis => entry.Position[axis] + move[axis]).ToArray();
+                        if (entry.Node.Type == "Model") changed |= SceneModelService.MoveTo(entry.Node, position);
+                        else if (!entry.Node.Position.SequenceEqual(position)) { entry.Node.Position = position; changed = true; }
+                    }
+                }
+                else if (selectedTool == "Rotate")
+                {
+                    var delta = new[] { SnapTransformDelta(-deltaY * .5f, rotateSnapIncrement), SnapTransformDelta(deltaX * .5f, rotateSnapIncrement), 0f };
+                    var rotationDelta = RotationMath.FromDegrees(delta);
+                    var pivot = new Vector3(transformStartSelectionPivot[0], transformStartSelectionPivot[1], transformStartSelectionPivot[2]);
+                    foreach (var entry in transformStartSelectionNodes)
+                    {
+                        var start = new Vector3(entry.Position[0], entry.Position[1], entry.Position[2]);
+                        var rotated = pivot + Vector3.TransformNormal(start - pivot, rotationDelta);
+                        var position = new[] { rotated.X, rotated.Y, rotated.Z };
+                        var rotation = RotationMath.ToDegrees(RotationMath.FromDegrees(entry.Rotation) * rotationDelta);
+                        if (entry.Node.Type == "Model")
+                        {
+                            changed |= SceneModelService.RotateTo(entry.Node, entry.Rotation.Select((value, axis) => value + delta[axis]).ToArray());
+                            changed |= SceneModelService.MoveTo(entry.Node, position);
+                        }
+                        else
+                        {
+                            if (!entry.Node.Position.SequenceEqual(position)) { entry.Node.Position = position; changed = true; }
+                            if (!entry.Node.Rotation.SequenceEqual(rotation)) { entry.Node.Rotation = rotation; changed = true; }
+                        }
+                    }
+                }
+                else if (selectedTool == "Scale")
+                {
+                    var scaleDelta = SnapTransformDelta((deltaX - deltaY) * .02f, moveSnapIncrement);
+                    var factor = Math.Clamp(1 + scaleDelta / transformModelScaleBasis, .01f, 100);
+                    if (Math.Abs(factor - 1) > .000001f)
+                    {
+                        var pivot = new Vector3(transformStartSelectionPivot[0], transformStartSelectionPivot[1], transformStartSelectionPivot[2]);
+                        foreach (var group in transformStartSelectionScaleGroups)
+                        {
+                            var rootStart = new Vector3(group.Pivot[0], group.Pivot[1], group.Pivot[2]);
+                            var targetPivot = pivot + (rootStart - pivot) * factor;
+                            foreach (var entry in group.Nodes)
+                            {
+                                if (entry.Node.Type is "Model" || SceneNodeTypes.IsBasePart(entry.Node) || entry.Node.Type == "ImageLabel")
+                                {
+                                    var start = new Vector3(entry.Position[0], entry.Position[1], entry.Position[2]);
+                                    var next = pivot + (start - pivot) * factor;
+                                    var position = new[] { next.X, next.Y, next.Z };
+                                    if (!entry.Node.Position.SequenceEqual(position)) { entry.Node.Position = position; changed = true; }
+                                    if (entry.Node.Type == "Model") entry.Node.HasModelPivot = true;
+                                }
+                                if (SceneNodeTypes.IsBasePart(entry.Node) || entry.Node.Type == "ImageLabel")
+                                {
+                                    var size = entry.Size.Select(value => Math.Clamp(value * factor, .05f, 100000)).ToArray();
+                                    if (!entry.Node.Size.SequenceEqual(size)) { entry.Node.Size = size; changed = true; }
+                                }
+                                else if (entry.Node.Type == "Attachment")
+                                {
+                                    var position = entry.Position.Select(value => value * factor).ToArray();
+                                    if (!entry.Node.Position.SequenceEqual(position)) { entry.Node.Position = position; changed = true; }
+                                }
+                            }
+                            if (group.Root.Type == "Model")
+                                changed |= SceneModelService.MoveTo(group.Root, [targetPivot.X, targetPivot.Y, targetPivot.Z]);
+                            else
+                            {
+                                var position = new[] { targetPivot.X, targetPivot.Y, targetPivot.Z };
+                                if (!group.Root.Position.SequenceEqual(position)) { group.Root.Position = position; changed = true; }
+                                var size = group.Root.Size.Select(value => Math.Clamp(value * factor, .05f, 100000)).ToArray();
+                                if (!group.Root.Size.SequenceEqual(size)) { group.Root.Size = size; changed = true; }
+                            }
+                        }
+                    }
+                }
+                if (!changed) return;
+                renderer?.Refresh(project);
+                UpdateBillboardGuiPreviewPositions();
+                transformChanged = true;
+                return;
+            }
             if (selected.Type == "Model")
             {
                 var modelTransformChanged = false;
@@ -5074,32 +6009,43 @@ public partial class MainWindow : Window
         var id = renderer.Visuals.FirstOrDefault(entry => ReferenceEquals(entry.Value, model)).Key;
         if (string.IsNullOrEmpty(id)) return;
         var node = FindSceneNode(id);
+        if (node is null) return;
         if (propertyPickerTargetId is not null)
         {
             CompleteObjectReferencePick(node);
             return;
         }
-        selected = node;
-        renderer.SetSelection(selected?.Id);
-        SelectTreeNode(id);
-        RenderProperties();
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) ToggleSceneSelection(node);
+        else
+        {
+            SelectOnly(node);
+            SelectTreeNode(id);
+            RenderProperties();
+        }
     }
 
     private void DeleteSelected()
     {
-        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui") return;
-        if (!StudioDialog.Confirm(this, "Delete object", $"Delete {selected.Name}?")) return;
-        var removedNodes = GameProjectStore.RemoveNodeAndGetSubtree(project.Workspace.Children, selected.Id)
-            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.Teams.Children, selected.Id))
-            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.Lighting.Children, selected.Id))
-            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.SoundService.Children, selected.Id))
-            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.ReplicatedStorage.Children, selected.Id))
-            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.ServerScriptService.Children, selected.Id))
-            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.ServerStorage.Children, selected.Id))
-            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.StarterPack.Children, selected.Id))
-            .Concat(GameProjectStore.RemoveNodeAndGetSubtree(project.Gui.Children, selected.Id))
-            .ToArray();
-        if (removedNodes.Length == 0) return;
+        if (project is null || selected is null) return;
+        var roots = GetSelectedRoots(IsDeletableSceneObject);
+        if (roots.Count == 0) return;
+        var description = roots.Count == 1 ? roots[0].Name : $"{roots.Count} objects";
+        if (!StudioDialog.Confirm(this, "Delete object", $"Delete {description}?")) return;
+        var removedNodes = new List<SceneNode>();
+        foreach (var target in roots)
+        {
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.Workspace.Children, target.Id));
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.Teams.Children, target.Id));
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.Lighting.Children, target.Id));
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.SoundService.Children, target.Id));
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.ReplicatedStorage.Children, target.Id));
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.ServerScriptService.Children, target.Id));
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.ServerStorage.Children, target.Id));
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.StarterPack.Children, target.Id));
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.StarterPlayer.Children, target.Id));
+            removedNodes.AddRange(GameProjectStore.RemoveNodeAndGetSubtree(project.Gui.Children, target.Id));
+        }
+        if (removedNodes.Count == 0) return;
         var removedIds = removedNodes.Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var player in GameProjectStore.Flatten(project.Players.Children).Where(node => node.Type == "Player" && removedIds.Contains(node.Team))) player.Team = string.Empty;
         foreach (var weld in GameProjectStore.Flatten(project).Where(node => node.Type is "WeldConstraint" or "NoCollisionConstraint"))
@@ -5107,7 +6053,7 @@ public partial class MainWindow : Window
             if (removedIds.Contains(weld.Part0)) weld.Part0 = string.Empty;
             if (removedIds.Contains(weld.Part1)) weld.Part1 = string.Empty;
         }
-        foreach (var beam in GameProjectStore.Flatten(project).Where(node => node.Type is "Beam" or "Trail" or "VectorForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity"))
+        foreach (var beam in GameProjectStore.Flatten(project).Where(node => node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint"))
         {
             if (removedIds.Contains(beam.Attachment0)) beam.Attachment0 = string.Empty;
             if (removedIds.Contains(beam.Attachment1)) beam.Attachment1 = string.Empty;
@@ -5141,7 +6087,27 @@ public partial class MainWindow : Window
         }
         if (activeDocumentWasRemoved) DockManager.ActiveContent = ViewportDocument;
         selected = null;
+        selectedObjectIds.Clear();
         RecordEdit(); RefreshEditor();
+    }
+
+    private static bool IsDeletableSceneObject(SceneNode node) => node.Type is not ("Terrain" or "Camera" or "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Gui" or "StarterGui");
+
+    private List<SceneNode> GetSelectedRoots(Func<SceneNode, bool>? predicate = null)
+    {
+        var candidates = selectedObjectIds.Select(FindSceneNode).Where(node => node is not null).Cast<SceneNode>()
+            .Where(node => predicate?.Invoke(node) ?? true).ToArray();
+        var candidateIds = candidates.Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        return candidates.Where(node =>
+        {
+            var parent = FindParentNode(node);
+            while (parent is not null)
+            {
+                if (candidateIds.Contains(parent.Id)) return false;
+                parent = FindParentNode(parent);
+            }
+            return true;
+        }).ToList();
     }
 
     private void DuplicateSelected_Click(object sender, RoutedEventArgs e) => DuplicateSelected();
@@ -5149,27 +6115,45 @@ public partial class MainWindow : Window
     private void GroupSelected_Click(object sender, RoutedEventArgs e) => GroupSelected();
     private void UngroupSelected_Click(object sender, RoutedEventArgs e) => UngroupSelected();
 
-    private bool CanGroupSelected() => project is not null && selected is not null
-        && !IsGuiNode(selected) && selected.Type is not ("Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "SelectionBox" or "SelectionSphere" or "WeldConstraint" or "NoCollisionConstraint" or "Humanoid")
-        && !SceneNodeTypes.IsLight(selected)
-        && FindParentNode(selected) is not null;
+    private bool CanGroupSelected()
+    {
+        if (project is null || selected is null) return false;
+        var roots = GetSelectedRoots();
+        if (roots.Count == 0 || roots.Any(node => IsGuiNode(node)
+            || node.Type is "Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "SelectionBox" or "SelectionSphere" or "WeldConstraint" or "NoCollisionConstraint" or "Humanoid"
+            || SceneNodeTypes.IsLight(node) || FindParentNode(node) is null)) return false;
+        var parent = FindParentNode(roots[0]);
+        return roots.All(node => ReferenceEquals(FindParentNode(node), parent));
+    }
 
     private void GroupSelected()
     {
         if (!CanGroupSelected() || project is null || selected is null) return;
-        var source = selected;
-        var parent = FindParentNode(source);
+        var sources = GetSelectedRoots();
+        var parent = FindParentNode(sources[0]);
         if (parent is null) return;
-        var index = parent.Children.IndexOf(source);
+        var index = sources.Min(parent.Children.IndexOf);
         if (index < 0) return;
-        var model = new SceneNode { Type = "Model", Name = source.Name + " Model" };
+        var originalSiblings = parent.Children.ToArray();
+        var modelName = sources.Count == 1 ? sources[0].Name + " Model" : "Model";
+        var model = new SceneNode { Type = "Model", Name = modelName };
         parent.Children.Insert(index, model);
-        if (!GameProjectStore.MoveNodeToParent(project, source, model))
+        if (sources.Any(source => !GameProjectStore.CanParentNode(project, source, model)))
         {
             parent.Children.Remove(model);
             return;
         }
+        foreach (var source in sources.OrderBy(parent.Children.IndexOf).ToArray())
+            if (!GameProjectStore.MoveNodeToParent(project, source, model))
+            {
+                parent.Children.Clear();
+                parent.Children.AddRange(originalSiblings);
+                model.Children.Clear();
+                return;
+            }
         selected = model;
+        selectedObjectIds.Clear();
+        selectedObjectIds.Add(model.Id);
         RecordEdit();
         RefreshEditor();
         SelectTreeNode(model.Id);
@@ -5197,7 +6181,7 @@ public partial class MainWindow : Window
 
     private void RenameSelected()
     {
-        if (selected is null || selected.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui") return;
+        if (selected is null || selected.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui") return;
         var name = StudioDialog.Prompt(this, "Rename object", "Name", selected.Name, "Rename");
         if (string.IsNullOrWhiteSpace(name)) return;
         var id = selected.Id;
@@ -5207,7 +6191,53 @@ public partial class MainWindow : Window
 
     private void DuplicateSelected()
     {
-        if (project is null || selected is null || selected.Type is "Camera" or "Workspace" or "Players" or "Teams" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "Gui" or "StarterGui") return;
+        if (project is null || selected is null) return;
+        var targets = GetSelectedRoots(IsDuplicableSceneObject);
+        if (targets.Count > 1)
+        {
+            var clones = new List<SceneNode>();
+            foreach (var originalTarget in targets)
+            {
+                var targetParent = FindParentNode(originalTarget);
+                if (targetParent is null) continue;
+                var duplicateNode = GameProjectStore.CloneSubtree(originalTarget, out var renewedIds, respectArchivable: false);
+                if (duplicateNode is null) continue;
+                duplicateNode.Name += " Copy";
+                if (!IsGuiNode(originalTarget))
+                {
+                    OffsetDuplicateTree(duplicateNode);
+                }
+                else
+                {
+                    duplicateNode.Position[0] += 20;
+                    duplicateNode.Position[1] += 20;
+                }
+                if (!GameProjectStore.CanParentNode(project, duplicateNode, targetParent)) continue;
+                foreach (var oldNode in new[] { originalTarget }.Concat(GameProjectStore.Flatten(originalTarget.Children)).Where(node => node.Type is "Script" or "LocalScript" or "ModuleScript"))
+                {
+                    if (!renewedIds.TryGetValue(oldNode.Id, out var newId)) continue;
+                    var oldScript = project.Scripts.FirstOrDefault(script => script.Id == oldNode.Id);
+                    if (oldScript is null) continue;
+                    var newNode = new[] { duplicateNode }.Concat(GameProjectStore.Flatten(duplicateNode.Children)).First(node => node.Id == newId);
+                    project.Scripts.Add(new GameScript { Id = newId, Name = newNode.Name, Source = oldScript.Source });
+                }
+                var insertIndex = targetParent.Children.IndexOf(originalTarget);
+                targetParent.Children.Insert(insertIndex + 1, duplicateNode);
+                clones.Add(duplicateNode);
+            }
+            if (clones.Count == 0) return;
+            selected = clones[^1];
+            selectedObjectIds.Clear();
+            selectedObjectIds.AddRange(clones.Select(node => node.Id));
+            RecordEdit();
+            RefreshEditor();
+            SelectTreeNode(selected.Id);
+            SetStatus($"Duplicated {clones.Count} objects");
+            return;
+        }
+        if (targets.Count == 0) return;
+        if (!targets.Any(node => node.Id == selected.Id)) selected = targets[0];
+        if (!IsDuplicableSceneObject(selected)) return;
         var parent = FindParentNode(selected);
         if (parent is null) return;
         var original = selected;
@@ -5216,8 +6246,7 @@ public partial class MainWindow : Window
         clone.Name += " Copy";
         if (!IsGuiNode(original))
         {
-            foreach (var part in new[] { clone }.Concat(GameProjectStore.Flatten(clone.Children)).Where(SceneNodeTypes.IsBasePart))
-                part.Position[0] += 1;
+            OffsetDuplicateTree(clone);
         }
         else if (IsGuiNode(original))
         {
@@ -5225,7 +6254,7 @@ public partial class MainWindow : Window
             clone.Position[1] += 20;
         }
         if (!GameProjectStore.CanParentNode(project, clone, parent)) return;
-        foreach (var oldNode in new[] { original }.Concat(GameProjectStore.Flatten(original.Children)).Where(node => node.Type is "Script" or "ModuleScript"))
+        foreach (var oldNode in new[] { original }.Concat(GameProjectStore.Flatten(original.Children)).Where(node => node.Type is "Script" or "LocalScript" or "ModuleScript"))
         {
             if (!newIds.TryGetValue(oldNode.Id, out var newId)) continue;
             var oldScript = project.Scripts.FirstOrDefault(script => script.Id == oldNode.Id);
@@ -5240,6 +6269,14 @@ public partial class MainWindow : Window
         RefreshEditor();
         SelectTreeNode(clone.Id);
         SetStatus($"Duplicated {original.Name}");
+    }
+
+    private static bool IsDuplicableSceneObject(SceneNode node) => node.Type is not ("Terrain" or "Camera" or "Workspace" or "Players" or "Teams" or "Lighting" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Gui" or "StarterGui");
+
+    private static void OffsetDuplicateTree(SceneNode root)
+    {
+        foreach (var node in new[] { root }.Concat(GameProjectStore.Flatten(root.Children)))
+            if (SceneNodeTypes.IsBasePart(node) || node.Type == "Model") node.Position[0] += 1;
     }
 
     private void RecordEdit()
@@ -5430,6 +6467,16 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Instance.new"] = "Instance.new(className: string, parent: Instance?): Instance? — Creates a supported object during play.",
         ["Raycast"] = "Raycast(origin: Vector3, direction: Vector3, params: RaycastParams?): RaycastResult? — Casts through Workspace parts; direction sets the maximum range.",
         ["RaycastParams"] = "RaycastParams.new(): RaycastParams — FilterDescendantsInstances and FilterType (Enum.RaycastFilterType.Exclude or Include) control hits.",
+        ["TweenInfo.new"] = "TweenInfo.new(time, easingStyle, easingDirection, repeatCount, reverses, delayTime): TweenInfo — Creates tween timing and easing options.",
+        ["TweenService:Create"] = "TweenService:Create(instance, tweenInfo, goals): Tween — Creates a property animation. Numeric, Vector2, Vector3, Color3, and UDim2 goals are supported.",
+        ["Tween:Play"] = "Tween:Play(): () — Starts or resumes the tween.",
+        ["Tween:Pause"] = "Tween:Pause(): () — Pauses the tween at its current property values.",
+        ["Tween:Cancel"] = "Tween:Cancel(): () — Cancels the tween without reverting property values.",
+        ["Tween.Completed"] = "RBXScriptSignal — Fires with Enum.PlaybackState.Completed or Cancelled when the tween ends.",
+        ["FillBlock"] = "Terrain:FillBlock(position: Vector3, size: Vector3, material: Enum.Material) — Adds one collidable terrain block.",
+        ["FillBall"] = "Terrain:FillBall(position: Vector3, radius: number, material: Enum.Material) — Adds one collidable spherical terrain piece.",
+        ["ClearBlock"] = "Terrain:ClearBlock(position: Vector3, size: Vector3) — Removes terrain pieces that intersect the box.",
+        ["Clear"] = "Terrain:Clear() — Removes all terrain pieces.",
         ["TakeDamage"] = "TakeDamage(amount: number): () — Changes Humanoid Health unless protected by a ForceField. A negative amount heals.",
         ["ForceField"] = "ForceField — Protects a Humanoid from TakeDamage when placed in its Model; Visible controls the shield effect.",
         ["Explosion"] = "Explosion — Detonates once in Workspace, applying outward velocity and hitting parts within BlastRadius.",
@@ -5438,6 +6485,24 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["ParticleEmitter"] = "ParticleEmitter — Emits adjustable particles from a BasePart or Attachment.",
         ["Trail"] = "Trail — Draws a fading ribbon between two moving Attachments.",
         ["VectorForce"] = "VectorForce — Applies a world or attachment-relative force to a part during play.",
+        ["LineForce"] = "LineForce — Applies force along the line between two Attachments during play.",
+        ["Torque"] = "Torque — Applies constant angular acceleration to Attachment0's part during play.",
+        ["SpringConstraint"] = "SpringConstraint — Pulls two Attachments toward its FreeLength during play.",
+        ["TorsionSpringConstraint"] = "TorsionSpringConstraint — Applies damped angular spring torque between Attachments.",
+        ["RopeConstraint"] = "RopeConstraint — Keeps two Attachments from separating beyond Length, with an optional winch.",
+        ["RodConstraint"] = "RodConstraint — Keeps two Attachments at a fixed distance, with optional tilt limits.",
+        ["BallSocketConstraint"] = "BallSocketConstraint — Keeps the positions of two Attachments together during play.",
+        ["HingeConstraint"] = "HingeConstraint — Joins two Attachments around one axis and supports motor or servo actuation.",
+        ["PrismaticConstraint"] = "PrismaticConstraint — Lets two Attachments slide along one axis with optional motor or servo actuation.",
+        ["CylindricalConstraint"] = "CylindricalConstraint — Lets two Attachments slide along an axis and rotate around an inclined axis.",
+        ["PlaneConstraint"] = "PlaneConstraint — Keeps Attachment1 on a plane defined by Attachment0.",
+        ["UniversalConstraint"] = "UniversalConstraint — Keeps two Attachment axes perpendicular with optional tilt limits.",
+        ["BodyForce"] = "BodyForce — Applies a constant world-axis force to its parent part.",
+        ["BodyVelocity"] = "BodyVelocity — Uses P and per-axis MaxForce to drive its parent BasePart toward a target Velocity during play.",
+        ["BodyPosition"] = "BodyPosition — Uses P, D, and per-axis MaxForce to move its parent BasePart toward a target Position during play.",
+        ["BodyGyro"] = "BodyGyro — Uses P, D, and per-axis MaxTorque to turn its parent BasePart toward a target Rotation during play.",
+        ["BodyAngularVelocity"] = "BodyAngularVelocity — Uses P and per-axis MaxTorque to drive its parent BasePart toward a target angular velocity during play.",
+        ["RigidConstraint"] = "RigidConstraint — Keeps two Attachment frames in the same relative position and orientation.",
         ["LinearVelocity"] = "LinearVelocity — Maintains a target velocity along a vector, line, or plane during play.",
         ["AlignPosition"] = "AlignPosition — Moves Attachment0 toward a world position or Attachment1 during play.",
         ["AlignOrientation"] = "AlignOrientation — Rotates Attachment0 toward a target Rotation or Attachment1 during play.",
@@ -5505,6 +6570,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Children"] = "{Instance} — The object's direct children, available by index, name, or ID.",
         ["Value"] = "any — Stored value of a ValueBase object. ObjectValue holds an Instance or nil.",
         ["LookAtRotation"] = "LookAtRotation(fromPosition: Vector3, toPosition: Vector3): Vector3 — Rotation in degrees that points a 3D part or Custom camera at the target.",
+        ["Sit"] = "Sit(humanoid: Humanoid): () — Seats the humanoid in this Seat or VehicleSeat.",
         ["Position"] = "Vector3 for 3D objects; UDim2 for GUI objects.",
         ["Rotation"] = "Vector3 — Rotation in degrees; GUI objects use the Z component.",
         ["Size"] = "Vector3 for parts; UDim2 for GUI objects; number for Fire or Smoke.",
@@ -5522,6 +6588,10 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["MaxActivationDistance"] = "number — Maximum distance from the part for a prompt or click detector to work.",
         ["ActionText"] = "string — Action displayed on a ProximityPrompt.",
         ["ObjectText"] = "string — Object label displayed on a ProximityPrompt.",
+        ["HoldDuration"] = "number — Seconds the player must hold E before a ProximityPrompt fires.",
+        ["Activate"] = "Activate(): () — Fires Activated for an equipped Tool.",
+        ["Deactivate"] = "Deactivate(): () — Ends the current Tool activation and fires Deactivated.",
+        ["Deactivated"] = "RBXScriptSignal — Fires when an equipped Tool is deactivated or its activation ends.",
         ["Asset"] = "string — Project asset path used by a MeshPart or image GUI object.",
         ["CameraMode"] = "string — Custom or Subject.",
         ["Mode"] = "string — Camera mode alias: Custom or Subject.",

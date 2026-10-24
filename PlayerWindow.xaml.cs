@@ -22,7 +22,8 @@ public partial class PlayerWindow : Window
     private readonly SceneNode playerGui;
     private readonly List<SceneNode> toolHotbar = [];
     private SceneNode? activeTool;
-    private readonly Dictionary<string, (float[] Offset, float[] Position, float[] Rotation, bool Anchored, bool CanCollide)> equippedToolParts = new(StringComparer.Ordinal);
+    private sealed record EquippedPartState(float[] LocalOffset, float[] RotationOffset, float[] Position, float[] Rotation, bool Anchored, bool CanCollide);
+    private readonly Dictionary<string, EquippedPartState> equippedToolParts = new(StringComparer.Ordinal);
     private readonly SeatInteractionService? seats;
     private readonly SoundPlaybackService soundPlayback;
     private LuaXRuntime? runtime;
@@ -31,7 +32,10 @@ public partial class PlayerWindow : Window
     private Point lastPointer;
     private long lastUpdateTimestamp;
     private bool jumpRequested;
-    private bool promptRequested;
+    private bool promptKeyDown;
+    private string? holdingPromptId;
+    private float promptHoldElapsed;
+    private bool promptTriggered;
     private float spawnProtectionRemaining;
 
     public PlayerWindow(GameProject project, string? startupScriptId = null, Action<string>? scriptOutput = null)
@@ -40,22 +44,45 @@ public partial class PlayerWindow : Window
         GameGuiCanvas.SizeChanged += (_, _) => RefreshGameGui();
         this.project = project;
         GameProjectStore.EnsureProject(project);
+        void CopyLocalScripts(SceneNode clonedRoot, IReadOnlyDictionary<string, string> renewedIds)
+        {
+            var clonedNodes = new[] { clonedRoot }.Concat(GameProjectStore.Flatten(clonedRoot.Children)).ToDictionary(node => node.Id, StringComparer.Ordinal);
+            foreach (var (originalId, clonedId) in renewedIds)
+            {
+                if (project.Scripts.FirstOrDefault(script => script.Id == originalId) is not { } source
+                    || !clonedNodes.TryGetValue(clonedId, out var clonedNode) || clonedNode.Type is not ("LocalScript" or "ModuleScript")) continue;
+                project.Scripts.Add(new GameScript { Id = clonedId, Name = clonedNode.Name, Source = source.Source });
+            }
+        }
         project.Players.Children.RemoveAll(node => node.Type == "Player" && node.Name == "LocalPlayer");
         localPlayer = new SceneNode { Type = "Player", Name = "LocalPlayer" };
         localPlayer.Team = project.Teams.Children.FirstOrDefault(team => team.Type == "Team" && team.AutoAssignable)?.Id ?? string.Empty;
-        backpack = new SceneNode { Type = "Folder", Name = "Backpack" };
+        backpack = new SceneNode { Type = "Backpack", Name = "Backpack" };
         localPlayer.Children.Add(backpack);
+        var playerScripts = new SceneNode { Type = "PlayerScripts", Name = "PlayerScripts" };
+        localPlayer.Children.Add(playerScripts);
+        var starterPlayerScripts = project.StarterPlayer.Children.First(node => node.Name == "StarterPlayerScripts");
+        foreach (var starterScript in starterPlayerScripts.Children)
+            if (GameProjectStore.CloneSubtree(starterScript, out var renewedIds, respectArchivable: true) is { } clonedScript)
+            {
+                playerScripts.Children.Add(clonedScript);
+                CopyLocalScripts(clonedScript, renewedIds);
+            }
         playerGui = new SceneNode { Type = "PlayerGui", Name = "PlayerGui" };
         foreach (var starterScreen in project.Gui.Children.Where(node => node.Type == "ScreenGui"))
-            if (GameProjectStore.CloneSubtree(starterScreen, out var _, respectArchivable: true) is { } screen)
+            if (GameProjectStore.CloneSubtree(starterScreen, out var renewedIds, respectArchivable: true) is { } screen)
+            {
                 playerGui.Children.Add(screen);
+                CopyLocalScripts(screen, renewedIds);
+            }
         localPlayer.Children.Add(playerGui);
         project.Players.Children.Add(localPlayer);
         foreach (var starterItem in project.StarterPack.Children)
-            if (GameProjectStore.CloneSubtree(starterItem, out var _, respectArchivable: true) is { } item)
+            if (GameProjectStore.CloneSubtree(starterItem, out var renewedIds, respectArchivable: true) is { } item)
             {
                 backpack.Children.Add(item);
                 if (item.Type == "Tool") toolHotbar.Add(item);
+                CopyLocalScripts(item, renewedIds);
             }
         if (project.Workspace.AutoManageCharacter)
         {
@@ -99,9 +126,14 @@ public partial class PlayerWindow : Window
             {
                 Title = $"{project.Name} — {message}";
                 scriptOutput?.Invoke(message);
-            }), isStudio: isStudioBuild);
+            }), isStudio: isStudioBuild, sitOnSeat: (targetSeat, humanoid) => Dispatcher.Invoke(() =>
+            {
+                if (seats is null) return;
+                foreach (var node in seats.Sit(targetSeat, humanoid)) SyncSeatNode(node);
+            }));
         runtime = gameRuntime;
         GameViewport.MouseDown += GameViewport_MouseDown;
+        GameViewport.MouseUp += GameViewport_MouseUp;
         if (startupScriptId is null) gameRuntime.RunAll();
         else gameRuntime.Run(startupScriptId);
         physics = new PhysicsSimulationService(project, node =>
@@ -136,8 +168,11 @@ public partial class PlayerWindow : Window
         var canMove = IsActive && Keyboard.FocusedElement is not TextBox && Keyboard.FocusedElement is not Button;
         var forward = canMove ? (Keyboard.IsKeyDown(Key.W) ? 1 : 0) - (Keyboard.IsKeyDown(Key.S) ? 1 : 0) : 0;
         var strafe = canMove ? (Keyboard.IsKeyDown(Key.D) ? 1 : 0) - (Keyboard.IsKeyDown(Key.A) ? 1 : 0) : 0;
+        seats?.SetVehicleInput(forward, strafe);
         if (seats is not null)
             foreach (var node in seats.BeforePhysics(canMove && jumpRequested)) SyncSeatNode(node);
+        if (seats is not null)
+            foreach (var motor in seats.UpdateVehicleMotorTargets()) SyncSeatNode(motor);
         if (seats?.IsSeated != true)
             character?.ApplyInput(physics, renderer.CameraYaw, forward, strafe, canMove && jumpRequested);
         jumpRequested = false;
@@ -152,6 +187,7 @@ public partial class PlayerWindow : Window
         {
             if (seats is not null)
                 foreach (var node in seats.BeforePhysics(true)) SyncSeatNode(node);
+            if (activeTool is not null) EquipTool(null);
             foreach (var node in character.Respawn()) SyncCharacterNode(node);
             ResetSpawnProtection();
             runtime?.SynchronizeExternalProperty(character.Humanoid, "Health");
@@ -171,9 +207,36 @@ public partial class PlayerWindow : Window
                 ? nearbyPrompt.Parent.Name : nearbyPrompt.Prompt.ObjectText;
             PromptActionText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ActionText)
                 ? "Interact" : nearbyPrompt.Prompt.ActionText;
-            if (promptRequested) runtime?.InvokePromptTriggered(nearbyPrompt.Prompt.Id, localPlayer.Id);
+            if (promptKeyDown && Keyboard.FocusedElement is not (TextBox or Button))
+            {
+                if (holdingPromptId != nearbyPrompt.Prompt.Id)
+                {
+                    holdingPromptId = nearbyPrompt.Prompt.Id;
+                    promptHoldElapsed = 0;
+                    promptTriggered = false;
+                }
+                if (!promptTriggered)
+                {
+                    promptHoldElapsed += elapsed;
+                    var holdDuration = Math.Clamp(nearbyPrompt.Prompt.HoldDuration, 0, 60);
+                    if (promptHoldElapsed >= holdDuration)
+                    {
+                        runtime?.InvokePromptTriggered(nearbyPrompt.Prompt.Id, localPlayer.Id);
+                        promptTriggered = true;
+                        PromptActionText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ActionText) ? "Interact" : nearbyPrompt.Prompt.ActionText;
+                    }
+                    else PromptActionText.Text = $"Hold E  {promptHoldElapsed:0.0}/{holdDuration:0.0}s";
+                }
+            }
+            else ResetPromptHold();
         }
-        promptRequested = false;
+        else ResetPromptHold();
+        if (seats?.VehicleSeat is { } vehicle && vehicle.VehicleSeatHeadsUpDisplay)
+        {
+            VehicleHud.Visibility = Visibility.Visible;
+            VehicleHudText.Text = $"Throttle  {vehicle.VehicleSeatThrottleFloat:+0.0;-0.0;0.0}\nSteer  {vehicle.VehicleSeatSteerFloat:+0.0;-0.0;0.0}\nMotor hinges  {vehicle.VehicleSeatAreHingesDetected}";
+        }
+        else VehicleHud.Visibility = Visibility.Collapsed;
         soundPlayback.Update(character?.Root.Position ?? project.Workspace.Children.First(node => node.Type == "Camera").Position);
         UpdateBillboardGuiPositions();
     }
@@ -227,7 +290,23 @@ public partial class PlayerWindow : Window
 
     private void SyncSeatNode(SceneNode node)
     {
-        if (node.Type == "Seat") runtime?.SynchronizeExternalProperty(node, "Occupant");
+        if (node.Type is "Seat" or "VehicleSeat")
+        {
+            runtime?.SynchronizeExternalProperty(node, "Occupant");
+            if (node.Type == "VehicleSeat")
+            {
+                runtime?.SynchronizeExternalProperty(node, "ThrottleFloat");
+                runtime?.SynchronizeExternalProperty(node, "SteerFloat");
+                runtime?.SynchronizeExternalProperty(node, "AreHingesDetected");
+            }
+        }
+        else if (node.Type is "HingeConstraint" or "CylindricalConstraint")
+        {
+            runtime?.SynchronizeExternalProperty(node, "AngularVelocity");
+            runtime?.SynchronizeExternalProperty(node, "AngularSpeed");
+            runtime?.SynchronizeExternalProperty(node, "MotorMaxAcceleration");
+            runtime?.SynchronizeExternalProperty(node, "TargetAngle");
+        }
         else SyncCharacterNode(node);
     }
 
@@ -244,24 +323,64 @@ public partial class PlayerWindow : Window
             e.Handled = true;
             return;
         }
+        if (e.Key == Key.Back && activeTool is { CanBeDropped: true } droppedTool)
+        {
+            var heldPose = new[] { droppedTool }.Concat(GameProjectStore.Flatten(droppedTool.Children)).Where(SceneNodeTypes.IsBasePart)
+                .ToDictionary(part => part.Id, part => ((float[])part.Position.Clone(), (float[])part.Rotation.Clone()), StringComparer.Ordinal);
+            EquipTool(null);
+            if (runtime?.SetParent(droppedTool, project.Workspace) == true)
+            {
+                foreach (var part in new[] { droppedTool }.Concat(GameProjectStore.Flatten(droppedTool.Children)).Where(SceneNodeTypes.IsBasePart))
+                    if (heldPose.TryGetValue(part.Id, out var pose))
+                    {
+                        part.Position = pose.Item1;
+                        part.Rotation = pose.Item2;
+                        SyncCharacterNode(part);
+                    }
+                Title = $"{project.Name} — dropped {droppedTool.Name}";
+                renderer.Refresh(project);
+            }
+            e.Handled = true;
+            return;
+        }
         if (e.Key == Key.Space && !e.IsRepeat) jumpRequested = true;
-        if (e.Key == Key.E && !e.IsRepeat) promptRequested = true;
+        if (e.Key == Key.E) promptKeyDown = true;
         if (e.Key is Key.W or Key.A or Key.S or Key.D or Key.Space or Key.E) e.Handled = true;
+    }
+
+    private void Window_PreviewKeyUp(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.E) return;
+        promptKeyDown = false;
+        ResetPromptHold();
+    }
+
+    private void ResetPromptHold()
+    {
+        holdingPromptId = null;
+        promptHoldElapsed = 0;
+        promptTriggered = false;
     }
 
     private void GameViewport_MouseDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Left && activeTool is { Enabled: true } tool)
         {
-            runtime?.InvokeToolActivated(tool.Id);
+            if (!tool.ManualActivationOnly) runtime?.InvokeToolActivated(tool.Id);
             e.Handled = true;
         }
+    }
+
+    private void GameViewport_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left && activeTool is { } tool) runtime?.DeactivateTool(tool.Id);
     }
 
     private void EquipTool(SceneNode? tool)
     {
         if (activeTool is { } oldTool)
         {
+            runtime?.DeactivateTool(oldTool.Id);
             runtime?.InvokeToolEquipped(oldTool.Id, false);
             if (character is not null) runtime?.SetParent(oldTool, backpack);
             foreach (var part in new[] { oldTool }.Concat(GameProjectStore.Flatten(oldTool.Children)).Where(SceneNodeTypes.IsBasePart))
@@ -276,6 +395,13 @@ public partial class PlayerWindow : Window
             activeTool = null;
         }
         if (tool is null) { Title = project.Name; renderer.Refresh(project); return; }
+        var handle = FindToolHandle(tool);
+        if (tool.RequiresHandle && handle is null)
+        {
+            Title = $"{project.Name} — {tool.Name} needs a Handle";
+            renderer.Refresh(project);
+            return;
+        }
         if (character is not null && (runtime is null || !runtime.SetParent(tool, character.Model)))
         {
             Title = project.Name;
@@ -284,13 +410,18 @@ public partial class PlayerWindow : Window
         }
         activeTool = tool;
         runtime?.InvokeToolEquipped(tool.Id, true);
-        var handle = FindToolHandle(tool);
         if (handle is not null)
         {
+            var yaw = character?.Root.Rotation[1] * MathF.PI / 180 ?? 0;
+            var cosine = MathF.Cos(yaw);
+            var sine = MathF.Sin(yaw);
             foreach (var part in new[] { tool }.Concat(GameProjectStore.Flatten(tool.Children)).Where(SceneNodeTypes.IsBasePart))
             {
-                var offset = new[] { part.Position[0] - handle.Position[0], part.Position[1] - handle.Position[1], part.Position[2] - handle.Position[2] };
-                equippedToolParts[part.Id] = ((float[])offset.Clone(), (float[])part.Position.Clone(), (float[])part.Rotation.Clone(), part.Anchored, part.CanCollide);
+                var dx = part.Position[0] - handle.Position[0];
+                var dz = part.Position[2] - handle.Position[2];
+                var localOffset = new[] { dx * cosine - dz * sine, part.Position[1] - handle.Position[1], dx * sine + dz * cosine };
+                var rotationOffset = new[] { part.Rotation[0] - handle.Rotation[0], part.Rotation[1] - handle.Rotation[1], part.Rotation[2] - handle.Rotation[2] };
+                equippedToolParts[part.Id] = new EquippedPartState(localOffset, rotationOffset, (float[])part.Position.Clone(), (float[])part.Rotation.Clone(), part.Anchored, part.CanCollide);
                 part.Anchored = true;
                 part.CanCollide = false;
             }
@@ -308,25 +439,28 @@ public partial class PlayerWindow : Window
         var yaw = character.Root.Rotation[1] * MathF.PI / 180;
         var cosine = MathF.Cos(yaw);
         var sine = MathF.Sin(yaw);
+        var localGrip = activeTool.GripPosition;
         var handlePosition = new[]
         {
-            character.Root.Position[0] + .95f * cosine - .35f * sine,
-            character.Root.Position[1] + .15f,
-            character.Root.Position[2] - .95f * sine - .35f * cosine
+            character.Root.Position[0] + localGrip[0] * cosine + localGrip[2] * sine,
+            character.Root.Position[1] + localGrip[1],
+            character.Root.Position[2] - localGrip[0] * sine + localGrip[2] * cosine
         };
+        var handleRotation = new[] { activeTool.GripRotation[0], character.Root.Rotation[1] + activeTool.GripRotation[1], activeTool.GripRotation[2] };
         foreach (var part in new[] { activeTool }.Concat(GameProjectStore.Flatten(activeTool.Children)).Where(SceneNodeTypes.IsBasePart))
         {
             if (!equippedToolParts.TryGetValue(part.Id, out var state)) continue;
-            var offset = state.Offset;
+            var offset = state.LocalOffset;
             var position = new[]
             {
                 handlePosition[0] + offset[0] * cosine + offset[2] * sine,
                 handlePosition[1] + offset[1],
                 handlePosition[2] - offset[0] * sine + offset[2] * cosine
             };
-            if (part.Position.SequenceEqual(position) && part.Rotation[1] == character.Root.Rotation[1]) continue;
+            var rotation = new[] { handleRotation[0] + state.RotationOffset[0], handleRotation[1] + state.RotationOffset[1], handleRotation[2] + state.RotationOffset[2] };
+            if (part.Position.SequenceEqual(position) && part.Rotation.SequenceEqual(rotation)) continue;
             part.Position = position;
-            part.Rotation[1] = character.Root.Rotation[1];
+            part.Rotation = rotation;
             SyncCharacterNode(part);
         }
     }

@@ -166,6 +166,7 @@
               <Trigger Property="IsExpanded" Value="True"><Setter TargetName="ItemsHost" Property="Visibility" Value="Visible"/><Setter TargetName="ExpanderButton" Property="Content" Value="▾"/></Trigger>
               <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="HeaderChrome" Property="Background" Value="#303337"/></Trigger>
               <Trigger Property="IsSelected" Value="True"><Setter TargetName="HeaderChrome" Property="Background" Value="#294258"/></Trigger>
+              <DataTrigger Binding="{Binding IsExplorerSelected}" Value="True"><Setter TargetName="HeaderChrome" Property="Background" Value="#294258"/></DataTrigger>
               <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>

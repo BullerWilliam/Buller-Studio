@@ -7,7 +7,7 @@ public sealed class GameProject
     public int FormatVersion { get; set; } = 1;
     public string Name { get; set; } = "Untitled Game";
     public ProjectSettings Settings { get; set; } = new();
-    public SceneNode Workspace { get; set; } = new() { Id = "workspace", Type = "Workspace", Name = "Workspace" };
+    public SceneNode Workspace { get; set; } = new() { Id = "workspace", Type = "Workspace", Name = "Workspace", Children = [new SceneNode { Id = "workspace-terrain", Type = "Terrain", Name = "Terrain" }] };
     public SceneNode Players { get; set; } = new() { Id = "players", Type = "Players", Name = "Players" };
     public SceneNode Teams { get; set; } = new() { Id = "teams", Type = "Teams", Name = "Teams" };
     public SceneNode Lighting { get; set; } = new() { Id = "lighting", Type = "Lighting", Name = "Lighting", Ambient = "#808080", ClockTime = 14, Children = [new SceneNode { Id = "sky-main", Type = "Sky", Name = "Sky" }] };
@@ -16,6 +16,7 @@ public sealed class GameProject
     public SceneNode ServerScriptService { get; set; } = new() { Id = "server-script-service", Type = "ServerScriptService", Name = "ServerScriptService" };
     public SceneNode ServerStorage { get; set; } = new() { Id = "server-storage", Type = "ServerStorage", Name = "ServerStorage" };
     public SceneNode StarterPack { get; set; } = new() { Id = "starter-pack", Type = "StarterPack", Name = "StarterPack" };
+    public SceneNode StarterPlayer { get; set; } = new() { Id = "starter-player", Type = "StarterPlayer", Name = "StarterPlayer", Children = [new SceneNode { Type = "Folder", Name = "StarterPlayerScripts" }, new SceneNode { Type = "Folder", Name = "StarterCharacterScripts" }] };
     public SceneNode Gui { get; set; } = new() { Id = "gui", Type = "StarterGui", Name = "StarterGui", Children = [new SceneNode { Id = "screen-gui-main", Type = "ScreenGui", Name = "ScreenGui" }] };
     public List<ProjectAsset> Assets { get; set; } = [];
     public List<GameScript> Scripts { get; set; } = [];
@@ -49,6 +50,20 @@ public sealed class SceneNode
     public float[] PaddingBottom { get; set; } = [0, 0];
     public float Scale { get; set; } = 1;
     public float[] Rotation { get; set; } = [0, 0, 0];
+    public string ToolTip { get; set; } = string.Empty;
+    public bool RequiresHandle { get; set; } = true;
+    public bool CanBeDropped { get; set; } = true;
+    public bool ManualActivationOnly { get; set; }
+    public float[] GripPosition { get; set; } = [.95f, .15f, -.35f];
+    public float[] GripRotation { get; set; } = [0, 0, 0];
+    public bool VehicleSeatDisabled { get; set; }
+    public bool VehicleSeatHeadsUpDisplay { get; set; } = true;
+    public float VehicleSeatMaxSpeed { get; set; } = 25;
+    public float VehicleSeatTorque { get; set; } = 10;
+    public float VehicleSeatTurnSpeed { get; set; } = 1;
+    [JsonIgnore] public float VehicleSeatThrottleFloat { get; set; }
+    [JsonIgnore] public float VehicleSeatSteerFloat { get; set; }
+    [JsonIgnore] public int VehicleSeatAreHingesDetected { get; set; }
     public float[] Size { get; set; } = [2, 2, 2];
     public float[] SizeScale { get; set; } = [0, 0];
     public int ZIndex { get; set; } = 1;
@@ -112,6 +127,7 @@ public sealed class SceneNode
     public float Angle { get; set; } = 45;
     public string ActionText { get; set; } = "Interact";
     public string ObjectText { get; set; } = string.Empty;
+    public float HoldDuration { get; set; }
     public float MaxActivationDistance { get; set; } = 10;
     public float Volume { get; set; } = .5f;
     public float PlaybackSpeed { get; set; } = 1;
@@ -128,7 +144,28 @@ public sealed class SceneNode
     public string Attachment0 { get; set; } = string.Empty;
     public string Attachment1 { get; set; } = string.Empty;
     public float[] Force { get; set; } = [0, 0, 0];
+    public float[] BodyThrustForce { get; set; } = [0, 0, 0];
+    public float[] BodyThrustLocation { get; set; } = [0, 0, 0];
+    public float[] BodyVelocityTarget { get; set; } = [0, 0, 0];
+    public float[] BodyVelocityMaxForce { get; set; } = [0, 0, 0];
+    public float BodyVelocityP { get; set; } = 1250;
+    public float[] BodyPositionTarget { get; set; } = [0, 0, 0];
+    public float[] BodyPositionMaxForce { get; set; } = [0, 0, 0];
+    public float BodyPositionP { get; set; } = 10000;
+    public float BodyPositionD { get; set; } = 1000;
+    public float[] BodyGyroTargetRotation { get; set; } = [0, 0, 0];
+    public float[] BodyGyroMaxTorque { get; set; } = [0, 0, 0];
+    public float BodyGyroP { get; set; } = 3000;
+    public float BodyGyroD { get; set; } = 500;
+    public float[] BodyAngularVelocityTarget { get; set; } = [0, 0, 0];
+    public float[] BodyAngularVelocityMaxTorque { get; set; } = [0, 0, 0];
+    public float BodyAngularVelocityP { get; set; } = 1250;
     public string RelativeTo { get; set; } = "World";
+    public bool ApplyAtCenterOfMass { get; set; }
+    public float LineForceMagnitude { get; set; } = 1000;
+    public float LineForceMaxForce { get; set; } = 1000000;
+    public bool LineForceInverseSquareLaw { get; set; }
+    public bool LineForceReactionForceEnabled { get; set; }
     public float[] VectorVelocity { get; set; } = [0, 0, 0];
     public float[] LineDirection { get; set; } = [1, 0, 0];
     public float LineVelocity { get; set; }
@@ -137,6 +174,10 @@ public sealed class SceneNode
     public float[] SecondaryTangentAxis { get; set; } = [0, 0, 1];
     public string VelocityConstraintMode { get; set; } = "Vector";
     public bool ForceLimitsEnabled { get; set; }
+    public string ForceLimitMode { get; set; } = "Magnitude";
+    public bool LinearVelocityReactionForceEnabled { get; set; } = true;
+    public float[] MaxAxesForce { get; set; } = [1000, 1000, 1000];
+    public float[] MaxPlanarAxesForce { get; set; } = [1000, 1000];
     public float MaxForce { get; set; } = 1000;
     public string AlignmentMode { get; set; } = "TwoAttachment";
     public float Responsiveness { get; set; } = 10;
@@ -145,6 +186,80 @@ public sealed class SceneNode
     public bool ReactionForceEnabled { get; set; }
     public float[] AlignOrientationRotation { get; set; } = [0, 0, 0];
     public float[] AngularVelocityTarget { get; set; } = [0, 0, 0];
+    public float[] TorqueTarget { get; set; } = [0, 0, 0];
+    public float SpringDamping { get; set; } = 10;
+    public float SpringFreeLength { get; set; } = 4;
+    public bool SpringLimitsEnabled { get; set; }
+    public float SpringMaxForce { get; set; } = 5000;
+    public float SpringMaxLength { get; set; } = 10;
+    public float SpringMinLength { get; set; }
+    public float SpringStiffness { get; set; } = 100;
+    [JsonIgnore] public float SpringCurrentLength { get; set; }
+    public float TorsionSpringDamping { get; set; } = 10;
+    public bool TorsionSpringLimitsEnabled { get; set; }
+    public float TorsionSpringMaxAngle { get; set; } = 45;
+    public float TorsionSpringMaxTorque { get; set; } = 10000;
+    public float TorsionSpringRadius { get; set; } = .15f;
+    public float TorsionSpringRestitution { get; set; }
+    public float TorsionSpringStiffness { get; set; } = 100;
+    public float TorsionSpringCoils { get; set; } = 3;
+    [JsonIgnore] public float TorsionSpringCurrentAngle { get; set; }
+    public bool BallSocketLimitsEnabled { get; set; }
+    public float BallSocketUpperAngle { get; set; } = 45;
+    public bool BallSocketTwistLimitsEnabled { get; set; }
+    public float BallSocketTwistLowerAngle { get; set; } = -45;
+    public float BallSocketTwistUpperAngle { get; set; } = 45;
+    public float BallSocketMaxFrictionTorque { get; set; }
+    public float BallSocketRadius { get; set; } = .15f;
+    public float BallSocketRestitution { get; set; } = .2f;
+    public bool UniversalLimitsEnabled { get; set; }
+    public float UniversalMaxAngle { get; set; } = 45;
+    public float UniversalRadius { get; set; } = .2f;
+    public float UniversalRestitution { get; set; }
+    public string HingeActuatorType { get; set; } = "None";
+    public float HingeAngularResponsiveness { get; set; } = 45;
+    public float HingeAngularSpeed { get; set; } = 10;
+    public float HingeAngularVelocity { get; set; }
+    [JsonIgnore] public float HingeCurrentAngle { get; set; }
+    public bool HingeLimitsEnabled { get; set; }
+    public float HingeLowerAngle { get; set; } = -45;
+    public float HingeUpperAngle { get; set; } = 45;
+    public float HingeMotorMaxAcceleration { get; set; } = 1000;
+    public float HingeMotorMaxTorque { get; set; } = 10000;
+    public float HingeRadius { get; set; } = .15f;
+    public float HingeRestitution { get; set; }
+    public float HingeServoMaxTorque { get; set; } = 10000;
+    public float HingeTargetAngle { get; set; }
+    public string PrismaticActuatorType { get; set; } = "None";
+    [JsonIgnore] public float PrismaticCurrentPosition { get; set; }
+    public bool PrismaticLimitsEnabled { get; set; }
+    public float PrismaticLinearResponsiveness { get; set; } = 45;
+    public float PrismaticLowerLimit { get; set; }
+    public float PrismaticMotorMaxAcceleration { get; set; } = 1000;
+    public float PrismaticMotorMaxForce { get; set; } = 10000;
+    public float PrismaticRestitution { get; set; }
+    public float PrismaticServoMaxForce { get; set; } = 10000;
+    public float PrismaticSize { get; set; } = .15f;
+    public float PrismaticSpeed { get; set; } = 10;
+    public float PrismaticTargetPosition { get; set; }
+    public float PrismaticUpperLimit { get; set; }
+    public float PrismaticVelocity { get; set; }
+    public float RopeLength { get; set; } = 10;
+    public float RopeRestitution { get; set; }
+    public bool RopeWinchEnabled { get; set; }
+    public float RopeWinchForce { get; set; } = 10000;
+    public float RopeWinchResponsiveness { get; set; } = 10;
+    public float RopeWinchSpeed { get; set; } = 10;
+    public float RopeWinchTarget { get; set; } = 5;
+    [JsonIgnore] public float RopeCurrentLength { get; set; }
+    public float RodLength { get; set; } = 10;
+    public float RodLimitAngle0 { get; set; } = 45;
+    public float RodLimitAngle1 { get; set; } = 45;
+    public bool RodLimitsEnabled { get; set; }
+    public float RodThickness { get; set; } = .1f;
+    [JsonIgnore] public float RodCurrentDistance { get; set; }
+    public float CylindricalInclinationAngle { get; set; }
+    public bool CylindricalRotationAxisVisible { get; set; } = true;
     public float MaxTorque { get; set; } = 1000;
     public float MaxAngularVelocity { get; set; } = 100;
     public bool ReactionTorqueEnabled { get; set; }
@@ -252,6 +367,7 @@ public sealed class SceneNode
     public float FieldOfView { get; set; } = 55;
     public List<SceneNode> Children { get; set; } = [];
     [JsonIgnore] public bool IsExplorerVisible { get; set; } = true;
+    [JsonIgnore] public bool IsExplorerSelected { get; set; }
 }
 
 public sealed record ParticleNumberKeypoint(float Time, float Value, float Envelope = 0);
