@@ -74,11 +74,13 @@ public static class SceneNodeTypes
 
     public static bool IsLight(SceneNode? node) => node?.Type is "PointLight" or "SpotLight" or "SurfaceLight";
 
-    public static bool IsPostEffect(SceneNode? node) => node?.Type is "BlurEffect";
+    public static bool IsPostEffect(SceneNode? node) => node?.Type is "BlurEffect" or "BloomEffect";
 
-    public static bool IsPostEffectClass(SceneNode? node) => node?.Type is "BlurEffect" or "ColorCorrectionEffect";
+    public static bool IsPostEffectClass(SceneNode? node) => node?.Type is "BlurEffect" or "BloomEffect" or "ColorCorrectionEffect";
 
     public static bool IsSurfaceAppearance(SceneNode? node) => node?.Type == "SurfaceAppearance";
+
+    public static bool IsSpecialMesh(SceneNode? node) => node?.Type == "SpecialMesh";
 
     public static bool IsParticleEffect(SceneNode? node) => node?.Type is "Fire" or "Smoke" or "Sparkles" or "ParticleEmitter";
 

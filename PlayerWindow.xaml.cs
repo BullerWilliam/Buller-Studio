@@ -33,6 +33,7 @@ public partial class PlayerWindow : Window
     private LuaXRuntime? runtime;
     private readonly DispatcherTimer updateTimer;
     private bool isDragging;
+    private string? hoveredClickDetectorId;
     private Point lastPointer;
     private long lastUpdateTimestamp;
     private bool jumpRequested;
@@ -129,9 +130,14 @@ public partial class PlayerWindow : Window
                     UpdateAutoManageCharacter();
                     return;
                 }
-                if (node.Type == "Player" && node.Id == localPlayer.Id && property == "Character" && FindRuntimeNode(node.Character) is { Type: "Model" })
+                if (node.Type == "Player" && node.Id == localPlayer.Id && property == "Character")
                 {
-                    ResetPlayerGui();
+                    if (!project.Workspace.AutoManageCharacter && seats is not null)
+                    {
+                        foreach (var changedNode in seats.BeforePhysics(true)) SyncSeatNode(changedNode);
+                        seats = null;
+                    }
+                    if (FindRuntimeNode(node.Character) is { Type: "Model" }) ResetPlayerGui();
                     return;
                 }
                 if (node.Type == "Sound") return;
@@ -153,6 +159,16 @@ public partial class PlayerWindow : Window
                 scriptOutput?.Invoke(message);
             }), isStudio: isStudioBuild, sitOnSeat: (targetSeat, humanoid) => Dispatcher.Invoke(() =>
             {
+                if (seats is null && !project.Workspace.AutoManageCharacter
+                    && FindRuntimeNode(localPlayer.Character) is { Type: "Model" } playerCharacter
+                    && GameProjectStore.Flatten(playerCharacter.Children).Any(node => node.Id == humanoid.Id))
+                {
+                    var parts = GameProjectStore.Flatten(playerCharacter.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
+                    var root = parts.FirstOrDefault(part => part.Name == "HumanoidRootPart")
+                        ?? parts.FirstOrDefault(part => part.Id == playerCharacter.PrimaryPart)
+                        ?? parts.FirstOrDefault();
+                    if (root is not null) seats = new SeatInteractionService(project, humanoid, root);
+                }
                 if (seats is null) return;
                 foreach (var node in seats.Sit(targetSeat, humanoid)) SyncSeatNode(node);
             }));
@@ -168,8 +184,12 @@ public partial class PlayerWindow : Window
             runtime?.SynchronizeExternalProperty(node, "Velocity");
             renderer.UpdateNode(node, project);
             renderer.UpdateCamera(project);
-        }, rocketReachedTarget: node => runtime?.FireRocketReachedTarget(node));
-        soundPlayback = new SoundPlaybackService(project, node => runtime?.SynchronizeExternalProperty(node, "Playing"));
+        }, rocketReachedTarget: node => runtime?.FireRocketReachedTarget(node), destroyFallenPart: node => runtime?.DestroyFromPhysics(node));
+        soundPlayback = new SoundPlaybackService(project, node =>
+        {
+            runtime?.SynchronizeExternalProperty(node, "Playing");
+            runtime?.SynchronizeExternalProperty(node, "TimePosition");
+        }, (node, signal) => runtime?.FireSoundSignal(node, signal));
         soundPlayback.Update(character?.Root.Position ?? camera.Position);
         RefreshGameGui();
         updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
@@ -282,6 +302,20 @@ public partial class PlayerWindow : Window
         ? null
         : GameProjectStore.Flatten(project).FirstOrDefault(node => node.Id == id);
 
+    private SceneNode? FindLocalPlayerInteractionRoot()
+    {
+        if (FindRuntimeNode(localPlayer.Character) is { Type: "Model" } model
+            && GameProjectStore.Flatten(project.Workspace.Children).Any(node => node.Id == model.Id))
+        {
+            var parts = GameProjectStore.Flatten(model.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
+            return parts.FirstOrDefault(part => part.Name == "HumanoidRootPart")
+                ?? parts.FirstOrDefault(part => part.Id == model.PrimaryPart)
+                ?? parts.FirstOrDefault();
+        }
+        return character is { } managedCharacter && FindRuntimeNode(managedCharacter.Root.Id) is not null
+            ? managedCharacter.Root : null;
+    }
+
     private void UpdateTimer_Tick(object? sender, EventArgs e)
     {
         var now = Stopwatch.GetTimestamp();
@@ -320,11 +354,14 @@ public partial class PlayerWindow : Window
         else if (character is not null)
         {
             foreach (var node in character.UpdatePose()) SyncCharacterNode(node);
+            if (runtime is not null)
+                foreach (var node in runtime.ReapplyAnimations()) SyncCharacterNode(node);
         }
         UpdateEquippedToolGrip();
         runtime?.UpdateTouched(elapsed);
         renderer.UpdateParticleEffects(elapsed);
-        var nearbyPrompt = character is null ? null : ProximityPromptService.FindNearest(project, character.Root);
+        var interactionRoot = FindLocalPlayerInteractionRoot();
+        var nearbyPrompt = interactionRoot is null ? null : ProximityPromptService.FindNearest(project, interactionRoot);
         PromptBorder.Visibility = nearbyPrompt is null ? Visibility.Collapsed : Visibility.Visible;
         if (nearbyPrompt is not null)
         {
@@ -500,7 +537,8 @@ public partial class PlayerWindow : Window
             return;
         }
         if (gameProcessed) return;
-        if (character is not null && ProximityPromptService.FindNearest(project, character.Root) is { } nearbyPrompt
+        if (FindLocalPlayerInteractionRoot() is { } interactionRoot
+            && ProximityPromptService.FindNearest(project, interactionRoot) is { } nearbyPrompt
             && PromptKeyMatches(GetKeyCodeName(e.Key), nearbyPrompt.Prompt.KeyboardKeyCode))
         {
             promptKeysDown.Add(e.Key);
@@ -712,7 +750,7 @@ public partial class PlayerWindow : Window
         }
     }
 
-    private static SceneNode? FindToolHandle(SceneNode tool) => GameProjectStore.Flatten(tool.Children).FirstOrDefault(node => node.Name == "Handle" && SceneNodeTypes.IsBasePart(node));
+    private static SceneNode? FindToolHandle(SceneNode tool) => tool.Children.FirstOrDefault(node => node.Name == "Handle" && SceneNodeTypes.IsBasePart(node));
 
     private void RefreshGameGui()
     {
@@ -730,7 +768,17 @@ public partial class PlayerWindow : Window
         GameGuiCanvas.Children.Clear();
         foreach (var child in children) GameGuiCanvas.Children.Add(child);
         AddBillboardGuis();
+        foreach (var border in FindVisualDescendants<Border>(GameGuiCanvas))
+        {
+            if (border.Tag is not SceneNode node || !IsInteractiveGuiObject(node)) continue;
+            border.MouseEnter += (_, _) => runtime?.InvokeGuiHover(node.Id, entered: true);
+            border.MouseLeave += (_, _) => runtime?.InvokeGuiHover(node.Id, entered: false);
+        }
     }
+
+    private static bool IsInteractiveGuiObject(SceneNode node) => node.Type is
+        "Frame" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton"
+        or "TextLabel" or "TextButton" or "TextBox" or "UICanvasGroup";
 
     private void AddBillboardGuis()
     {
@@ -833,13 +881,16 @@ public partial class PlayerWindow : Window
         var point = e.GetPosition(GameViewport);
         if (runtime?.FireMouseMovement((float)point.X, (float)point.Y) == true)
         {
+            if (!isDragging) SetHoveredClickDetector(null);
             if (isDragging) lastPointer = point;
             e.Handled = true;
             return;
         }
         if (!isDragging)
         {
-            GameViewport.Cursor = FindPointedClickDetector() is null ? Cursors.Arrow : Cursors.Hand;
+            var detector = FindPointedClickDetector();
+            SetHoveredClickDetector(detector);
+            GameViewport.Cursor = detector is null ? Cursors.Arrow : Cursors.Hand;
             return;
         }
         renderer.SetCameraOrbit(-(float)(point.X - lastPointer.X) * .25f, -(float)(point.Y - lastPointer.Y) * .25f, 0, project);
@@ -847,7 +898,22 @@ public partial class PlayerWindow : Window
         e.Handled = true;
     }
 
-    private void Viewport_MouseLeave(object sender, MouseEventArgs e) => GameViewport.Cursor = Cursors.Arrow;
+    private void Viewport_MouseLeave(object sender, MouseEventArgs e)
+    {
+        SetHoveredClickDetector(null);
+        GameViewport.Cursor = Cursors.Arrow;
+    }
+
+    private void SetHoveredClickDetector(SceneNode? detector)
+    {
+        var nextId = detector?.Id;
+        if (hoveredClickDetectorId == nextId) return;
+        if (hoveredClickDetectorId is { } previousId)
+            runtime?.InvokeClickDetectorHover(previousId, localPlayer.Id, entered: false);
+        hoveredClickDetectorId = nextId;
+        if (nextId is not null)
+            runtime?.InvokeClickDetectorHover(nextId, localPlayer.Id, entered: true);
+    }
 
     private void Viewport_MouseWheel(object sender, MouseWheelEventArgs e)
     {
@@ -866,12 +932,13 @@ public partial class PlayerWindow : Window
 
     private SceneNode? FindPointedClickDetector()
     {
-        if (character is null) return null;
+        var interactionRoot = FindLocalPlayerInteractionRoot();
+        if (interactionRoot is null) return null;
         var hit = GameViewport.FindHits(Mouse.GetPosition(GameViewport)).FirstOrDefault()?.ModelHit;
         if (hit is not MeshGeometryModel3D model) return null;
         var partId = renderer.Visuals.FirstOrDefault(entry => ReferenceEquals(entry.Value, model)).Key;
         if (partId is null) return null;
         var part = GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(node => node.Id == partId);
-        return part is null ? null : ClickDetectorService.FindActive(part, character.Root);
+        return part is null ? null : ClickDetectorService.FindActive(part, interactionRoot);
     }
 }

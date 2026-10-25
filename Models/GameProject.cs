@@ -42,6 +42,7 @@ public sealed class SceneNode
     public float[] Position { get; set; } = [0, 0, 0];
     public bool HasModelPivot { get; set; }
     public string PrimaryPart { get; set; } = string.Empty;
+    public float ModelScale { get; set; } = 1;
     public float[] PositionScale { get; set; } = [0, 0];
     public float[] AnchorPoint { get; set; } = [0, 0];
     public float[] PaddingLeft { get; set; } = [0, 0];
@@ -90,6 +91,10 @@ public sealed class SceneNode
     public float LineThickness { get; set; } = .05f;
     public string ViewportCurrentCameraId { get; set; } = string.Empty;
     public string Shape { get; set; } = "Block";
+    public string SpecialMeshType { get; set; } = "Brick";
+    public float[] SpecialMeshScale { get; set; } = [1, 1, 1];
+    public float[] SpecialMeshOffset { get; set; } = [0, 0, 0];
+    public float[] SpecialMeshVertexColor { get; set; } = [1, 1, 1];
     public string Face { get; set; } = "Front";
     public float StudsPerTileU { get; set; } = 2;
     public float StudsPerTileV { get; set; } = 2;
@@ -126,6 +131,8 @@ public sealed class SceneNode
     public float Range { get; set; } = 16;
     public string SecondaryColor { get; set; } = "#FFE69A";
     public float EffectSize { get; set; } = 1;
+    public float BloomIntensity { get; set; } = 1;
+    public float BloomThreshold { get; set; } = 1;
     public float Heat { get; set; } = 9;
     public float RiseVelocity { get; set; } = 1;
     public float Opacity { get; set; } = .5f;
@@ -187,6 +194,9 @@ public sealed class SceneNode
     public float ReverbWetLevel { get; set; }
     public bool Looped { get; set; }
     public bool Playing { get; set; }
+    [JsonIgnore] public bool SoundPaused { get; set; }
+    [JsonIgnore] public float SoundTimePosition { get; set; }
+    [JsonIgnore] public float? SoundSeekTarget { get; set; }
     public float RollOffMinDistance { get; set; } = 10;
     public float RollOffMaxDistance { get; set; } = 100;
     public string Part0 { get; set; } = string.Empty;
@@ -416,6 +426,7 @@ public sealed class SceneNode
     [JsonIgnore] public float[] AssemblyAngularVelocity { get; set; } = [0, 0, 0];
     public bool CastShadow { get; set; } = true;
     public float Gravity { get; set; } = 24;
+    public float FallenPartsDestroyHeight { get; set; } = -500;
     public bool AutoManageCharacter { get; set; } = true;
     public string PathfindingModifierLabel { get; set; } = string.Empty;
     public bool PathfindingPassThrough { get; set; }
@@ -450,6 +461,7 @@ public sealed class SceneNode
     public Dictionary<string, SceneAttributeValue> Attributes { get; set; } = new(StringComparer.Ordinal);
     public List<string> Tags { get; set; } = [];
     public string Asset { get; set; } = string.Empty;
+    public string AnimationId { get; set; } = string.Empty;
     public string Video { get; set; } = string.Empty;
     public string Texture { get; set; } = string.Empty;
     public string SurfaceAppearanceColorMap { get; set; } = string.Empty;

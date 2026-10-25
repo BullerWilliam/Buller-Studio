@@ -248,10 +248,10 @@
         <StackPanel x:Name="RibbonTools" Orientation="Horizontal" VerticalAlignment="Stretch">
           <StackPanel x:Name="TransformGroup" Tag="HOME,MODEL" Style="{StaticResource RibbonGroup}">
             <StackPanel Orientation="Horizontal">
-              <Button x:Name="SelectToolButton" Style="{StaticResource RibbonTool}" Click="ToolSelect_Click"><StackPanel><TextBlock Text="&#xE762;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Select" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="MoveToolButton" Style="{StaticResource RibbonTool}" Click="ToolMove_Click"><StackPanel><TextBlock Text="&#xE7C1;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Move" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="ScaleToolButton" Style="{StaticResource RibbonTool}" Click="ToolScale_Click"><StackPanel><TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Scale" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="RotateToolButton" Style="{StaticResource RibbonTool}" Click="ToolRotate_Click"><StackPanel><TextBlock Text="&#xE7AD;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Rotate" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="SelectToolButton" Style="{StaticResource RibbonTool}" Click="ToolSelect_Click" ToolTip="Select (1)"><StackPanel><TextBlock Text="&#xE762;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Select" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="MoveToolButton" Style="{StaticResource RibbonTool}" Click="ToolMove_Click" ToolTip="Move (2)"><StackPanel><TextBlock Text="&#xE7C1;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Move" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="ScaleToolButton" Style="{StaticResource RibbonTool}" Click="ToolScale_Click" ToolTip="Scale (3)"><StackPanel><TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Scale" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="RotateToolButton" Style="{StaticResource RibbonTool}" Click="ToolRotate_Click" ToolTip="Rotate (4)"><StackPanel><TextBlock Text="&#xE7AD;" FontFamily="Segoe MDL2 Assets" FontSize="19" HorizontalAlignment="Center"/><TextBlock Text="Rotate" FontSize="10" HorizontalAlignment="Center"/></StackPanel></Button>
             </StackPanel><TextBlock Text="Tools" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>
           <Border Width="1" Height="54" Background="#44474A" Margin="3,8" VerticalAlignment="Center" Tag="HOME,MODEL"/>
@@ -292,8 +292,11 @@
               <Button Style="{StaticResource RibbonTool}" Click="CameraCustom_Click" ToolTip="Use the camera's position and rotation">
                 <StackPanel><TextBlock Text="◉" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Custom" FontSize="9" HorizontalAlignment="Center"/></StackPanel>
               </Button>
-              <Button Style="{StaticResource RibbonTool}" Click="FocusSelection_Click" ToolTip="Orbit the selected BasePart as the camera subject">
+              <Button Style="{StaticResource RibbonTool}" Click="FocusSelection_Click" ToolTip="Set the selected BasePart as the camera subject">
                 <StackPanel><TextBlock Text="◎" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Subject" FontSize="9" HorizontalAlignment="Center"/></StackPanel>
+              </Button>
+              <Button Style="{StaticResource RibbonTool}" Click="FocusViewportSelection_Click" ToolTip="Focus the view on the selected BasePart or Model (F)">
+                <StackPanel><TextBlock Text="⌖" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Focus" FontSize="9" HorizontalAlignment="Center"/></StackPanel>
               </Button>
               <Button Style="{StaticResource RibbonTool}" Click="ResetCamera_Click" ToolTip="Reset camera position and rotation">
                 <StackPanel><TextBlock Text="↺" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Reset" FontSize="9" HorizontalAlignment="Center"/></StackPanel>

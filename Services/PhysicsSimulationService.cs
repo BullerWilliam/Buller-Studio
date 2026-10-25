@@ -8,17 +8,19 @@ public sealed class PhysicsSimulationService
     private readonly GameProject project;
     private readonly Action<SceneNode> moved;
     private readonly Action<SceneNode>? rocketReachedTarget;
+    private readonly Action<SceneNode>? destroyFallenPart;
     private readonly Dictionary<string, float[]> weldedVelocities = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, WeldedTransform>> weldedTransforms = new(StringComparer.Ordinal);
     private sealed record WeldedTransform(float[] Position, float[] Rotation);
     private sealed record VelocityTarget(SceneNode Constraint, Matrix4x4 Orientation, SceneNode? ReferencePart);
     private sealed record OrientationOwner(SceneNode Attachment, SceneNode Part);
 
-    public PhysicsSimulationService(GameProject project, Action<SceneNode> moved, Action<SceneNode>? rocketReachedTarget = null)
+    public PhysicsSimulationService(GameProject project, Action<SceneNode> moved, Action<SceneNode>? rocketReachedTarget = null, Action<SceneNode>? destroyFallenPart = null)
     {
         this.project = project;
         this.moved = moved;
         this.rocketReachedTarget = rocketReachedTarget;
+        this.destroyFallenPart = destroyFallenPart;
     }
 
     public void Step(float elapsedSeconds)
@@ -80,6 +82,34 @@ public sealed class PhysicsSimulationService
             ApplyMotorTransforms(parts, weldedGroups);
             remaining -= deltaTime;
         }
+        var destroyHeight = project.Workspace.FallenPartsDestroyHeight;
+        if (float.IsFinite(destroyHeight))
+        {
+            var remainingIds = GameProjectStore.Flatten(project.Workspace.Children).Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+            foreach (var part in parts.Where(part => IsPartBelowDestroyHeight(part, destroyHeight)).ToArray())
+            {
+                if (!remainingIds.Contains(part.Id)) continue;
+                var removedIds = new[] { part }.Concat(GameProjectStore.Flatten(part.Children)).Select(node => node.Id).ToArray();
+                if (destroyFallenPart is not null) destroyFallenPart(part);
+                else GameProjectStore.RemoveNode(project.Workspace.Children, part.Id);
+                remainingIds.ExceptWith(removedIds);
+            }
+        }
+    }
+
+    private static bool IsPartBelowDestroyHeight(SceneNode part, float height)
+    {
+        var halfSize = new Vector3(Math.Max(0, part.Size[0]) * .5f, Math.Max(0, part.Size[1]) * .5f, Math.Max(0, part.Size[2]) * .5f);
+        var rotation = RotationMath.FromDegrees(part.Rotation);
+        var lowestY = float.PositiveInfinity;
+        for (var x = -1; x <= 1; x += 2)
+        for (var y = -1; y <= 1; y += 2)
+        for (var z = -1; z <= 1; z += 2)
+        {
+            var corner = new Vector3(halfSize.X * x, halfSize.Y * y, halfSize.Z * z);
+            lowestY = Math.Min(lowestY, part.Position[1] + Vector3.Transform(corner, rotation).Y);
+        }
+        return lowestY < height;
     }
 
     public bool IsGrounded(SceneNode part)
@@ -868,8 +898,89 @@ public sealed class PhysicsSimulationService
         return forces;
     }
 
-    private static float PartMass(SceneNode part) => Math.Max(.1f,
+    public static float PartMass(SceneNode part) => Math.Max(.1f,
         Math.Abs(part.Size[0] * part.Size[1] * part.Size[2]));
+
+    public static Vector3 AssemblyCenterOfMass(GameProject project, SceneNode part)
+    {
+        var members = GetAssemblyMembers(project, part);
+        if (members.Length == 0) return ReadVector3(part.Position);
+        var totalMass = members.Sum(PartMass);
+        return members.Aggregate(Vector3.Zero, (sum, member) => sum + ReadVector3(member.Position) * PartMass(member)) / totalMass;
+    }
+
+    public static void ApplyImpulse(GameProject project, SceneNode part, Vector3 impulse)
+    {
+        if (!float.IsFinite(impulse.X) || !float.IsFinite(impulse.Y) || !float.IsFinite(impulse.Z)) return;
+        var members = GetAssemblyMembers(project, part);
+        if (members.Length == 0 || members.Any(member => member.Anchored)) return;
+        var mass = members.Sum(PartMass);
+        var velocity = ReadVector3(part.Velocity) + impulse / mass;
+        if (!float.IsFinite(velocity.X) || !float.IsFinite(velocity.Y) || !float.IsFinite(velocity.Z)) return;
+        var values = new[] { Math.Clamp(velocity.X, -10000, 10000), Math.Clamp(velocity.Y, -10000, 10000), Math.Clamp(velocity.Z, -10000, 10000) };
+        foreach (var member in members) member.Velocity = (float[])values.Clone();
+    }
+
+    public static void ApplyImpulseAtPosition(GameProject project, SceneNode part, Vector3 impulse, Vector3 worldPosition)
+    {
+        if (!float.IsFinite(impulse.X) || !float.IsFinite(impulse.Y) || !float.IsFinite(impulse.Z)
+            || !float.IsFinite(worldPosition.X) || !float.IsFinite(worldPosition.Y) || !float.IsFinite(worldPosition.Z)) return;
+        var members = GetAssemblyMembers(project, part);
+        if (members.Length == 0 || members.Any(member => member.Anchored)) return;
+        var center = AssemblyCenterOfMass(project, part);
+        var angularImpulse = Vector3.Cross(worldPosition - center, impulse);
+        var inertia = members.Sum(member =>
+        {
+            var offset = ReadVector3(member.Position) - center;
+            return PartMomentOfInertia(member) + PartMass(member) * offset.LengthSquared();
+        });
+        if (!float.IsFinite(inertia) || inertia <= .000001f) return;
+        ApplyImpulse(project, part, impulse);
+        var angularVelocity = ReadVector3(part.AssemblyAngularVelocity) + angularImpulse / inertia;
+        if (!float.IsFinite(angularVelocity.X) || !float.IsFinite(angularVelocity.Y) || !float.IsFinite(angularVelocity.Z)) return;
+        var values = new[] { Math.Clamp(angularVelocity.X, -10000, 10000), Math.Clamp(angularVelocity.Y, -10000, 10000), Math.Clamp(angularVelocity.Z, -10000, 10000) };
+        foreach (var member in members) member.AssemblyAngularVelocity = (float[])values.Clone();
+    }
+
+    public static void ApplyAngularImpulse(GameProject project, SceneNode part, Vector3 impulse)
+    {
+        if (!float.IsFinite(impulse.X) || !float.IsFinite(impulse.Y) || !float.IsFinite(impulse.Z)) return;
+        var members = GetAssemblyMembers(project, part);
+        if (members.Length == 0 || members.Any(member => member.Anchored)) return;
+        var center = AssemblyCenterOfMass(project, part);
+        var inertia = members.Sum(member =>
+        {
+            var offset = ReadVector3(member.Position) - center;
+            return PartMomentOfInertia(member) + PartMass(member) * offset.LengthSquared();
+        });
+        if (!float.IsFinite(inertia) || inertia <= .000001f) return;
+        var angularVelocity = ReadVector3(part.AssemblyAngularVelocity) + impulse / inertia;
+        if (!float.IsFinite(angularVelocity.X) || !float.IsFinite(angularVelocity.Y) || !float.IsFinite(angularVelocity.Z)) return;
+        var values = new[] { Math.Clamp(angularVelocity.X, -10000, 10000), Math.Clamp(angularVelocity.Y, -10000, 10000), Math.Clamp(angularVelocity.Z, -10000, 10000) };
+        foreach (var member in members) member.AssemblyAngularVelocity = (float[])values.Clone();
+    }
+
+    private static SceneNode[] GetAssemblyMembers(GameProject project, SceneNode part)
+    {
+        var parts = GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
+        if (!parts.Any(member => member.Id == part.Id)) return [];
+        var connected = new HashSet<string>(StringComparer.Ordinal) { part.Id };
+        var constraints = GameProjectStore.Flatten(project.Workspace.Children)
+            .Where(node => node.Enabled && node.Type is "WeldConstraint" or "Weld" or "Motor6D").ToArray();
+        bool changed;
+        do
+        {
+            changed = false;
+            foreach (var constraint in constraints)
+            {
+                if (connected.Contains(constraint.Part0) && connected.Add(constraint.Part1)) changed = true;
+                if (connected.Contains(constraint.Part1) && connected.Add(constraint.Part0)) changed = true;
+            }
+        } while (changed);
+        return parts.Where(member => connected.Contains(member.Id)).ToArray();
+    }
+
+    private static Vector3 ReadVector3(float[] values) => new(values[0], values[1], values[2]);
 
     private Dictionary<string, List<VelocityTarget>> BuildVelocityMap(SceneNode[] parts)
     {

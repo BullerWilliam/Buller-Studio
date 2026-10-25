@@ -12,10 +12,12 @@ public sealed class SoundPlaybackService : IDisposable
 {
     private readonly GameProject project;
     private readonly Action<SceneNode> stateChanged;
+    private readonly Action<SceneNode, string>? signalFired;
     private readonly Dispatcher dispatcher;
     private readonly Dictionary<string, Playback> active = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, float> audioMeters = new(StringComparer.Ordinal);
     private bool disposed;
+    private bool globallyPaused;
 
     private readonly record struct EchoParameters(float Delay, float Feedback, float DryLevel, float WetLevel, bool ContinueTail);
     private readonly record struct DistortionParameters(float Level);
@@ -25,10 +27,11 @@ public sealed class SoundPlaybackService : IDisposable
     private readonly record struct TremoloParameters(float Depth, float Duty, float Frequency);
     private readonly record struct ReverbParameters(float DecayTime, float Density, float Diffusion, float DryLevel, float WetLevel);
 
-    public SoundPlaybackService(GameProject project, Action<SceneNode> stateChanged)
+    public SoundPlaybackService(GameProject project, Action<SceneNode> stateChanged, Action<SceneNode, string>? signalFired = null)
     {
         this.project = project;
         this.stateChanged = stateChanged;
+        this.signalFired = signalFired;
         dispatcher = Dispatcher.CurrentDispatcher;
     }
 
@@ -37,13 +40,16 @@ public sealed class SoundPlaybackService : IDisposable
     public void Pause()
     {
         if (disposed) return;
+        globallyPaused = true;
         foreach (var playback in active.Values) playback.Output.Pause();
     }
 
     public void Resume()
     {
         if (disposed) return;
-        foreach (var playback in active.Values) playback.Output.Play();
+        globallyPaused = false;
+        foreach (var playback in active.Values)
+            if (!playback.Node.SoundPaused) playback.Output.Play();
     }
 
     public void Update(float[] listenerPosition)
@@ -81,6 +87,20 @@ public sealed class SoundPlaybackService : IDisposable
             var compressorParameters = GetCompressorParameters(sound, nodes, nodesById);
             if (active.TryGetValue(sound.Id, out var playback) && string.Equals(playback.Path, path, StringComparison.OrdinalIgnoreCase))
             {
+                if (sound.SoundSeekTarget is { } seekTarget)
+                {
+                    var wasPlaying = playback.Output.PlaybackState == PlaybackState.Playing;
+                    if (wasPlaying) playback.Output.Pause();
+                    Seek(playback.Reader, sound, seekTarget);
+                    ResetProcessors(playback);
+                    if (wasPlaying && !globallyPaused && !sound.SoundPaused) playback.Output.Play();
+                }
+                var currentTime = (float)playback.Reader.CurrentTime.TotalSeconds;
+                if (float.IsFinite(currentTime) && Math.Abs(currentTime - sound.SoundTimePosition) > .01f)
+                {
+                    sound.SoundTimePosition = currentTime;
+                    stateChanged(sound);
+                }
                 playback.Output.Volume = (float)volume;
                 playback.Meter.SetGain((float)volume);
                 playback.Provider.Rate = GetPlaybackSpeed(sound.PlaybackSpeed);
@@ -93,6 +113,11 @@ public sealed class SoundPlaybackService : IDisposable
                 playback.Flange.SetParameters(flangeParameters);
                 playback.Tremolo.SetParameters(tremoloParameters);
                 playback.Reverb.SetParameters(reverbParameters);
+                if (globallyPaused || sound.SoundPaused)
+                {
+                    if (playback.Output.PlaybackState == PlaybackState.Playing) playback.Output.Pause();
+                }
+                else if (playback.Output.PlaybackState != PlaybackState.Playing) playback.Output.Play();
                 continue;
             }
 
@@ -259,6 +284,7 @@ public sealed class SoundPlaybackService : IDisposable
         try
         {
             reader = new MediaFoundationReader(path);
+            Seek(reader, sound, sound.SoundSeekTarget ?? sound.SoundTimePosition);
             var provider = new SoundTouchWaveProvider(reader) { Rate = GetPlaybackSpeed(sound.PlaybackSpeed), PitchOctaves = pitchOctaves };
             var meter = new LevelMeterWaveProvider(provider, level => audioMeters[sound.Id] = level) { Gain = (float)volume };
             audioMeters[sound.Id] = 0;
@@ -280,10 +306,12 @@ public sealed class SoundPlaybackService : IDisposable
             reverb.SetParameters(reverbParameters);
             output = new WaveOutEvent { Volume = (float)volume };
             output.Init(reverb);
-            var playback = new Playback(output, reader, provider, meter, distortion, equalizer, chorus, compressor, echo, flange, tremolo, reverb, path);
+            var playback = new Playback(sound, output, reader, provider, meter, distortion, equalizer, chorus, compressor, echo, flange, tremolo, reverb, path);
             active[sound.Id] = playback;
             output.PlaybackStopped += (_, eventArgs) => dispatcher.BeginInvoke(new Action(() => HandlePlaybackStopped(sound, playback, eventArgs.Exception)));
             output.Play();
+            if (globallyPaused || sound.SoundPaused) output.Pause();
+            else signalFired?.Invoke(sound, "Played");
         }
         catch (Exception exception) when (IsAudioException(exception))
         {
@@ -293,6 +321,8 @@ public sealed class SoundPlaybackService : IDisposable
             reader?.Dispose();
             audioMeters.TryRemove(sound.Id, out _);
             sound.Playing = false;
+            sound.SoundPaused = false;
+            sound.SoundTimePosition = 0;
             stateChanged(sound);
         }
     }
@@ -300,28 +330,57 @@ public sealed class SoundPlaybackService : IDisposable
     private void HandlePlaybackStopped(SceneNode sound, Playback playback, Exception? error)
     {
         if (disposed || !active.TryGetValue(sound.Id, out var current) || !ReferenceEquals(current, playback)) return;
-        if (error is null && sound.Playing && sound.Looped)
+        if (error is null && sound.Playing && !sound.SoundPaused && sound.Looped)
         {
             try
             {
                 playback.Reader.Position = 0;
-                playback.Provider.Clear();
-                playback.Chorus.Reset();
-                playback.Compressor.Reset();
-                playback.Echo.Reset();
-                playback.Flange.Reset();
-                playback.Tremolo.Reset();
-                playback.Reverb.Reset();
+                sound.SoundTimePosition = 0;
+                ResetProcessors(playback);
                 playback.Output.Init(playback.Reverb);
                 playback.Output.Play();
+                stateChanged(sound);
+                signalFired?.Invoke(sound, "DidLoop");
                 return;
             }
             catch (Exception exception) when (IsAudioException(exception)) { }
         }
 
+        var endedNaturally = error is null && sound.Playing && !sound.SoundPaused;
         sound.Playing = false;
+        sound.SoundPaused = false;
+        sound.SoundTimePosition = 0;
         Stop(sound.Id);
         stateChanged(sound);
+        if (endedNaturally) signalFired?.Invoke(sound, "Ended");
+    }
+
+    private static void Seek(MediaFoundationReader reader, SceneNode sound, float requestedTime)
+    {
+        sound.SoundSeekTarget = null;
+        var duration = Math.Max(0, reader.TotalTime.TotalSeconds);
+        var maximum = double.IsFinite(duration) ? (float)Math.Min(duration, float.MaxValue) : 0;
+        var time = float.IsFinite(requestedTime) ? Math.Clamp(requestedTime, 0, maximum) : 0;
+        try
+        {
+            reader.CurrentTime = TimeSpan.FromSeconds(time);
+            sound.SoundTimePosition = time;
+        }
+        catch (Exception exception) when (IsAudioException(exception))
+        {
+            sound.SoundTimePosition = 0;
+        }
+    }
+
+    private static void ResetProcessors(Playback playback)
+    {
+        playback.Provider.Clear();
+        playback.Chorus.Reset();
+        playback.Compressor.Reset();
+        playback.Echo.Reset();
+        playback.Flange.Reset();
+        playback.Tremolo.Reset();
+        playback.Reverb.Reset();
     }
 
     private static bool IsAudioException(Exception exception) => exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or NotSupportedException or FormatException or InvalidDataException or System.Runtime.InteropServices.COMException;
@@ -353,7 +412,7 @@ public sealed class SoundPlaybackService : IDisposable
         audioMeters.TryRemove(id, out _);
     }
 
-    private sealed record Playback(WaveOutEvent Output, MediaFoundationReader Reader, SoundTouchWaveProvider Provider, LevelMeterWaveProvider Meter, DistortionWaveProvider Distortion, EqualizerWaveProvider Equalizer, FlangeWaveProvider Chorus, CompressorWaveProvider Compressor, EchoWaveProvider Echo, FlangeWaveProvider Flange, TremoloWaveProvider Tremolo, ReverbWaveProvider Reverb, string Path);
+    private sealed record Playback(SceneNode Node, WaveOutEvent Output, MediaFoundationReader Reader, SoundTouchWaveProvider Provider, LevelMeterWaveProvider Meter, DistortionWaveProvider Distortion, EqualizerWaveProvider Equalizer, FlangeWaveProvider Chorus, CompressorWaveProvider Compressor, EchoWaveProvider Echo, FlangeWaveProvider Flange, TremoloWaveProvider Tremolo, ReverbWaveProvider Reverb, string Path);
 
     private sealed class LevelMeterWaveProvider(IWaveProvider source, Action<float> report) : IWaveProvider
     {

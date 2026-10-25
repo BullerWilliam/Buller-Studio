@@ -62,6 +62,38 @@ public static class SceneModelService
         ];
     }
 
+    public static float[] GetExtentsSize(SceneNode model)
+    {
+        var parts = GameProjectStore.Flatten(model.Children)
+            .Where(node => SceneNodeTypes.IsBasePart(node) || node.Type == "ImageLabel")
+            .ToArray();
+        if (parts.Length == 0) return [0, 0, 0];
+        var lower = new[] { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
+        var upper = new[] { float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity };
+        foreach (var part in parts)
+        {
+            var rotation = RotationMath.FromDegrees(part.Rotation);
+            var axes = new[]
+            {
+                Vector3.TransformNormal(Vector3.UnitX, rotation),
+                Vector3.TransformNormal(Vector3.UnitY, rotation),
+                Vector3.TransformNormal(Vector3.UnitZ, rotation)
+            };
+            for (var axis = 0; axis < 3; axis++)
+            {
+                var extent = Enumerable.Range(0, 3).Sum(localAxis => Math.Abs(axis switch
+                {
+                    0 => axes[localAxis].X,
+                    1 => axes[localAxis].Y,
+                    _ => axes[localAxis].Z
+                }) * Math.Abs(part.Size[localAxis]) * .5f);
+                lower[axis] = Math.Min(lower[axis], part.Position[axis] - extent);
+                upper[axis] = Math.Max(upper[axis], part.Position[axis] + extent);
+            }
+        }
+        return [upper[0] - lower[0], upper[1] - lower[1], upper[2] - lower[2]];
+    }
+
     public static bool MoveTo(SceneNode model, float[] position)
     {
         if (model.Type != "Model" || position.Length != 3 || position.Any(value => !float.IsFinite(value))) return false;
@@ -99,4 +131,49 @@ public static class SceneModelService
         model.Rotation = (float[])rotation.Clone();
         return true;
     }
+
+    public static bool ScaleTo(SceneNode model, float scale)
+    {
+        if (model.Type != "Model" || !float.IsFinite(scale)) return false;
+        scale = Math.Clamp(scale, .01f, 1000);
+        var currentScale = float.IsFinite(model.ModelScale) && model.ModelScale > 0 ? model.ModelScale : 1;
+        if (Math.Abs(scale - currentScale) < .000001f) return false;
+        var factor = scale / currentScale;
+        var pivot = new Vector3(GetPivot(model)[0], GetPivot(model)[1], GetPivot(model)[2]);
+        foreach (var node in GameProjectStore.Flatten(model.Children))
+        {
+            if (node.Type == "Model")
+            {
+                node.Position = ScalePosition(node.Position, pivot, factor);
+                node.ModelScale = Math.Clamp((float.IsFinite(node.ModelScale) && node.ModelScale > 0 ? node.ModelScale : 1) * factor, .01f, 1000);
+            }
+            else if (SceneNodeTypes.IsBasePart(node) || node.Type == "ImageLabel")
+            {
+                node.Position = ScalePosition(node.Position, pivot, factor);
+                node.Size = node.Size.Select(value => Math.Clamp(value * factor, .05f, 100000)).ToArray();
+            }
+            else if (node.Type == "Attachment")
+                node.Position = ScaleVector(node.Position, factor);
+            else if (node.Type is "Weld" or "Motor6D")
+            {
+                node.Part0OffsetPosition = ScaleVector(node.Part0OffsetPosition, factor);
+                node.Part1OffsetPosition = ScaleVector(node.Part1OffsetPosition, factor);
+                if (node.Type == "Motor6D") node.MotorTransformPosition = ScaleVector(node.MotorTransformPosition, factor);
+            }
+        }
+        model.Position = [pivot.X, pivot.Y, pivot.Z];
+        model.HasModelPivot = true;
+        model.ModelScale = scale;
+        return true;
+    }
+
+    private static float[] ScalePosition(float[] position, Vector3 pivot, float factor) =>
+    [
+        pivot.X + (position[0] - pivot.X) * factor,
+        pivot.Y + (position[1] - pivot.Y) * factor,
+        pivot.Z + (position[2] - pivot.Z) * factor
+    ];
+
+    private static float[] ScaleVector(float[] vector, float factor) =>
+        vector.Select(value => Math.Clamp(value * factor, -100000, 100000)).ToArray();
 }

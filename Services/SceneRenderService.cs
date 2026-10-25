@@ -203,6 +203,11 @@ public sealed class SceneRenderService
 
     public void UpdateNode(SceneNode node, GameProject project)
     {
+        if (SceneNodeTypes.IsSpecialMesh(node) && FindPartParent(project, node) is { Type: "Part" } meshParent)
+        {
+            UpdateNode(meshParent, project);
+            return;
+        }
         if (node.Type == "BodyColors")
         {
             var affectedPartIds = bodyColorOverrides.Keys.ToHashSet(StringComparer.Ordinal);
@@ -230,7 +235,7 @@ public sealed class SceneRenderService
         }
         if (SceneNodeTypes.IsPostEffectClass(node))
         {
-            if (SceneNodeTypes.IsPostEffect(node)) RefreshPostEffects(project);
+            if (node.Type == "BlurEffect") RefreshPostEffects(project);
             else Refresh(project);
             return;
         }
@@ -325,7 +330,7 @@ public sealed class SceneRenderService
             viewport.Items.Add(model);
             refreshSelection = true;
         }
-        model.Transform = node.Type is "Decal" or "Texture" && FindPartParent(project, node) is { } parent ? TransformFor(parent) : TransformFor(node);
+        model.Transform = TransformForVisual(node, project);
         model.IsThrowingShadow = node.Type is not ("Decal" or "Texture") && node.CastShadow;
         model.IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0;
         if (node.Type is "Decal" or "Texture" or "ImageLabel")
@@ -526,6 +531,38 @@ public sealed class SceneRenderService
         ApplyCameraInput(direction, amount, 0, 0, project);
     }
 
+    public bool FocusOnSelection(SceneNode selection, GameProject? project = null)
+    {
+        if (selection.Type != "Model" && !SceneNodeTypes.IsBasePart(selection)) return false;
+        var parts = SceneNodeTypes.IsBasePart(selection)
+            ? new[] { selection }
+            : GameProjectStore.Flatten(selection.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
+        var center = selection.Type == "Model" ? SceneModelService.GetPivot(selection) : (float[])selection.Position.Clone();
+        var radius = parts.Length == 0 ? 1f : parts.Max(part =>
+        {
+            var offset = new Vector3(part.Position[0] - center[0], part.Position[1] - center[1], part.Position[2] - center[2]);
+            var halfDiagonal = new Vector3(Math.Abs(part.Size[0]), Math.Abs(part.Size[1]), Math.Abs(part.Size[2])).Length() * .5f;
+            return offset.Length() + halfDiagonal;
+        });
+        var fieldOfView = Math.Clamp(cameraNode.FieldOfView, 1, 120) * Math.PI / 180;
+        var aspect = viewport.ActualHeight > 1 ? Math.Max(1, viewport.ActualWidth) / viewport.ActualHeight : 1;
+        var limitingHalfAngle = Math.Atan(Math.Tan(fieldOfView / 2) * Math.Min(aspect, 1));
+        var distance = Math.Clamp(radius / Math.Max(.01, Math.Sin(limitingHalfAngle)) * 1.2, 2, 100000);
+        var pitch = cameraNode.CameraMode == "Subject" ? orbitPitch : cameraNode.Rotation[0];
+        var yaw = cameraNode.CameraMode == "Subject" ? orbitYaw : cameraNode.Rotation[1];
+        cameraNode.Rotation[0] = pitch;
+        cameraNode.Rotation[1] = yaw;
+        var direction = LookDirection(pitch, yaw);
+        cameraNode.CameraMode = "Custom";
+        cameraNode.Position = [
+            center[0] - direction.X * (float)distance,
+            center[1] - direction.Y * (float)distance,
+            center[2] - direction.Z * (float)distance
+        ];
+        UpdateCamera(project);
+        return true;
+    }
+
     public void ApplyCameraInput(Vector3 direction, float amount, float yawDelta, float pitchDelta, GameProject? project = null)
     {
         if (cameraNode.CameraMode != "Custom") return;
@@ -584,6 +621,7 @@ public sealed class SceneRenderService
     private MeshGeometryModel3D CreateVisual(SceneNode node, GameProject project)
     {
         var builder = new MeshBuilder();
+        var specialMesh = node.Type == "Part" ? node.Children.FirstOrDefault(SceneNodeTypes.IsSpecialMesh) : null;
         if (node.Type == "ImageLabel")
         {
             const float halfX = .5f; const float halfY = .5f;
@@ -597,6 +635,14 @@ public sealed class SceneRenderService
             try { builder = ReadObj(ResolveAsset(project, node.Asset)); }
             catch { builder.AddBox(Vector3.Zero, 1, 1, 1); }
         }
+        else if (specialMesh is not null && specialMesh.SpecialMeshType == "FileMesh" && !string.IsNullOrWhiteSpace(specialMesh.Asset) && File.Exists(ResolveAsset(project, specialMesh.Asset)))
+        {
+            try { builder = ReadObj(ResolveAsset(project, specialMesh.Asset)); }
+            catch { builder.AddBox(Vector3.Zero, 1, 1, 1); }
+        }
+        else if (specialMesh is not null && specialMesh.SpecialMeshType is "Sphere" or "Head") builder.AddSphere(Vector3.Zero, .5, 24, 16);
+        else if (specialMesh is not null && specialMesh.SpecialMeshType == "Cylinder") builder.AddCylinder(new Vector3(0, -.5f, 0), new Vector3(0, .5f, 0), .5, 24, true, true);
+        else if (specialMesh is not null && specialMesh.SpecialMeshType == "Wedge") AddWedge(builder);
         else if (node.Type == "Part" && node.Shape == "Ball") builder.AddSphere(Vector3.Zero, .5, 24, 16);
         else if (node.Type == "Part" && node.Shape == "Cylinder") builder.AddCylinder(new Vector3(0, -.5f, 0), new Vector3(0, .5f, 0), .5, 24, true, true);
         else if (node.Type == "WedgePart") AddWedge(builder);
@@ -608,11 +654,18 @@ public sealed class SceneRenderService
         var decalParent = node.Type is "Decal" or "Texture" ? FindPartParent(project, node) : null;
         var geometry = builder.ToMeshGeometry3D();
         if (node.Type == "Texture" && decalParent is not null) ApplyTextureTiling(geometry, node, decalParent);
-        var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = node.Type == "Attachment" ? AttachmentTransformFor(node, project) : node.Type == "Explosion" ? new TranslateTransform3D(node.Position[0], node.Position[1], node.Position[2]) : decalParent is null ? TransformFor(node) : TransformFor(decalParent), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment" or "Explosion") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture" or "Explosion"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel" or "Explosion") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
+        var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = TransformForVisual(node, project), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment" or "Explosion") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture" or "Explosion"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel" or "Explosion") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
+        if (specialMesh is not null && visual.Material is PhongMaterial meshMaterial)
+        {
+            var tint = specialMesh.SpecialMeshVertexColor;
+            var diffuse = meshMaterial.DiffuseColor;
+            meshMaterial.DiffuseColor = new Color4(diffuse.Red * tint[0], diffuse.Green * tint[1], diffuse.Blue * tint[2], diffuse.Alpha);
+        }
         if (node.Type == "MeshPart") ApplySurfaceAppearance(visual, node, project);
         if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type is "Decal" or "Texture" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture)) LoadImageAsset(visual, ResolveTexture(project, node.Texture), node);
+        if (specialMesh is not null && !string.IsNullOrWhiteSpace(specialMesh.Texture)) LoadImageAsset(visual, ResolveTexture(project, specialMesh.Texture), specialMesh);
         if (node.Type is "Decal" or "Texture" && visual.Material is not PhongMaterial { DiffuseMap: not null })
             visual.Visibility = System.Windows.Visibility.Collapsed;
         renderedAssetSources[node.Id] = GetAssetSource(node, project);
@@ -625,7 +678,7 @@ public sealed class SceneRenderService
         "Decal" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
         "Texture" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency}|{node.StudsPerTileU}|{node.StudsPerTileV}|{node.OffsetStudsU}|{node.OffsetStudsV}|{string.Join(',', FindPartParent(project, node)?.Size ?? [])}",
         "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}|{string.Join('|', node.Children.Where(SceneNodeTypes.IsSurfaceAppearance).Select(surface => $"{ResolveAsset(project, surface.SurfaceAppearanceColorMap)}:{ResolveAsset(project, surface.SurfaceAppearanceNormalMap)}:{ResolveAsset(project, surface.SurfaceAppearanceRoughnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceMetalnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceEmissiveMask)}:{surface.SurfaceAppearanceColor}:{surface.SurfaceAppearanceEmissiveTint}:{surface.SurfaceAppearanceEmissiveStrength}"))}",
-        "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}",
+        "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}|{string.Join('|', node.Children.Where(SceneNodeTypes.IsSpecialMesh).Select(mesh => $"{mesh.SpecialMeshType}:{mesh.SpecialMeshScale[0]},{mesh.SpecialMeshScale[1]},{mesh.SpecialMeshScale[2]}:{mesh.SpecialMeshOffset[0]},{mesh.SpecialMeshOffset[1]},{mesh.SpecialMeshOffset[2]}:{string.Join(',', mesh.SpecialMeshVertexColor)}:{ResolveAsset(project, mesh.Asset)}:{ResolveTexture(project, mesh.Texture)}"))}",
         "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat" or "VehicleSeat" => MaterialKey(node),
         _ => string.Empty
     };
@@ -1683,6 +1736,7 @@ public sealed class SceneRenderService
         }
         catch { parsed = Colors.CornflowerBlue; }
         parsed = ApplyColorCorrection(parsed);
+        var bloomStrength = GetBloomStrength(parsed);
         var red = parsed.R / 255f;
         var green = parsed.G / 255f;
         var blue = parsed.B / 255f;
@@ -1699,8 +1753,30 @@ public sealed class SceneRenderService
             DiffuseColor = new Color4(red, green, blue, parsed.A / 255f * (1 - EffectiveTransparency(node))),
             SpecularColor = new Color4(specular, specular, specular, 1),
             SpecularShininess = node.Material is "Metal" or "CorrodedMetal" or "DiamondPlate" or "Foil" or "Glass" or "Ice" or "Glacier" ? 100 : 24,
-            EmissiveColor = node.Material == "Neon" ? new Color4(red * .5f, green * .5f, blue * .5f, 1) : new Color4(0, 0, 0, 1)
+            EmissiveColor = node.Material == "Neon"
+                ? new Color4(red * (.5f + bloomStrength), green * (.5f + bloomStrength), blue * (.5f + bloomStrength), 1)
+                : new Color4(red * bloomStrength, green * bloomStrength, blue * bloomStrength, 1)
         };
+    }
+
+    private float GetBloomStrength(System.Windows.Media.Color color)
+    {
+        if (activeProject is null) return 0;
+        var camera = activeProject.Workspace.Children.FirstOrDefault(node => node.Type == "Camera");
+        var luminance = .2126f * color.R / 255f + .7152f * color.G / 255f + .0722f * color.B / 255f;
+        var remaining = 1f;
+        foreach (var effect in activeProject.Lighting.Children.Concat(camera?.Children ?? [])
+                     .Where(node => node.Type == "BloomEffect" && node.Enabled && node.EffectSize > 0))
+        {
+            var threshold = Math.Clamp(effect.BloomThreshold, 0, 2);
+            if (luminance <= threshold) continue;
+            var range = Math.Max(.001f, 1 - threshold);
+            var contribution = Math.Clamp(effect.BloomIntensity, 0, 1)
+                * Math.Clamp((luminance - threshold) / range, 0, 1)
+                * Math.Clamp(effect.EffectSize / 24f, 0, 1.5f) * .35f;
+            remaining *= 1 - Math.Clamp(contribution, 0, .85f);
+        }
+        return 1 - remaining;
     }
 
     private System.Windows.Media.Color ApplyColorCorrection(System.Windows.Media.Color color)
@@ -1748,6 +1824,21 @@ public sealed class SceneRenderService
         transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(1, 0, 0), node.Rotation[0])));
         transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), node.Rotation[1])));
         transform.Children.Add(new TranslateTransform3D(node.Position[0], node.Position[1], node.Position[2]));
+        return transform;
+    }
+
+    private static Transform3D TransformForVisual(SceneNode node, GameProject project)
+    {
+        var transform = new Transform3DGroup();
+        if (node.Type == "Part" && node.Children.FirstOrDefault(SceneNodeTypes.IsSpecialMesh) is { } specialMesh)
+        {
+            transform.Children.Add(new ScaleTransform3D(specialMesh.SpecialMeshScale[0], specialMesh.SpecialMeshScale[1], specialMesh.SpecialMeshScale[2]));
+            transform.Children.Add(new TranslateTransform3D(specialMesh.SpecialMeshOffset[0], specialMesh.SpecialMeshOffset[1], specialMesh.SpecialMeshOffset[2]));
+        }
+        var parent = node.Type is "Decal" or "Texture" ? FindPartParent(project, node) : null;
+        transform.Children.Add(node.Type == "Attachment" ? AttachmentTransformFor(node, project)
+            : node.Type == "Explosion" ? new TranslateTransform3D(node.Position[0], node.Position[1], node.Position[2])
+            : parent is null ? TransformFor(node) : TransformFor(parent));
         return transform;
     }
 

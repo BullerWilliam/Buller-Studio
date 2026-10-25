@@ -264,6 +264,7 @@ public static class GameProjectStore
         project.Workspace ??= new SceneNode { Id = "workspace", Type = "Workspace", Name = "Workspace" };
         project.Workspace.Children ??= [];
         project.Workspace.Gravity = float.IsFinite(project.Workspace.Gravity) ? Math.Clamp(project.Workspace.Gravity, 0, 1000) : 24;
+        project.Workspace.FallenPartsDestroyHeight = float.IsFinite(project.Workspace.FallenPartsDestroyHeight) ? Math.Clamp(project.Workspace.FallenPartsDestroyHeight, -1000000, 1000000) : -500;
         var terrain = project.Workspace.Children.FirstOrDefault(node => node.Type == "Terrain");
         if (terrain is null)
         {
@@ -360,6 +361,7 @@ public static class GameProjectStore
             node.Children ??= [];
             node.Position = EnsureVector(node.Position, [0, 0, 0]);
             node.Rotation = EnsureVector(node.Rotation, [0, 0, 0]);
+            if (node.Type == "Model") node.ModelScale = float.IsFinite(node.ModelScale) && node.ModelScale > 0 ? Math.Clamp(node.ModelScale, .01f, 1000) : 1;
             node.Part0OffsetPosition = EnsureVector(node.Part0OffsetPosition, [0, 0, 0]);
             node.Part0OffsetRotation = EnsureVector(node.Part0OffsetRotation, [0, 0, 0]);
             node.Part1OffsetPosition = EnsureVector(node.Part1OffsetPosition, [0, 0, 0]);
@@ -416,6 +418,16 @@ public static class GameProjectStore
             node.FillDirectionMaxCells = Math.Clamp(node.FillDirectionMaxCells, 0, 1000);
             node.Scale = float.IsFinite(node.Scale) ? Math.Clamp(node.Scale, .01f, 100) : 1;
             if (node.Shape is not ("Block" or "Ball" or "Cylinder")) node.Shape = "Block";
+            if (node.SpecialMeshType is not ("Brick" or "FileMesh" or "Head" or "Sphere" or "Cylinder" or "Wedge" or "Torso")) node.SpecialMeshType = "Brick";
+            node.SpecialMeshScale = EnsureVector(node.SpecialMeshScale, [1, 1, 1]);
+            node.SpecialMeshOffset = EnsureVector(node.SpecialMeshOffset, [0, 0, 0]);
+            for (var axis = 0; axis < 3; axis++)
+            {
+                node.SpecialMeshScale[axis] = float.IsFinite(node.SpecialMeshScale[axis]) ? Math.Clamp(node.SpecialMeshScale[axis], .01f, 1000) : 1;
+                node.SpecialMeshOffset[axis] = float.IsFinite(node.SpecialMeshOffset[axis]) ? Math.Clamp(node.SpecialMeshOffset[axis], -100000, 100000) : 0;
+            }
+            node.SpecialMeshVertexColor = EnsureVector(node.SpecialMeshVertexColor, [1, 1, 1]);
+            for (var axis = 0; axis < 3; axis++) node.SpecialMeshVertexColor[axis] = float.IsFinite(node.SpecialMeshVertexColor[axis]) ? Math.Clamp(node.SpecialMeshVertexColor[axis], 0, 1) : 1;
             if (!SceneNodeTypes.IsFace(node.Face)) node.Face = "Front";
             node.StudsPerTileU = float.IsFinite(node.StudsPerTileU) ? Math.Clamp(node.StudsPerTileU, .05f, 1000) : 2;
             node.StudsPerTileV = float.IsFinite(node.StudsPerTileV) ? Math.Clamp(node.StudsPerTileV, .05f, 1000) : 2;
@@ -479,7 +491,9 @@ public static class GameProjectStore
                 : node.Type == "ColorCorrectionEffect" ? 0 : 1;
             node.Range = float.IsFinite(node.Range) ? Math.Clamp(node.Range, 1, 1000) : 16;
             node.SecondaryColor ??= "#FFE69A";
-            node.EffectSize = float.IsFinite(node.EffectSize) ? Math.Clamp(node.EffectSize, node.Type == "Fire" ? 2 : node.Type == "BlurEffect" ? 0 : .1f, node.Type == "Fire" ? 30 : node.Type == "BlurEffect" ? 56 : 100) : node.Type == "Fire" ? 5 : 1;
+            node.EffectSize = float.IsFinite(node.EffectSize) ? Math.Clamp(node.EffectSize, node.Type == "Fire" ? 2 : node.Type is "BlurEffect" or "BloomEffect" ? 0 : .1f, node.Type == "Fire" ? 30 : node.Type is "BlurEffect" or "BloomEffect" ? 56 : 100) : node.Type == "Fire" ? 5 : node.Type == "BloomEffect" ? 24 : 1;
+            node.BloomIntensity = float.IsFinite(node.BloomIntensity) ? Math.Clamp(node.BloomIntensity, 0, 1) : 1;
+            node.BloomThreshold = float.IsFinite(node.BloomThreshold) ? Math.Clamp(node.BloomThreshold, 0, 2) : 1;
             node.Heat = float.IsFinite(node.Heat) ? Math.Clamp(node.Heat, -25, 25) : 9;
             node.RiseVelocity = float.IsFinite(node.RiseVelocity) ? Math.Clamp(node.RiseVelocity, -25, 25) : 1;
             node.Opacity = float.IsFinite(node.Opacity) ? Math.Clamp(node.Opacity, 0, 1) : .5f;
@@ -906,16 +920,28 @@ public static class GameProjectStore
                 ? destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"))
                 : destinationParent.Type == "ViewportFrame" && IsNodeInTree(project.Gui, destinationParent.Id)
                     && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
+        if (source.Type == "Animation")
+            return (destinationParent.Type is "Workspace" or "Folder" or "Configuration" or "Model" or "Humanoid" or "Tool" or "ReplicatedStorage" or "ServerStorage" or "ServerScriptService" or "StarterPack" or "StarterPlayer" or "StarterGui" or "Backpack" or "PlayerScripts" or "PlayerGui" || SceneNodeTypes.IsBasePart(destinationParent))
+                && source.Children.Count == 0;
+        if (source.Type == "AnimationController")
+            return destinationParent.Type == "Model" && source.Children.All(child => child.Type == "Animator" && IsWorkspaceSubtreeCompatible(child, "AnimationController"))
+                && !destinationParent.Children.Any(child => child.Type == "AnimationController" && child.Id != source.Id);
+        if (source.Type == "Animator")
+            return destinationParent.Type is "Humanoid" or "AnimationController" && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => child.Type == "Animator" && child.Id != source.Id);
         if (SceneNodeTypes.IsSurfaceAppearance(source))
             return destinationParent.Type == "MeshPart" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => SceneNodeTypes.IsSurfaceAppearance(child) && child.Id != source.Id);
-        if (source.Type is "BlurEffect" or "ColorCorrectionEffect")
+        if (SceneNodeTypes.IsSpecialMesh(source))
+            return destinationParent.Type == "Part" && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => SceneNodeTypes.IsSpecialMesh(child) && child.Id != source.Id);
+        if (source.Type is "BlurEffect" or "BloomEffect" or "ColorCorrectionEffect")
             return source.Children.Count == 0 && (destinationParent.Id == project.Lighting.Id
                 || destinationParent.Type == "Camera" && project.Workspace.Children.Any(camera => camera.Id == destinationParent.Id && camera.Type == "Camera"));
         if (destinationParent.Id == project.Lighting.Id)
             return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == source.Type && child.Id != source.Id);
-        if (source.Type is "Sky" or "Atmosphere" or "Clouds" or "ColorCorrectionEffect" || IsNodeInTree(project.Lighting, destinationParent.Id)) return false;
+        if (source.Type is "Sky" or "Atmosphere" or "Clouds" or "BloomEffect" or "BlurEffect" or "ColorCorrectionEffect" || IsNodeInTree(project.Lighting, destinationParent.Id)) return false;
         if (destinationParent.Id == project.SoundService.Id) return IsWorkspaceSubtreeCompatible(source, "SoundService") || source.Type == "Folder";
         if (IsNodeInTree(project.SoundService, destinationParent.Id)) return destinationParent.Type is "Folder" or "Configuration" or "Sound" or "SoundGroup" && IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
 
@@ -993,13 +1019,25 @@ public static class GameProjectStore
             && IsWorkspaceSubtreeCompatible(source, "Backpack");
         if (destinationParent.Type == "Terrain") return SceneNodeTypes.IsBasePart(source)
             && IsWorkspaceSubtreeCompatible(source, "Terrain");
+        if (source.Type == "Animation")
+            return (destinationParent.Type is "Workspace" or "Folder" or "Configuration" or "Model" or "Humanoid" or "Tool" or "ReplicatedStorage" or "ServerStorage" or "ServerScriptService" or "StarterPack" or "StarterPlayer" or "StarterGui" or "Backpack" or "PlayerScripts" or "PlayerGui" || SceneNodeTypes.IsBasePart(destinationParent))
+                && source.Children.Count == 0;
+        if (source.Type == "AnimationController")
+            return destinationParent.Type == "Model" && source.Children.All(child => child.Type == "Animator" && IsWorkspaceSubtreeCompatible(child, "AnimationController"))
+                && !destinationParent.Children.Any(child => child.Type == "AnimationController");
+        if (source.Type == "Animator")
+            return destinationParent.Type is "Humanoid" or "AnimationController" && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => child.Type == "Animator");
         if (SceneNodeTypes.IsSurfaceAppearance(source))
             return destinationParent.Type == "MeshPart" && source.Children.Count == 0
                 && !destinationParent.Children.Any(SceneNodeTypes.IsSurfaceAppearance);
+        if (SceneNodeTypes.IsSpecialMesh(source))
+            return destinationParent.Type == "Part" && source.Children.Count == 0
+                && !destinationParent.Children.Any(SceneNodeTypes.IsSpecialMesh);
         if (destinationParent.Type == "Team") return false;
         if (destinationParent.Type == "Lighting") return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0 && destinationParent.Children.All(child => child.Type != source.Type)
-            || source.Type is "BlurEffect" or "ColorCorrectionEffect" && source.Children.Count == 0;
-        if (source.Type is "BlurEffect" or "ColorCorrectionEffect") return destinationParent.Type == "Camera" && source.Children.Count == 0;
+            || source.Type is "BlurEffect" or "BloomEffect" or "ColorCorrectionEffect" && source.Children.Count == 0;
+        if (source.Type is "BlurEffect" or "BloomEffect" or "ColorCorrectionEffect") return destinationParent.Type == "Camera" && source.Children.Count == 0;
         if (destinationParent.Type is "Sound" or "SoundGroup") return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
         if (source.Type is "Sky" or "Atmosphere") return false;
         if (destinationParent.Type == "PlayerGui") return source.Type == "LocalScript" && source.Children.Count == 0 || source.Type == "ScreenGui" && IsGuiSubtreeCompatible(source, true);
@@ -1160,10 +1198,12 @@ public static class GameProjectStore
     private static bool IsWorkspaceSubtreeCompatible(SceneNode node, string? parentType)
     {
         if (node.Type == "Model" && (node.Children.Count(child => child.Type == "Humanoid") > 1
+            || node.Children.Count(child => child.Type == "AnimationController") > 1
             || node.Children.Count(child => child.Type == "BodyColors") > 1)) return false;
         if (SceneNodeTypes.IsSurfaceAppearance(node)) return parentType == "MeshPart" && node.Children.Count == 0;
+        if (SceneNodeTypes.IsSpecialMesh(node)) return parentType == "Part" && node.Children.Count == 0;
         if (node.Type == "MeshPart" && node.Children.Count(SceneNodeTypes.IsSurfaceAppearance) > 1) return false;
-        if (node.Type is "BlurEffect" or "ColorCorrectionEffect") return parentType is "Lighting" or "Camera" && node.Children.Count == 0;
+        if (node.Type is "BlurEffect" or "BloomEffect" or "ColorCorrectionEffect") return parentType is "Lighting" or "Camera" && node.Children.Count == 0;
         if (node.Type == "Terrain") return parentType == "Workspace" && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Terrain"));
         if (parentType == "Terrain") return SceneNodeTypes.IsBasePart(node)
             && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
@@ -1182,7 +1222,11 @@ public static class GameProjectStore
         if (node.Type is "BillboardGui" or "SurfaceGui")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
-        if (node.Type == "Humanoid") return parentType == "Model" && node.Children.Count == 0;
+        if (node.Type == "Humanoid") return parentType == "Model" && node.Children.Count(child => child.Type == "Animator") <= 1
+            && node.Children.All(child => child.Type == "Animator" && IsWorkspaceSubtreeCompatible(child, "Humanoid"));
+        if (node.Type == "AnimationController") return parentType == "Model" && node.Children.Count(child => child.Type == "Animator") <= 1
+            && node.Children.All(child => child.Type == "Animator" && IsWorkspaceSubtreeCompatible(child, "AnimationController"));
+        if (node.Type == "Animator") return parentType is "Humanoid" or "AnimationController" && node.Children.Count == 0;
         if (node.Type == "BodyColors") return parentType == "Model" && node.Children.Count == 0;
         if (node.Type == "PathfindingModifier") return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type == "PathfindingLink") return (parentType is "Workspace" or "Folder" or "Model" or "Configuration") && node.Children.Count == 0;

@@ -7,7 +7,10 @@ public sealed class SeatInteractionService
     private sealed record VehicleMotor(SceneNode Node, float WheelRadius);
     private sealed record VehicleMotorState(float AngularVelocity, float AngularSpeed, float MaxAcceleration, float TargetAngle);
     private readonly GameProject project;
-    private readonly PlayerCharacterService character;
+    private readonly SceneNode humanoid;
+    private readonly SceneNode root;
+    private readonly Action<float>? setFacingYaw;
+    private readonly PlayerCharacterService? managedCharacter;
     private SceneNode? seat;
     private float vehicleThrottle;
     private float vehicleSteer;
@@ -16,7 +19,17 @@ public sealed class SeatInteractionService
     public SeatInteractionService(GameProject project, PlayerCharacterService character)
     {
         this.project = project;
-        this.character = character;
+        managedCharacter = character;
+        humanoid = character.Humanoid;
+        root = character.Root;
+        setFacingYaw = character.SetFacingYaw;
+    }
+
+    public SeatInteractionService(GameProject project, SceneNode humanoid, SceneNode root)
+    {
+        this.project = project;
+        this.humanoid = humanoid;
+        this.root = root;
     }
 
     public bool IsSeated => seat is not null;
@@ -25,7 +38,7 @@ public sealed class SeatInteractionService
     public IReadOnlyList<SceneNode> Sit(SceneNode targetSeat, SceneNode humanoid)
     {
         if (targetSeat.Type is not ("Seat" or "VehicleSeat") || !targetSeat.CanCollide
-            || targetSeat.VehicleSeatDisabled || humanoid.Id != character.Humanoid.Id || character.Humanoid.Health <= 0
+            || targetSeat.VehicleSeatDisabled || humanoid.Id != this.humanoid.Id || this.humanoid.Health <= 0
             || !string.IsNullOrEmpty(targetSeat.Occupant) && targetSeat.Occupant != humanoid.Id
             || !GameProjectStore.Flatten(project.Workspace.Children).Any(node => ReferenceEquals(node, targetSeat))) return [];
 
@@ -35,15 +48,16 @@ public sealed class SeatInteractionService
         targetSeat.Occupant = humanoid.Id;
         targetSeat.VehicleSeatThrottleFloat = 0;
         targetSeat.VehicleSeatSteerFloat = 0;
-        character.IsSeated = true;
-        character.Root.Anchored = true;
-        character.Root.Position[0] = targetSeat.Position[0];
-        character.Root.Position[1] = SeatCenterTop(targetSeat) + 1.25f;
-        character.Root.Position[2] = targetSeat.Position[2];
-        character.Root.Velocity = [0, 0, 0];
-        character.SetFacingYaw(targetSeat.Rotation[1]);
+        if (managedCharacter is not null) managedCharacter.IsSeated = true;
+        root.Anchored = true;
+        root.Position[0] = targetSeat.Position[0];
+        root.Position[1] = SeatCenterTop(targetSeat) + 1.25f;
+        root.Position[2] = targetSeat.Position[2];
+        root.Velocity = [0, 0, 0];
+        if (setFacingYaw is not null) setFacingYaw(targetSeat.Rotation[1]);
+        else root.Rotation[1] = targetSeat.Rotation[1];
         changed[targetSeat.Id] = targetSeat;
-        changed[character.Root.Id] = character.Root;
+        changed[root.Id] = root;
         return changed.Values.ToArray();
     }
 
@@ -160,7 +174,9 @@ public sealed class SeatInteractionService
     {
         if (seat is null) return [];
         var stillPresent = GameProjectStore.Flatten(project.Workspace.Children).Any(node => ReferenceEquals(node, seat));
-        if (stillPresent && seat.CanCollide && !seat.VehicleSeatDisabled && character.Humanoid.Health > 0 && !jump) return [];
+        var characterPresent = GameProjectStore.Flatten(project.Workspace.Children).Any(node => node.Id == root.Id)
+            && GameProjectStore.Flatten(project.Workspace.Children).Any(node => node.Id == humanoid.Id);
+        if (stillPresent && characterPresent && seat.CanCollide && !seat.VehicleSeatDisabled && humanoid.Health > 0 && !jump) return [];
 
         var oldSeat = seat;
         seat = null;
@@ -168,39 +184,39 @@ public sealed class SeatInteractionService
         oldSeat.VehicleSeatThrottleFloat = 0;
         oldSeat.VehicleSeatSteerFloat = 0;
         oldSeat.VehicleSeatAreHingesDetected = 0;
-        character.IsSeated = false;
-        character.Root.Anchored = false;
-        character.Root.Position[1] = SeatCenterTop(oldSeat) + Math.Abs(character.Root.Size[1]) * .5f + .001f;
-        character.Root.Velocity = [0, 0, 0];
-        return [oldSeat, character.Root];
+        if (managedCharacter is not null) managedCharacter.IsSeated = false;
+        root.Anchored = false;
+        if (characterPresent) root.Position[1] = SeatCenterTop(oldSeat) + Math.Abs(root.Size[1]) * .5f + .001f;
+        root.Velocity = [0, 0, 0];
+        return characterPresent ? [oldSeat, root] : [oldSeat];
     }
 
     public IReadOnlyList<SceneNode> AfterPhysics()
     {
-        if (character.Humanoid.Health <= 0) return [];
+        if (humanoid.Health <= 0 || !GameProjectStore.Flatten(project.Workspace.Children).Any(node => node.Id == root.Id)) return [];
         if (seat is null)
         {
-            var root = character.Root;
             if (root.Velocity[1] > .01f) return [];
             seat = GameProjectStore.Flatten(project.Workspace.Children)
-                .Where(node => (node.Type is "Seat" or "VehicleSeat") && node.CanCollide && !node.VehicleSeatDisabled && (string.IsNullOrEmpty(node.Occupant) || node.Occupant == character.Humanoid.Id))
+                .Where(node => (node.Type is "Seat" or "VehicleSeat") && node.CanCollide && !node.VehicleSeatDisabled && (string.IsNullOrEmpty(node.Occupant) || node.Occupant == humanoid.Id))
                 .FirstOrDefault(node => CollisionGeometry.SweepFraction(root, node, 1, -.08f) < 1
                     && root.Position[1] >= node.Position[1]);
             if (seat is null) return [];
-            seat.Occupant = character.Humanoid.Id;
+            seat.Occupant = humanoid.Id;
             root.Anchored = true;
-            character.IsSeated = true;
+            if (managedCharacter is not null) managedCharacter.IsSeated = true;
         }
 
-        character.Root.Position[0] = seat.Position[0];
-        character.Root.Position[1] = SeatCenterTop(seat) + 1.25f;
-        character.Root.Position[2] = seat.Position[2];
-        character.Root.Velocity = [0, 0, 0];
-        seat.Occupant = character.Humanoid.Id;
+        root.Position[0] = seat.Position[0];
+        root.Position[1] = SeatCenterTop(seat) + 1.25f;
+        root.Position[2] = seat.Position[2];
+        root.Velocity = [0, 0, 0];
+        seat.Occupant = humanoid.Id;
         seat.VehicleSeatThrottleFloat = seat.Type == "VehicleSeat" ? vehicleThrottle : 0;
         seat.VehicleSeatSteerFloat = seat.Type == "VehicleSeat" ? vehicleSteer : 0;
-        character.SetFacingYaw(seat.Rotation[1]);
-        return [seat, character.Root];
+        if (setFacingYaw is not null) setFacingYaw(seat.Rotation[1]);
+        else root.Rotation[1] = seat.Rotation[1];
+        return [seat, root];
     }
 
     private static float SeatCenterTop(SceneNode node) =>
