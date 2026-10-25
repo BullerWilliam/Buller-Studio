@@ -274,7 +274,7 @@ public partial class MainWindow : Window
         SelectOnly(node);
         RenderProperties();
         var menu = new ContextMenu { PlacementTarget = item };
-        var insert = new MenuItem { Header = "Insert Object", IsEnabled = node.Type is not ("Players" or "Terrain") };
+        var insert = new MenuItem { Header = "Insert Object", IsEnabled = node.Type != "Players" };
         insert.Click += (_, _) => ShowInsertMenu(node, item);
         menu.Items.Add(insert);
         var canEdit = node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera");
@@ -360,7 +360,8 @@ public partial class MainWindow : Window
             && Math.Abs(pointer.Y - explorerDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
         var source = explorerDragSource;
         explorerDragSource = null;
-        if (source.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera") return;
+        if (source.Type is "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui") return;
+        if (source.Type == "Camera" && project?.Workspace.Children.Any(camera => camera.Id == source.Id) == true) return;
         DragDrop.DoDragDrop(ExplorerTree, new DataObject(typeof(SceneNode), source), DragDropEffects.Move);
     }
 
@@ -695,6 +696,14 @@ public partial class MainWindow : Window
             AddTextField("Glare", selected.Glare.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Offset", selected.Offset.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+        if (selected.Type == "Clouds")
+        {
+            propertyTarget = AddPropertySection("Clouds");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("Cover", selected.CloudCover.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Density", selected.CloudDensity.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Color", selected.Color);
+        }
         if (selected.Type == "BlurEffect")
         {
             propertyTarget = AddPropertySection("Post Effect");
@@ -842,6 +851,16 @@ public partial class MainWindow : Window
             AddTextField("RollOffMaxDistance", selected.RollOffMaxDistance.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddLabel("Use a WAV or MP3 asset. A Sound under a part fades with distance during play.", "Asset");
         }
+        if (selected.Type == "VideoFrame")
+        {
+            propertyTarget = dataSection;
+            AddTextField("Video", selected.Video);
+            propertyTarget = AddPropertySection("Video");
+            AddTextField("Volume", selected.Volume.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("Looped", selected.Looped);
+            AddCheckField("Playing", selected.Playing);
+            AddLabel("Video paths are relative to the project's assets folder. Playback uses the video codecs installed on Windows.", "Video");
+        }
         if (selected.Type == "SoundGroup")
         {
             propertyTarget = AddPropertySection("Sound Group");
@@ -860,6 +879,22 @@ public partial class MainWindow : Window
             AddCheckField("Enabled", selected.Enabled);
             AddTextField("Octave", selected.PitchShiftOctave.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddLabel("Octave multiplier from 0.5 to 2; 1 leaves pitch unchanged. Playback speed is preserved.", "Octave");
+        }
+        if (selected.Type == "EqualizerSoundEffect")
+        {
+            propertyTarget = AddPropertySection("Equalizer");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("LowGain", selected.EqualizerLowGain.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("MidGain", selected.EqualizerMidGain.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("HighGain", selected.EqualizerHighGain.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddLabel("Band gain in decibels (-80 to 10). Low: under 400 Hz; Mid: 400–4000 Hz; High: above 4000 Hz.", "LowGain");
+        }
+        if (selected.Type == "DistortionSoundEffect")
+        {
+            propertyTarget = AddPropertySection("Distortion");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("Level", selected.DistortionLevel.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddLabel("Distortion strength from 0 (off) to 1 (maximum).", "Level");
         }
         if (selected.Type == "EchoSoundEffect")
         {
@@ -888,6 +923,30 @@ public partial class MainWindow : Window
             AddTextField("Duty", selected.TremoloDuty.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Frequency", selected.TremoloFrequency.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddLabel("Depth and Duty use 0–1; Frequency uses 0.1–20 Hz.", "Depth");
+        }
+        if (selected.Type == "CompressorSoundEffect")
+        {
+            propertyTarget = AddPropertySection("Compressor");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("Attack", selected.CompressorAttack.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("GainMakeup", selected.CompressorGainMakeup.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Ratio", selected.CompressorRatio.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Release", selected.CompressorRelease.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Threshold", selected.CompressorThreshold.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddObjectReferenceField("SideChain", selected, FindSceneNode(selected.CompressorSideChainId) is { Type: "Sound" or "SoundGroup" } sideChain ? sideChain : null);
+            var clearSideChain = new Button { Content = "Clear SideChain", Margin = new Thickness(3, 2, 3, 2), Padding = new Thickness(5, 2, 5, 2), IsEnabled = selected.CompressorSideChainId.Length > 0 };
+            clearSideChain.Click += (_, _) => { selected.CompressorSideChainId = string.Empty; RecordEdit(); RenderProperties(); };
+            propertyTarget.Children.Add(clearSideChain);
+            AddLabel("Attack 0.1–1 s; GainMakeup -30–30 dB; Ratio 1–50; Release 0–5 s; Threshold -80–0 dB.", "Attack");
+        }
+        if (selected.Type == "ChorusSoundEffect")
+        {
+            propertyTarget = AddPropertySection("Chorus");
+            AddCheckField("Enabled", selected.Enabled);
+            AddTextField("Depth", selected.ChorusDepth.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Mix", selected.ChorusMix.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("Rate", selected.ChorusRate.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddLabel("Depth and Mix use 0–1; Rate uses 0–20 Hz.", "Depth");
         }
         if (selected.Type == "ReverbSoundEffect")
         {
@@ -979,15 +1038,29 @@ public partial class MainWindow : Window
             }
             AddLabel("Emits a visual effect from the parent part or Attachment.", "Enabled");
         }
-        if (selected.Type is "WeldConstraint" or "NoCollisionConstraint")
+        if (selected.Type is "WeldConstraint" or "Motor6D" or "NoCollisionConstraint")
         {
-            propertyTarget = AddPropertySection(selected.Type == "WeldConstraint" ? "Weld Constraint" : "No Collision Constraint");
+            propertyTarget = AddPropertySection(selected.Type switch { "WeldConstraint" => "Weld Constraint", "Motor6D" => "Motor 6D", _ => "No Collision Constraint" });
             AddCheckField("Enabled", selected.Enabled);
             var part0 = FindSceneNode(selected.Part0);
             var part1 = FindSceneNode(selected.Part1);
             AddObjectReferenceField("Part0", selected, SceneNodeTypes.IsBasePart(part0) ? part0 : null);
             AddObjectReferenceField("Part1", selected, SceneNodeTypes.IsBasePart(part1) ? part1 : null);
-            AddLabel(selected.Type == "WeldConstraint" ? "Joined parts move as one assembly during play." : "The linked parts pass through each other during play.", "Part0");
+            if (selected.Type == "Motor6D")
+            {
+                AddTextField("Part0OffsetPosition", VectorText(selected.Part0OffsetPosition));
+                AddTextField("Part0OffsetRotation", VectorText(selected.Part0OffsetRotation));
+                AddTextField("Part1OffsetPosition", VectorText(selected.Part1OffsetPosition));
+                AddTextField("Part1OffsetRotation", VectorText(selected.Part1OffsetRotation));
+                AddTextField("TransformPosition", VectorText(selected.MotorTransformPosition));
+                AddTextField("TransformRotation", VectorText(selected.MotorTransformRotation));
+            }
+            AddLabel(selected.Type switch
+            {
+                "Motor6D" => "Transform values animate Part1 relative to Part0 during play.",
+                "NoCollisionConstraint" => "The linked parts pass through each other during play.",
+                _ => "Joined parts move as one assembly during play."
+            }, "Part0");
         }
         if (selected.Type == "Attachment")
         {
@@ -1443,6 +1516,24 @@ public partial class MainWindow : Window
             AddTextField("JumpPower", selected.JumpPower.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddLabel("The generated character uses these values for movement and respawns at zero Health.", "Health");
         }
+        if (selected.Type == "BodyColors")
+        {
+            propertyTarget = AddPropertySection("Body Colors");
+            AddTextField("HeadColor3", selected.HeadColor3);
+            AddTextField("TorsoColor3", selected.TorsoColor3);
+            AddTextField("LeftArmColor3", selected.LeftArmColor3);
+            AddTextField("RightArmColor3", selected.RightArmColor3);
+            AddTextField("LeftLegColor3", selected.LeftLegColor3);
+            AddTextField("RightLegColor3", selected.RightLegColor3);
+            AddLabel("Colors matching body part names on descendant BaseParts in this Model.", "HeadColor3");
+        }
+        if (selected.Type == "PathfindingModifier")
+        {
+            propertyTarget = AddPropertySection("Pathfinding Modifier");
+            AddTextField("Label", selected.PathfindingModifierLabel);
+            AddCheckField("PassThrough", selected.PathfindingPassThrough);
+            AddLabel("PassThrough lets pathfinding ignore this part as an obstacle.", "PassThrough");
+        }
         if (IsGuiNode(selected) && selected.Type != "StarterGui") RenderGuiProperties(selected);
         if (selected.Type is "Script" or "LocalScript" or "ModuleScript")
         {
@@ -1571,6 +1662,7 @@ public partial class MainWindow : Window
             propertyTarget = AddPropertySection(node.Type);
             AddCheckField("Enabled", node.Enabled);
             AddCheckField("AlwaysOnTop", node.AlwaysOnTop);
+            AddCheckField("ClipsDescendants", node.ClipsDescendants);
             AddTextField("MaxDistance", node.MaxDistance.ToString(System.Globalization.CultureInfo.InvariantCulture));
             if (node.Type == "BillboardGui") AddTextField("Size", GuiUDim2Text(node.Size, node.SizeScale));
             if (node.Type == "SurfaceGui")
@@ -1580,7 +1672,7 @@ public partial class MainWindow : Window
             }
             AddObjectReferenceField("Adornee", node, FindSceneNode(node.Adornee));
         }
-        else if (node.Type is "ScreenGui" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox")
+        else if (node.Type is "ScreenGui" or "Frame" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox" or "UICanvasGroup")
         {
             propertyTarget = AddPropertySection("Layout");
             if (node.Type != "ScreenGui")
@@ -1588,6 +1680,17 @@ public partial class MainWindow : Window
                 AddTextField("Position", GuiUDim2Text(node.Position, node.PositionScale));
                 AddTextField("AnchorPoint", VectorText(node.AnchorPoint));
                 AddTextField("Size", GuiUDim2Text(node.Size, node.SizeScale));
+                if (node.Type != "ScrollingFrame") AddComboField("AutomaticSize", ["None", "X", "Y", "XY"], node.AutomaticSize);
+                AddCheckField("ClipsDescendants", node.ClipsDescendants);
+                if (node.Type == "ScrollingFrame")
+                {
+                    AddTextField("CanvasPosition", VectorText(node.CanvasPosition));
+                    AddTextField("CanvasSize", GuiUDim2Text(node.CanvasSize, node.CanvasSizeScale));
+                    AddComboField("AutomaticCanvasSize", ["None", "X", "Y", "XY"], node.AutomaticCanvasSize);
+                    AddTextField("ScrollBarThickness", node.ScrollBarThickness.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    AddCheckField("ScrollingEnabled", node.ScrollingEnabled);
+                    AddComboField("ScrollingDirection", ["X", "Y", "XY"], node.ScrollingDirection);
+                }
                 AddTextField("Rotation", VectorText(node.Rotation));
                 AddTextField("ZIndex", node.ZIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 AddTextField("LayoutOrder", node.LayoutOrder.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1596,14 +1699,34 @@ public partial class MainWindow : Window
             {
                 AddTextField("DisplayOrder", node.DisplayOrder.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 AddCheckField("Enabled", node.Enabled);
+                AddCheckField("ResetOnSpawn", node.ResetOnSpawn);
             }
             else AddCheckField("Visible", node.Visible);
         }
-        if (node.Type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox")
+        if (node.Type is "Frame" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox" or "UICanvasGroup")
         {
             propertyTarget = AddPropertySection("Appearance");
             AddTextField("Color", node.Color);
             AddTextField("BackgroundTransparency", node.BackgroundTransparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("BorderColor3", node.BorderColor3);
+            AddTextField("BorderSizePixel", node.BorderSizePixel.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (node.Type == "UICanvasGroup") AddTextField("GroupTransparency", node.GroupTransparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (node.Type == "ViewportFrame")
+        {
+            propertyTarget = AddPropertySection("Camera");
+            AddObjectReferenceField("CurrentCamera", node, FindSceneNode(node.ViewportCurrentCameraId));
+            var viewportFrame = node;
+            var clearCamera = new Button { Content = "Clear CurrentCamera", Margin = new Thickness(3, 2, 3, 2), Padding = new Thickness(5, 2, 5, 2), IsEnabled = viewportFrame.ViewportCurrentCameraId.Length > 0 };
+            clearCamera.Click += (_, _) =>
+            {
+                if (project is null) return;
+                viewportFrame.ViewportCurrentCameraId = string.Empty;
+                RecordEdit();
+                RefreshEditor();
+                RenderProperties();
+            };
+            propertyTarget.Children.Add(clearCamera);
         }
         if (node.Type is "TextLabel" or "TextButton" or "TextBox")
         {
@@ -1614,6 +1737,7 @@ public partial class MainWindow : Window
             AddTextField("TextSize", node.TextSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("TextTransparency", node.TextTransparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddCheckField("TextScaled", node.TextScaled);
+            if (node.Type is "TextLabel" or "TextButton") AddCheckField("TextWrapped", node.TextWrapped);
             if (node.Type == "TextBox")
             {
                 AddCheckField("MultiLine", node.MultiLine);
@@ -1624,8 +1748,22 @@ public partial class MainWindow : Window
         if (node.Type is "ImageLabel" or "ImageButton")
         {
             propertyTarget = AddPropertySection("Image");
-            AddTextField("Asset", node.Asset);
+            AddTextField("Image", node.Asset);
+            AddTextField("ImageColor3", node.ImageColor3);
             AddTextField("ImageTransparency", node.ImageTransparency.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddComboField("ScaleType", ["Stretch", "Fit", "Crop", "Tile", "Slice"], node.ScaleType);
+            if (node.ScaleType == "Slice")
+            {
+                AddTextField("SliceCenter", string.Join(", ", node.SliceCenter.Select(value => value.ToString("G9", System.Globalization.CultureInfo.InvariantCulture))));
+                AddTextField("SliceScale", node.SliceScale.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AddTextField("ImageRectOffset", VectorText(node.ImageRectOffset));
+            AddTextField("ImageRectSize", VectorText(node.ImageRectSize));
+            if (node.Type == "ImageButton")
+            {
+                AddTextField("HoverImage", node.HoverImage);
+                AddTextField("PressedImage", node.PressedImage);
+            }
         }
         if (node.Type == "UICorner")
         {
@@ -1704,6 +1842,13 @@ public partial class MainWindow : Window
             propertyTarget = AddPropertySection("Layout");
             AddTextField("TableColumns", node.TableColumns.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("LayoutSpacing", node.LayoutSpacing.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (node.Type == "UIPageLayout")
+        {
+            propertyTarget = AddPropertySection("Pages");
+            AddTextField("CurrentPageIndex", node.CurrentPageIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddComboField("SortOrder", ["LayoutOrder", "Name"], node.SortOrder);
+            AddCheckField("Circular", node.Circular);
         }
         if (node.Type is "UIAspectRatio" or "UIAspectRatioConstraint")
         {
@@ -1862,6 +2007,43 @@ public partial class MainWindow : Window
             return;
         }
         var text = box.Text.Trim();
+        if (property == "Label" && target.Type == "PathfindingModifier") target.PathfindingModifierLabel = text;
+        if ((property is "ImageRectOffset" or "ImageRectSize") && (target.Type is "ImageLabel" or "ImageButton"))
+        {
+            var imageRect = ParsePair(text);
+            if (imageRect is null)
+            {
+                SetStatus("Enter two comma-separated pixel values.");
+                box.Text = VectorText(property == "ImageRectOffset" ? target.ImageRectOffset : target.ImageRectSize);
+                return;
+            }
+            var normalizedRect = imageRect.Select(component => Math.Clamp(component, 0, 1000000)).ToArray();
+            if (property == "ImageRectOffset") target.ImageRectOffset = normalizedRect;
+            else target.ImageRectSize = normalizedRect;
+            box.Text = VectorText(normalizedRect);
+            RefreshGuiPreview();
+            RecordEdit();
+            return;
+        }
+        if (property == "SliceCenter" && target.Type is ("ImageLabel" or "ImageButton"))
+        {
+            var components = text.Split(',');
+            var parsed = new float[4];
+            if (components.Length != 4 || !components.Select((component, index) => float.TryParse(component.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out parsed[index]) && float.IsFinite(parsed[index])).All(valid => valid))
+            {
+                SetStatus("Enter four comma-separated pixel values for SliceCenter.");
+                box.Text = string.Join(", ", target.SliceCenter.Select(value => value.ToString("G9", System.Globalization.CultureInfo.InvariantCulture)));
+                return;
+            }
+            for (var index = 0; index < parsed.Length; index++) parsed[index] = Math.Clamp(parsed[index], 0, 1000000);
+            parsed[2] = Math.Max(parsed[0], parsed[2]);
+            parsed[3] = Math.Max(parsed[1], parsed[3]);
+            target.SliceCenter = parsed;
+            box.Text = string.Join(", ", parsed.Select(value => value.ToString("G9", System.Globalization.CultureInfo.InvariantCulture)));
+            RefreshGuiPreview();
+            RecordEdit();
+            return;
+        }
         if (property is "GripPosition" or "GripRotation" && target.Type == "Tool")
         {
             var vector = ParseVector(text);
@@ -1965,7 +2147,7 @@ public partial class MainWindow : Window
         }
         if (currentNumber is not null)
         {
-            var valid = property is "TableColumns" or "FillDirectionMaxCells" or "ZIndex" or "LayoutOrder"
+            var valid = property is "TableColumns" or "FillDirectionMaxCells" or "CurrentPageIndex" or "ZIndex" or "LayoutOrder"
                 ? int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _)
                 : float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var number) && float.IsFinite(number);
             if (!valid)
@@ -2006,7 +2188,7 @@ public partial class MainWindow : Window
             RenderProperties();
             return;
         }
-        if (property == "AnchorPoint" && target.Type is ("Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox"))
+        if (property == "AnchorPoint" && target.Type is ("Frame" or "UICanvasGroup" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox"))
         {
             var values = ParsePair(text);
             if (values is null)
@@ -2018,6 +2200,29 @@ public partial class MainWindow : Window
             target.AnchorPoint = [Math.Clamp(values[0], 0, 1), Math.Clamp(values[1], 0, 1)];
             box.Text = VectorText(target.AnchorPoint);
         }
+        else if (target.Type == "ScrollingFrame" && property == "CanvasPosition")
+        {
+            var values = ParsePair(text);
+            if (values is null) { SetStatus("Enter two comma-separated pixel offsets."); box.Text = VectorText(target.CanvasPosition); return; }
+            target.CanvasPosition = values.Select(value => Math.Clamp(value, 0, 1000000)).ToArray();
+            box.Text = VectorText(target.CanvasPosition);
+        }
+        else if (target.Type == "ScrollingFrame" && property == "CanvasSize")
+        {
+            var values = ParseGuiUDim2(text);
+            if (values is null)
+            {
+                SetStatus("Enter two pixel offsets or scale, offset pairs for both axes.");
+                box.Text = GuiUDim2Text(target.CanvasSize, target.CanvasSizeScale);
+                return;
+            }
+            target.CanvasSizeScale = [Math.Clamp(values[0], 0, 100), Math.Clamp(values[2], 0, 100)];
+            target.CanvasSize = [Math.Clamp(values[1], 0, 1000000), Math.Clamp(values[3], 0, 1000000)];
+            box.Text = GuiUDim2Text(target.CanvasSize, target.CanvasSizeScale);
+        }
+        else if (target.Type == "ScrollingFrame" && property == "ScrollBarThickness"
+            && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var scrollBarThickness))
+            target.ScrollBarThickness = Math.Clamp(scrollBarThickness, 0, 100);
         else if (target.Type == "UIGridLayout" && property is ("CellSize" or "CellPadding"))
         {
             var values = ParseGuiUDim2(text);
@@ -2188,7 +2393,8 @@ public partial class MainWindow : Window
             }
             else target.MaxSize = [Math.Clamp(values[0], target.MinSize[0], 1000000), Math.Clamp(values[1], target.MinSize[1], 1000000)];
         }
-        else if (property is "Position" or "Rotation" or "Size" or "Velocity" or "AssemblyAngularVelocity" or "Force" or "Location" or "TargetOffset" or "VectorVelocity" or "AngularVelocity" or "Torque" or "LineDirection" or "PrimaryTangentAxis" or "SecondaryTangentAxis" or "MaxAxesForce" or "MaxForce" or "MaxTorque"
+        else if (property is "Position" or "Rotation" or "Part0OffsetPosition" or "Part0OffsetRotation" or "Part1OffsetPosition" or "Part1OffsetRotation" or "TransformPosition" or "TransformRotation" or "Size" or "Velocity" or "AssemblyAngularVelocity" or "Force" or "Location" or "TargetOffset" or "VectorVelocity" or "AngularVelocity" or "Torque" or "LineDirection" or "PrimaryTangentAxis" or "SecondaryTangentAxis" or "MaxAxesForce" or "MaxForce" or "MaxTorque"
+            && !(property is "Part0OffsetPosition" or "Part0OffsetRotation" or "Part1OffsetPosition" or "Part1OffsetRotation" or "TransformPosition" or "TransformRotation" && target.Type != "Motor6D")
             && !(property == "AngularVelocity" && target.Type is ("HingeConstraint" or "CylindricalConstraint"))
             && !(property == "Location" && target.Type != "BodyThrust")
             && !(property == "TargetOffset" && target.Type != "RocketPropulsion")
@@ -2197,8 +2403,18 @@ public partial class MainWindow : Window
             && !(property == "MaxTorque" && target.Type is not ("BodyGyro" or "BodyAngularVelocity" or "RocketPropulsion")))
         {
             var values = ParseVector(text);
-            if (values is null) { SetStatus("Enter three comma-separated numbers."); box.Text = property switch { "Position" => VectorText(target.Type == "BodyPosition" ? target.BodyPositionTarget : target.Position), "Rotation" => VectorText(target.Type == "BodyGyro" ? target.BodyGyroTargetRotation : target.Type == "AlignOrientation" ? target.AlignOrientationRotation : target.Rotation), "Velocity" => VectorText(target.Type == "BodyVelocity" ? target.BodyVelocityTarget : target.Velocity), "AssemblyAngularVelocity" => VectorText(target.AssemblyAngularVelocity), "AngularVelocity" => VectorText(target.Type == "BodyAngularVelocity" ? target.BodyAngularVelocityTarget : target.AngularVelocityTarget), "Force" => VectorText(target.Type == "BodyThrust" ? target.BodyThrustForce : target.Force), "Location" when target.Type == "BodyThrust" => VectorText(target.BodyThrustLocation), "TargetOffset" when target.Type == "RocketPropulsion" => VectorText(target.RocketPropulsionTargetOffset), "Torque" => VectorText(target.TorqueTarget), "VectorVelocity" => VectorText(target.VectorVelocity), "LineDirection" => VectorText(target.LineDirection), "PrimaryTangentAxis" => VectorText(target.PrimaryTangentAxis), "SecondaryTangentAxis" => VectorText(target.SecondaryTangentAxis), "MaxAxesForce" => VectorText(target.MaxAxesForce), "MaxForce" when target.Type is "BodyVelocity" or "BodyPosition" => VectorText(target.Type == "BodyVelocity" ? target.BodyVelocityMaxForce : target.BodyPositionMaxForce), "MaxTorque" when target.Type == "BodyGyro" => VectorText(target.BodyGyroMaxTorque), "MaxTorque" when target.Type == "BodyAngularVelocity" => VectorText(target.BodyAngularVelocityMaxTorque), "MaxTorque" when target.Type == "RocketPropulsion" => VectorText(target.RocketPropulsionMaxTorque), _ => VectorText(target.Size) }; return; }
-            if (property == "Position" && target.Type == "BodyPosition") target.BodyPositionTarget = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
+            if (values is null) { SetStatus("Enter three comma-separated numbers."); box.Text = property switch { "Position" => VectorText(target.Type == "BodyPosition" ? target.BodyPositionTarget : target.Position), "Rotation" => VectorText(target.Type == "BodyGyro" ? target.BodyGyroTargetRotation : target.Type == "AlignOrientation" ? target.AlignOrientationRotation : target.Rotation), "Part0OffsetPosition" => VectorText(target.Part0OffsetPosition), "Part0OffsetRotation" => VectorText(target.Part0OffsetRotation), "Part1OffsetPosition" => VectorText(target.Part1OffsetPosition), "Part1OffsetRotation" => VectorText(target.Part1OffsetRotation), "TransformPosition" => VectorText(target.MotorTransformPosition), "TransformRotation" => VectorText(target.MotorTransformRotation), "Velocity" => VectorText(target.Type == "BodyVelocity" ? target.BodyVelocityTarget : target.Velocity), "AssemblyAngularVelocity" => VectorText(target.AssemblyAngularVelocity), "AngularVelocity" => VectorText(target.Type == "BodyAngularVelocity" ? target.BodyAngularVelocityTarget : target.AngularVelocityTarget), "Force" => VectorText(target.Type == "BodyThrust" ? target.BodyThrustForce : target.Force), "Location" when target.Type == "BodyThrust" => VectorText(target.BodyThrustLocation), "TargetOffset" when target.Type == "RocketPropulsion" => VectorText(target.RocketPropulsionTargetOffset), "Torque" => VectorText(target.TorqueTarget), "VectorVelocity" => VectorText(target.VectorVelocity), "LineDirection" => VectorText(target.LineDirection), "PrimaryTangentAxis" => VectorText(target.PrimaryTangentAxis), "SecondaryTangentAxis" => VectorText(target.SecondaryTangentAxis), "MaxAxesForce" => VectorText(target.MaxAxesForce), "MaxForce" when target.Type is "BodyVelocity" or "BodyPosition" => VectorText(target.Type == "BodyVelocity" ? target.BodyVelocityMaxForce : target.BodyPositionMaxForce), "MaxTorque" when target.Type == "BodyGyro" => VectorText(target.BodyGyroMaxTorque), "MaxTorque" when target.Type == "BodyAngularVelocity" => VectorText(target.BodyAngularVelocityMaxTorque), "MaxTorque" when target.Type == "RocketPropulsion" => VectorText(target.RocketPropulsionMaxTorque), _ => VectorText(target.Size) }; return; }
+            if (property == "Part0OffsetPosition") target.Part0OffsetPosition = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
+            else if (property is "Part0OffsetRotation" or "Part1OffsetRotation")
+            {
+                var rotation = values.Select(value => Math.Clamp(value, -360000, 360000)).ToArray();
+                if (property == "Part0OffsetRotation") target.Part0OffsetRotation = rotation;
+                else target.Part1OffsetRotation = rotation;
+            }
+            else if (property == "Part1OffsetPosition") target.Part1OffsetPosition = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
+            else if (property == "TransformPosition") target.MotorTransformPosition = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
+            else if (property == "TransformRotation") target.MotorTransformRotation = values.Select(value => Math.Clamp(value, -360000, 360000)).ToArray();
+            else if (property == "Position" && target.Type == "BodyPosition") target.BodyPositionTarget = values.Select(value => Math.Clamp(value, -1000000, 1000000)).ToArray();
             else if (property == "Position") target.Position = values;
             if (property == "Rotation" && target.Type == "BodyGyro") target.BodyGyroTargetRotation = values.Select(value => Math.Clamp(value, -360000, 360000)).ToArray();
             else if (property == "Rotation" && target.Type == "AlignOrientation") target.AlignOrientationRotation = values.Select(value => Math.Clamp(value, -360000, 360000)).ToArray();
@@ -2246,6 +2462,37 @@ public partial class MainWindow : Window
             target.ColorSequence = points;
             target.Color = points[0].Value;
         }
+        else if (property == "BorderColor3" && target.Type is ("Frame" or "UICanvasGroup" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox"))
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(text, "^#[0-9A-Fa-f]{6}$"))
+            {
+                SetStatus("Enter BorderColor3 as #RRGGBB.");
+                box.Text = target.BorderColor3;
+                return;
+            }
+            target.BorderColor3 = text.ToUpperInvariant();
+        }
+        else if (property == "ImageColor3" && (target.Type is "ImageLabel" or "ImageButton"))
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(text, "^#[0-9A-Fa-f]{6}$"))
+            {
+                SetStatus("Enter ImageColor3 as #RRGGBB.");
+                box.Text = target.ImageColor3;
+                return;
+            }
+            target.ImageColor3 = text.ToUpperInvariant();
+        }
+        else if (target.Type == "BodyColors" && BodyColorsService.IsColorProperty(property))
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(text, "^#[0-9A-Fa-f]{6}$"))
+            {
+                SetStatus($"Enter {property} as #RRGGBB.");
+                box.Text = BodyColorsService.GetColor(target, property);
+                return;
+            }
+            BodyColorsService.SetColor(target, property, text.ToUpperInvariant());
+        }
+        else if (property == "SliceScale" && target.Type is ("ImageLabel" or "ImageButton") && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sliceScale) && float.IsFinite(sliceScale)) target.SliceScale = Math.Clamp(sliceScale, .01f, 100);
         else if (property == "Color")
         {
             if (SceneNodeTypes.IsSurfaceAppearance(target)) target.SurfaceAppearanceColor = text;
@@ -2277,6 +2524,8 @@ public partial class MainWindow : Window
             }
             target.AtmosphereDecay = text.ToUpperInvariant();
         }
+        else if (property == "Cover" && target.Type == "Clouds" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var cloudCover) && float.IsFinite(cloudCover)) target.CloudCover = Math.Clamp(cloudCover, 0, 1);
+        else if (property == "Density" && target.Type == "Clouds" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var cloudDensity) && float.IsFinite(cloudDensity)) target.CloudDensity = Math.Clamp(cloudDensity, 0, 1);
         else if (property == "TeamColor" && target.Type is ("Team" or "SpawnLocation"))
         {
             if (!System.Text.RegularExpressions.Regex.IsMatch(text, "^#[0-9A-Fa-f]{6}$"))
@@ -2586,11 +2835,23 @@ public partial class MainWindow : Window
         else if (target.Type == "RocketPropulsion" && property == "TurnP" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var rocketTurnP) && float.IsFinite(rocketTurnP)) target.RocketPropulsionTurnP = Math.Clamp(rocketTurnP, 0, 1000000);
         else if (property == "MaxDistance" && (target.Type is "BillboardGui" or "SurfaceGui") && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var billboardMaxDistance) && float.IsFinite(billboardMaxDistance)) target.MaxDistance = Math.Clamp(billboardMaxDistance, 0, 100000);
         else if (property == "PixelsPerStud" && target.Type == "SurfaceGui" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pixelsPerStud) && float.IsFinite(pixelsPerStud)) target.PixelsPerStud = Math.Clamp(pixelsPerStud, 1, 1000);
-        else if (property == "Volume" && target.Type == "Sound" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var volume) && float.IsFinite(volume)) target.Volume = Math.Clamp(volume, 0, 1);
+        else if (property == "Volume" && target.Type is ("Sound" or "VideoFrame") && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var volume) && float.IsFinite(volume)) target.Volume = Math.Clamp(volume, 0, 1);
         else if (property == "Volume" && target.Type == "SoundGroup" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var soundGroupVolume) && float.IsFinite(soundGroupVolume)) target.SoundGroupVolume = Math.Clamp(soundGroupVolume, 0, 1);
         else if (property == "Volume" && target.Type == "SoundService" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var soundServiceVolume) && float.IsFinite(soundServiceVolume)) target.SoundServiceVolume = Math.Clamp(soundServiceVolume, 0, 1);
         else if (property == "PlaybackSpeed" && target.Type == "Sound" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var playbackSpeed) && float.IsFinite(playbackSpeed)) target.PlaybackSpeed = Math.Clamp(playbackSpeed, 0, 20);
         else if (property == "Octave" && target.Type == "PitchShiftSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var octave) && float.IsFinite(octave)) target.PitchShiftOctave = Math.Clamp(octave, .5f, 2);
+        else if (property == "Attack" && target.Type == "CompressorSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var compressorAttack) && float.IsFinite(compressorAttack)) target.CompressorAttack = Math.Clamp(compressorAttack, .1f, 1);
+        else if (property == "GainMakeup" && target.Type == "CompressorSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var compressorGain) && float.IsFinite(compressorGain)) target.CompressorGainMakeup = Math.Clamp(compressorGain, -30, 30);
+        else if (property == "Ratio" && target.Type == "CompressorSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var compressorRatio) && float.IsFinite(compressorRatio)) target.CompressorRatio = Math.Clamp(compressorRatio, 1, 50);
+        else if (property == "Release" && target.Type == "CompressorSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var compressorRelease) && float.IsFinite(compressorRelease)) target.CompressorRelease = Math.Clamp(compressorRelease, 0, 5);
+        else if (property == "Threshold" && target.Type == "CompressorSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var compressorThreshold) && float.IsFinite(compressorThreshold)) target.CompressorThreshold = Math.Clamp(compressorThreshold, -80, 0);
+        else if (property == "Depth" && target.Type == "ChorusSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var chorusDepth) && float.IsFinite(chorusDepth)) target.ChorusDepth = Math.Clamp(chorusDepth, 0, 1);
+        else if (property == "Mix" && target.Type == "ChorusSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var chorusMix) && float.IsFinite(chorusMix)) target.ChorusMix = Math.Clamp(chorusMix, 0, 1);
+        else if (property == "Rate" && target.Type == "ChorusSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var chorusRate) && float.IsFinite(chorusRate)) target.ChorusRate = Math.Clamp(chorusRate, 0, 20);
+        else if (property == "LowGain" && target.Type == "EqualizerSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var equalizerLowGain) && float.IsFinite(equalizerLowGain)) target.EqualizerLowGain = Math.Clamp(equalizerLowGain, -80, 10);
+        else if (property == "MidGain" && target.Type == "EqualizerSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var equalizerMidGain) && float.IsFinite(equalizerMidGain)) target.EqualizerMidGain = Math.Clamp(equalizerMidGain, -80, 10);
+        else if (property == "HighGain" && target.Type == "EqualizerSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var equalizerHighGain) && float.IsFinite(equalizerHighGain)) target.EqualizerHighGain = Math.Clamp(equalizerHighGain, -80, 10);
+        else if (property == "Level" && target.Type == "DistortionSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var distortionLevel) && float.IsFinite(distortionLevel)) target.DistortionLevel = Math.Clamp(distortionLevel, 0, 1);
         else if (property == "Delay" && target.Type == "EchoSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var echoDelay) && float.IsFinite(echoDelay)) target.EchoDelay = Math.Clamp(echoDelay, .01f, 5);
         else if (property == "Feedback" && target.Type == "EchoSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var echoFeedback) && float.IsFinite(echoFeedback)) target.EchoFeedback = Math.Clamp(echoFeedback, 0, 1);
         else if (property == "DryLevel" && target.Type == "EchoSoundEffect" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var echoDryLevel) && float.IsFinite(echoDryLevel)) target.EchoDryLevel = Math.Clamp(echoDryLevel, -80, 10);
@@ -2612,7 +2873,11 @@ public partial class MainWindow : Window
             target.RollOffMaxDistance = Math.Max(target.RollOffMaxDistance, target.RollOffMinDistance + .01f);
         }
         else if (property == "RollOffMaxDistance" && target.Type == "Sound" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var maxDistance) && float.IsFinite(maxDistance)) target.RollOffMaxDistance = Math.Clamp(maxDistance, target.RollOffMinDistance + .01f, 10000);
+        else if (property == "Image" && (target.Type is "ImageLabel" or "ImageButton")) target.Asset = text;
+        else if (property == "HoverImage" && target.Type == "ImageButton") target.HoverImage = text;
+        else if (property == "PressedImage" && target.Type == "ImageButton") target.PressedImage = text;
         else if (property == "Asset") target.Asset = text;
+        else if (property == "Video" && target.Type == "VideoFrame") target.Video = text;
         else if (property == "ColorMap" && SceneNodeTypes.IsSurfaceAppearance(target)) target.SurfaceAppearanceColorMap = text;
         else if (property == "NormalMap" && SceneNodeTypes.IsSurfaceAppearance(target)) target.SurfaceAppearanceNormalMap = text;
         else if (property == "RoughnessMap" && SceneNodeTypes.IsSurfaceAppearance(target)) target.SurfaceAppearanceRoughnessMap = text;
@@ -2630,11 +2895,16 @@ public partial class MainWindow : Window
         else if (property == "ShrinkRatio" && target.Type == "UIFlexItem" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var shrinkRatio) && float.IsFinite(shrinkRatio)) target.ShrinkRatio = Math.Clamp(shrinkRatio, 0, 1000);
         else if (property == "TableColumns" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var tableColumns)) target.TableColumns = Math.Clamp(tableColumns, 1, 24);
         else if (property == "FillDirectionMaxCells" && target.Type == "UIGridLayout" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var maxCells)) target.FillDirectionMaxCells = Math.Clamp(maxCells, 0, 1000);
+        else if (property == "CurrentPageIndex" && target.Type == "UIPageLayout" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var pageIndex)) target.CurrentPageIndex = Math.Max(1, pageIndex);
         else if (property == "ZIndex" && IsGuiNode(target) && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var zIndex)) target.ZIndex = target.Type == "UIShadow" ? Math.Min(0, zIndex) : zIndex;
         else if (property == "DisplayOrder" && target.Type == "ScreenGui" && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var displayOrder)) target.DisplayOrder = displayOrder;
         else if (property == "LayoutOrder" && IsGuiNode(target) && int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var layoutOrder)) target.LayoutOrder = layoutOrder;
         else if (property == "AspectRatio" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var aspect) && float.IsFinite(aspect)) target.AspectRatio = Math.Clamp(aspect, .001f, 1000);
+        else if (property == "GroupTransparency" && target.Type == "UICanvasGroup" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var groupTransparency) && float.IsFinite(groupTransparency)) target.GroupTransparency = Math.Clamp(groupTransparency, 0, 1);
         else if (property == "StrokeThickness" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var strokeThickness)) target.StrokeThickness = Math.Max(0, strokeThickness);
+        else if (property == "BorderSizePixel" && target.Type is ("Frame" or "UICanvasGroup" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox")
+            && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var borderSize) && float.IsFinite(borderSize))
+            target.BorderSizePixel = (int)Math.Clamp(Math.Round(borderSize), 0, 64);
         else if (property == "TextSize" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var textSize) && float.IsFinite(textSize)) target.TextSize = Math.Clamp(textSize, 1, 200);
         else if (property.StartsWith("Skybox", StringComparison.Ordinal) && target.Type is "Workspace" or "Sky")
         {
@@ -2723,8 +2993,10 @@ public partial class MainWindow : Window
             "FieldOfView" => node.FieldOfView,
             "Transparency" => node.Transparency,
             "BackgroundTransparency" => node.BackgroundTransparency,
+            "GroupTransparency" => node.Type == "UICanvasGroup" ? node.GroupTransparency : (float?)null,
             "TextTransparency" => node.TextTransparency,
             "ImageTransparency" => node.ImageTransparency,
+            "SliceScale" => node.Type is ("ImageLabel" or "ImageButton") ? node.SliceScale : (float?)null,
             "MinTextSize" => node.MinTextSize,
             "MaxTextSize" => node.MaxTextSize,
             "StudsPerTileU" => node.StudsPerTileU,
@@ -2738,6 +3010,8 @@ public partial class MainWindow : Window
             "EmissiveStrength" => SceneNodeTypes.IsSurfaceAppearance(node) ? node.SurfaceAppearanceEmissiveStrength : (float?)null,
             "Gravity" => node.Gravity,
             "ClockTime" => node.ClockTime,
+            "Cover" => node.Type == "Clouds" ? node.CloudCover : (float?)null,
+            "Density" => node.Type == "Clouds" ? node.CloudDensity : node.Type == "ReverbSoundEffect" ? node.ReverbDensity : (float?)null,
             "Health" => node.Health,
             "MaxHealth" => node.MaxHealth,
             "WalkSpeed" => node.WalkSpeed,
@@ -2750,9 +3024,8 @@ public partial class MainWindow : Window
             "Size" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticSize : SceneNodeTypes.IsSizedParticleEffect(node) || node.Type is "ParticleEmitter" or "BlurEffect" ? node.EffectSize : (float?)null,
             "Velocity" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticVelocity : (float?)null,
             "Speed" => node.Type is "PrismaticConstraint" or "CylindricalConstraint" ? node.PrismaticSpeed : (float?)null,
-            "Rate" => node.Type == "ParticleEmitter" ? node.Rate : node.Type == "FlangeSoundEffect" ? node.FlangeRate : (float?)null,
+            "Rate" => node.Type == "ParticleEmitter" ? node.Rate : node.Type == "FlangeSoundEffect" ? node.FlangeRate : node.Type == "ChorusSoundEffect" ? node.ChorusRate : (float?)null,
             "DecayTime" => node.Type == "ReverbSoundEffect" ? node.ReverbDecayTime : (float?)null,
-            "Density" => node.Type == "ReverbSoundEffect" ? node.ReverbDensity : (float?)null,
             "Diffusion" => node.Type == "ReverbSoundEffect" ? node.ReverbDiffusion : (float?)null,
             "TextureLength" => node.Type == "Trail" ? node.TextureLength : (float?)null,
             "LineVelocity" => node.Type == "LinearVelocity" ? node.LineVelocity : (float?)null,
@@ -2814,22 +3087,34 @@ public partial class MainWindow : Window
             "HoldDuration" => node.HoldDuration,
             "MaxDistance" => node.Type is "BillboardGui" or "SurfaceGui" ? node.MaxDistance : (float?)null,
             "PixelsPerStud" => node.Type == "SurfaceGui" ? node.PixelsPerStud : (float?)null,
-            "Volume" => node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume,
+            "Volume" => node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Type is "Sound" or "VideoFrame" ? node.Volume : (float?)null,
             "PlaybackSpeed" => node.PlaybackSpeed,
             "Octave" => node.PitchShiftOctave,
+            "Level" => node.Type == "DistortionSoundEffect" ? node.DistortionLevel : (float?)null,
+            "Attack" => node.Type == "CompressorSoundEffect" ? node.CompressorAttack : (float?)null,
+            "GainMakeup" => node.Type == "CompressorSoundEffect" ? node.CompressorGainMakeup : (float?)null,
+            "Ratio" => node.Type == "CompressorSoundEffect" ? node.CompressorRatio : (float?)null,
+            "Release" => node.Type == "CompressorSoundEffect" ? node.CompressorRelease : (float?)null,
+            "Threshold" => node.Type == "CompressorSoundEffect" ? node.CompressorThreshold : (float?)null,
+            "LowGain" => node.Type == "EqualizerSoundEffect" ? node.EqualizerLowGain : (float?)null,
+            "MidGain" => node.Type == "EqualizerSoundEffect" ? node.EqualizerMidGain : (float?)null,
+            "HighGain" => node.Type == "EqualizerSoundEffect" ? node.EqualizerHighGain : (float?)null,
             "Delay" => node.Type == "EchoSoundEffect" ? node.EchoDelay : (float?)null,
             "Feedback" => node.Type == "EchoSoundEffect" ? node.EchoFeedback : (float?)null,
             "DryLevel" => node.Type == "EchoSoundEffect" ? node.EchoDryLevel : node.Type == "ReverbSoundEffect" ? node.ReverbDryLevel : (float?)null,
             "WetLevel" => node.Type == "EchoSoundEffect" ? node.EchoWetLevel : node.Type == "ReverbSoundEffect" ? node.ReverbWetLevel : (float?)null,
-            "Depth" => node.Type == "FlangeSoundEffect" ? node.FlangeDepth : node.Type == "TremoloSoundEffect" ? node.TremoloDepth : (float?)null,
-            "Mix" => node.Type == "FlangeSoundEffect" ? node.FlangeMix : (float?)null,
+            "Depth" => node.Type == "FlangeSoundEffect" ? node.FlangeDepth : node.Type == "TremoloSoundEffect" ? node.TremoloDepth : node.Type == "ChorusSoundEffect" ? node.ChorusDepth : (float?)null,
+            "Mix" => node.Type == "FlangeSoundEffect" ? node.FlangeMix : node.Type == "ChorusSoundEffect" ? node.ChorusMix : (float?)null,
             "Duty" => node.Type == "TremoloSoundEffect" ? node.TremoloDuty : (float?)null,
             "Frequency" => node.Type == "TremoloSoundEffect" ? node.TremoloFrequency : (float?)null,
             "RollOffMinDistance" => node.RollOffMinDistance,
             "RollOffMaxDistance" => node.RollOffMaxDistance,
             "LayoutSpacing" => node.LayoutSpacing,
             "TableColumns" => node.TableColumns,
+            "ScrollBarThickness" => node.Type == "ScrollingFrame" ? node.ScrollBarThickness : (int?)null,
+            "BorderSizePixel" => node.BorderSizePixel,
             "FillDirectionMaxCells" => node.FillDirectionMaxCells,
+            "CurrentPageIndex" => node.Type == "UIPageLayout" ? node.CurrentPageIndex : (int?)null,
             "ZIndex" => node.ZIndex,
             "DisplayOrder" => node.Type == "ScreenGui" ? node.DisplayOrder : (int?)null,
             "LayoutOrder" => node.LayoutOrder,
@@ -2860,7 +3145,9 @@ public partial class MainWindow : Window
         if (property == "CanQuery" && SceneNodeTypes.IsBasePart(target)) target.CanQuery = box.IsChecked == true;
         if (property == "CastShadow") target.CastShadow = box.IsChecked == true;
         if (property == "Visible") target.Visible = box.IsChecked == true;
+        if (property == "ClipsDescendants" && IsGuiNode(target) && target.Type != "ScreenGui") target.ClipsDescendants = box.IsChecked == true;
         if (property == "TextScaled" && target.Type is "TextLabel" or "TextButton" or "TextBox") target.TextScaled = box.IsChecked == true;
+        if (property == "TextWrapped" && target.Type is ("TextLabel" or "TextButton")) target.TextWrapped = box.IsChecked == true;
         if (property == "MultiLine" && target.Type == "TextBox") target.MultiLine = box.IsChecked == true;
         if (property == "TextEditable" && target.Type == "TextBox") target.TextEditable = box.IsChecked == true;
         if (property == "ClearTextOnFocus" && target.Type == "TextBox") target.ClearTextOnFocus = box.IsChecked == true;
@@ -2896,6 +3183,10 @@ public partial class MainWindow : Window
         if (property == "Looped") target.Looped = box.IsChecked == true;
         if (property == "Playing") target.Playing = box.IsChecked == true;
         if (property == "AutoManageCharacter" && target.Type == "Workspace") target.AutoManageCharacter = box.IsChecked == true;
+        if (property == "PassThrough" && target.Type == "PathfindingModifier") target.PathfindingPassThrough = box.IsChecked == true;
+        if (property == "ResetOnSpawn" && target.Type == "ScreenGui") target.ResetOnSpawn = box.IsChecked == true;
+        if (property == "ScrollingEnabled" && target.Type == "ScrollingFrame") target.ScrollingEnabled = box.IsChecked == true;
+        if (property == "Circular" && target.Type == "UIPageLayout") target.Circular = box.IsChecked == true;
         if (property == "RequiresHandle" && target.Type == "Tool") target.RequiresHandle = box.IsChecked == true;
         if (property == "CanBeDropped" && target.Type == "Tool") target.CanBeDropped = box.IsChecked == true;
         if (property == "ManualActivationOnly" && target.Type == "Tool") target.ManualActivationOnly = box.IsChecked == true;
@@ -2935,6 +3226,7 @@ public partial class MainWindow : Window
         if (property == "Face" && target.Type is ("Decal" or "Texture" or "SurfaceLight" or "SurfaceGui") && SceneNodeTypes.IsFace(value)) target.Face = value;
         if (property == "EmissionDirection" && target.Type == "ParticleEmitter" && SceneNodeTypes.IsFace(value)) target.EmissionDirection = value;
         if (property == "TextureMode" && target.Type == "Trail" && value is ("Stretch" or "Wrap" or "Static")) target.TextureMode = value;
+        if (property == "ScaleType" && target.Type is ("ImageLabel" or "ImageButton") && value is ("Stretch" or "Fit" or "Crop" or "Tile" or "Slice")) target.ScaleType = value;
         if (property == "RelativeTo" && target.Type == "VectorForce" && value is ("World" or "Attachment0" or "Attachment1")) target.RelativeTo = value;
         if (property == "RelativeTo" && target.Type == "LinearVelocity" && value is ("World" or "Attachment0" or "Attachment1")) target.RelativeTo = value;
         if (property == "RelativeTo" && target.Type == "AngularVelocity" && value is ("World" or "Attachment0" or "Attachment1")) target.RelativeTo = value;
@@ -2946,11 +3238,15 @@ public partial class MainWindow : Window
         if (property == "HorizontalAlignment" && target.Type == "UIListLayout" && value is ("Left" or "Center" or "Right")) target.HorizontalAlignment = value;
         if (property == "VerticalAlignment" && target.Type == "UIListLayout" && value is ("Top" or "Center" or "Bottom")) target.VerticalAlignment = value;
         if (property == "SortOrder" && target.Type == "UIListLayout" && value is ("LayoutOrder" or "Name")) target.SortOrder = value;
+        if (property == "SortOrder" && target.Type == "UIPageLayout" && value is ("LayoutOrder" or "Name")) target.SortOrder = value;
         if (property == "FlexMode" && target.Type == "UIFlexItem" && value is ("None" or "Grow" or "Shrink" or "Fill" or "Custom")) target.FlexMode = value;
         if (property == "ItemLineAlignment" && target.Type == "UIFlexItem" && value is ("Automatic" or "Start" or "Center" or "End" or "Stretch")) target.ItemLineAlignment = value;
         if (property == "FillDirection" && target.Type == "UIGridLayout") target.FillDirection = value;
         if (property == "AspectType" && target.Type == "UIAspectRatioConstraint" && value is ("FitWithinMaxSize" or "ScaleWithParentSize")) target.AspectType = value;
         if (property == "DominantAxis" && target.Type == "UIAspectRatioConstraint" && value is ("Width" or "Height")) target.DominantAxis = value;
+        if (property == "ScrollingDirection" && target.Type == "ScrollingFrame" && value is ("X" or "Y" or "XY")) target.ScrollingDirection = value;
+        if (property == "AutomaticCanvasSize" && target.Type == "ScrollingFrame" && value is ("None" or "X" or "Y" or "XY")) target.AutomaticCanvasSize = value;
+        if (property == "AutomaticSize" && target.Type is ("Frame" or "UICanvasGroup" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") && value is ("None" or "X" or "Y" or "XY")) target.AutomaticSize = value;
         if (property == "Mode" && target.Type == "Camera") renderer?.UpdateCamera(project);
         if (property is "Shape" or "Material" or "Face" or "EmissionDirection" or "TextureMode") renderer?.UpdateNode(target, project);
         if (IsGuiNode(target)) RefreshGuiPreview();
@@ -3011,6 +3307,18 @@ public partial class MainWindow : Window
             propertyPickerProperty = null;
             target.Subject = value.Id;
             renderer?.UpdateCamera(project);
+            RecordEdit();
+        }
+        else if (property == "CurrentCamera" && target.Type == "ViewportFrame")
+        {
+            if (value.Type != "Camera")
+            {
+                SetStatus("ViewportFrame CurrentCamera must be a Camera.");
+                return true;
+            }
+            propertyPickerTargetId = null;
+            propertyPickerProperty = null;
+            target.ViewportCurrentCameraId = value.Id;
             RecordEdit();
         }
         else if (property == "PrimaryPart" && target.Type == "Model")
@@ -3076,6 +3384,18 @@ public partial class MainWindow : Window
             if (property == "Attachment0") target.Attachment0 = value.Id;
             else target.Attachment1 = value.Id;
             renderer?.UpdateNode(target, project);
+            RecordEdit();
+        }
+        else if (property == "SideChain" && target.Type == "CompressorSoundEffect")
+        {
+            if (value.Type is not ("Sound" or "SoundGroup"))
+            {
+                SetStatus("Compressor SideChain must be a Sound or SoundGroup.");
+                return true;
+            }
+            propertyPickerTargetId = null;
+            propertyPickerProperty = null;
+            target.CompressorSideChainId = value.Id;
             RecordEdit();
         }
         else if (property == "SoundGroup" && target.Type == "Sound")
@@ -3213,6 +3533,7 @@ public partial class MainWindow : Window
         }
         var node = new SceneNode { Type = type is "Ball" or "Cylinder" ? "Part" : type, Name = name };
         if (type == "Atmosphere") { node.Color = "#C6D9FF"; node.AtmosphereDecay = "#607080"; }
+        if (type == "Clouds") { node.Color = "#FFFFFF"; node.CloudCover = .5f; node.CloudDensity = .5f; }
         if (type == "BlurEffect") node.EffectSize = 0;
         if (type == "ColorCorrectionEffect") { node.Brightness = 0; node.TintColor = "#FFFFFF"; }
         if (type is "Tool" or "Accessory") node.Children.Add(new SceneNode { Type = "Part", Name = "Handle", Size = [1, 1, 1], Position = [0, 1, 0], Color = "#8A8F9C", Material = "Metal" });
@@ -3224,7 +3545,7 @@ public partial class MainWindow : Window
         }
         if (type == "UICorner") UICornerRadiusService.Set(node, "CornerRadius", 0, 8);
         if (type == "UIShadow") { node.Color = "#000000"; node.Transparency = .5f; node.ZIndex = -1; }
-        if (type is "WeldConstraint" or "NoCollisionConstraint" && SceneNodeTypes.IsBasePart(parent)) node.Part0 = parent.Id;
+        if (type is "WeldConstraint" or "Motor6D" or "NoCollisionConstraint" && SceneNodeTypes.IsBasePart(parent)) node.Part0 = parent.Id;
         if (type is "VectorForce" or "Torque") node.RelativeTo = "Attachment0";
         if (type is "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint") node.Attachment0 = parent.Type == "Attachment" ? parent.Id
             : SceneNodeTypes.IsBasePart(parent) ? parent.Children.FirstOrDefault(child => child.Type == "Attachment")?.Id ?? string.Empty : string.Empty;
@@ -3242,7 +3563,7 @@ public partial class MainWindow : Window
         if (SceneNodeTypes.IsLight(node)) node.Color = "#FFFFFF";
         if (type == "BillboardGui") { node.Size = [200, 50, 1]; if (SceneNodeTypes.IsBasePart(parent)) node.Adornee = parent.Id; }
         if (type == "SurfaceGui") { node.PixelsPerStud = 50; if (SceneNodeTypes.IsBasePart(parent)) node.Adornee = parent.Id; }
-        if (type is "Frame" or "ScrollingFrame") { node.Size = [320, 180, 1]; node.Color = "#303235"; }
+        if (type is "Frame" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame") { node.Size = [320, 180, 1]; node.Color = type == "ViewportFrame" ? "#1E1E1E" : "#303235"; }
         if (type is "TextLabel" or "TextButton" or "TextBox") { node.Size = [180, 36, 1]; node.Color = "#303235"; }
         if (type is "ImageLabel" or "ImageButton") { node.Size = [128, 128, 1]; node.Color = "#FFFFFF"; }
         if (!GameProjectStore.CanParentNode(project, node, parent))
@@ -3265,12 +3586,14 @@ public partial class MainWindow : Window
     private void ShowInsertMenu(SceneNode parent, UIElement placementTarget)
     {
         if (project is null) return;
-        var choices = IsGuiNode(parent)
+        var choices = parent.Type == "ViewportFrame"
+            ? new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("MeshPart", "MeshPart"), ("Model", "Model"), ("Folder", "Folder"), ("Camera", "Camera") }
+            : IsGuiNode(parent)
             ? (parent.Type == "StarterGui"
                 ? new (string Type, string Name)[] { ("ScreenGui", "ScreenGui"), ("Folder", "Folder"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}"), ("LocalScript", $"LocalScript{project.Scripts.Count + 1}") }
-                : new (string Type, string Name)[] { ("Frame", "Frame"), ("ScrollingFrame", "ScrollingFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIShadow", "UIShadow"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIAspectRatioConstraint", "UIAspectRatioConstraint"), ("UISizeConstraint", "UISizeConstraint"), ("UITextSizeConstraint", "UITextSizeConstraint"), ("UIFlexItem", "UIFlexItem"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}"), ("LocalScript", $"LocalScript{project.Scripts.Count + 1}") })
-            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("VehicleSeat", "VehicleSeat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("BodyForce", "BodyForce"), ("BodyThrust", "BodyThrust"), ("BodyVelocity", "BodyVelocity"), ("BodyPosition", "BodyPosition"), ("BodyGyro", "BodyGyro"), ("BodyAngularVelocity", "BodyAngularVelocity"), ("RocketPropulsion", "RocketPropulsion"), ("VectorForce", "VectorForce"), ("LineForce", "LineForce"), ("Torque", "Torque"), ("SpringConstraint", "SpringConstraint"), ("TorsionSpringConstraint", "TorsionSpringConstraint"), ("RopeConstraint", "RopeConstraint"), ("RodConstraint", "RodConstraint"), ("BallSocketConstraint", "BallSocketConstraint"), ("HingeConstraint", "HingeConstraint"), ("PrismaticConstraint", "PrismaticConstraint"), ("CylindricalConstraint", "CylindricalConstraint"), ("PlaneConstraint", "PlaneConstraint"), ("UniversalConstraint", "UniversalConstraint"), ("RigidConstraint", "RigidConstraint"), ("LinearVelocity", "LinearVelocity"), ("AlignPosition", "AlignPosition"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("SelectionBox", "SelectionBox"), ("SelectionSphere", "SelectionSphere"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("NoCollisionConstraint", "NoCollisionConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("Tool", "Tool"), ("Accessory", "Accessory"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}"), ("LocalScript", $"LocalScript{project.Scripts.Count + 1}") };
-        choices = choices.Concat(new (string Type, string Name)[] { ("Team", "Team"), ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("RemoteEvent", "RemoteEvent"), ("UnreliableRemoteEvent", "UnreliableRemoteEvent"), ("RemoteFunction", "RemoteFunction"), ("AlignOrientation", "AlignOrientation"), ("AngularVelocity", "AngularVelocity"), ("SoundGroup", "SoundGroup"), ("PitchShiftSoundEffect", "PitchShiftSoundEffect"), ("EchoSoundEffect", "EchoSoundEffect"), ("FlangeSoundEffect", "FlangeSoundEffect"), ("TremoloSoundEffect", "TremoloSoundEffect"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector2Value", "Vector2Value"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky"), ("Atmosphere", "Atmosphere"), ("BlurEffect", "BlurEffect"), ("ColorCorrectionEffect", "ColorCorrectionEffect"), ("SurfaceAppearance", "SurfaceAppearance"), ("Fire", "Fire"), ("Smoke", "Smoke"), ("Sparkles", "Sparkles"), ("ParticleEmitter", "ParticleEmitter"), ("BillboardGui", "BillboardGui"), ("SurfaceGui", "SurfaceGui") })
+                : new (string Type, string Name)[] { ("Frame", "Frame"), ("UICanvasGroup", "CanvasGroup"), ("ScrollingFrame", "ScrollingFrame"), ("ViewportFrame", "ViewportFrame"), ("VideoFrame", "VideoFrame"), ("ImageLabel", "ImageLabel"), ("TextLabel", "TextLabel"), ("ImageButton", "ImageButton"), ("TextButton", "TextButton"), ("TextBox", "TextBox"), ("UICorner", "UICorner"), ("UIOutline", "UIOutline"), ("UIStroke", "UIStroke"), ("UIGradient", "UIGradient"), ("UIShadow", "UIShadow"), ("UIPadding", "UIPadding"), ("UIScale", "UIScale"), ("UIListLayout", "UIListLayout"), ("UIGridLayout", "UIGridLayout"), ("UITableLayout", "UITableLayout"), ("UIPageLayout", "UIPageLayout"), ("UIAspectRatioConstraint", "UIAspectRatioConstraint"), ("UISizeConstraint", "UISizeConstraint"), ("UITextSizeConstraint", "UITextSizeConstraint"), ("UIFlexItem", "UIFlexItem"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Folder", "Folder"), ("Script", $"Script{project.Scripts.Count + 1}"), ("LocalScript", $"LocalScript{project.Scripts.Count + 1}") })
+            : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("VehicleSeat", "VehicleSeat"), ("MeshPart", "MeshPart"), ("Attachment", "Attachment"), ("Beam", "Beam"), ("Trail", "Trail"), ("BodyForce", "BodyForce"), ("BodyThrust", "BodyThrust"), ("BodyVelocity", "BodyVelocity"), ("BodyPosition", "BodyPosition"), ("BodyGyro", "BodyGyro"), ("BodyAngularVelocity", "BodyAngularVelocity"), ("RocketPropulsion", "RocketPropulsion"), ("VectorForce", "VectorForce"), ("LineForce", "LineForce"), ("Torque", "Torque"), ("SpringConstraint", "SpringConstraint"), ("TorsionSpringConstraint", "TorsionSpringConstraint"), ("RopeConstraint", "RopeConstraint"), ("RodConstraint", "RodConstraint"), ("BallSocketConstraint", "BallSocketConstraint"), ("HingeConstraint", "HingeConstraint"), ("PrismaticConstraint", "PrismaticConstraint"), ("CylindricalConstraint", "CylindricalConstraint"), ("PlaneConstraint", "PlaneConstraint"), ("UniversalConstraint", "UniversalConstraint"), ("RigidConstraint", "RigidConstraint"), ("LinearVelocity", "LinearVelocity"), ("AlignPosition", "AlignPosition"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("SelectionBox", "SelectionBox"), ("SelectionSphere", "SelectionSphere"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("Motor6D", "Motor6D"), ("NoCollisionConstraint", "NoCollisionConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("Tool", "Tool"), ("Accessory", "Accessory"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}"), ("LocalScript", $"LocalScript{project.Scripts.Count + 1}") };
+        choices = choices.Concat(new (string Type, string Name)[] { ("Team", "Team"), ("BodyColors", "BodyColors"), ("PathfindingModifier", "PathfindingModifier"), ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("RemoteEvent", "RemoteEvent"), ("UnreliableRemoteEvent", "UnreliableRemoteEvent"), ("RemoteFunction", "RemoteFunction"), ("AlignOrientation", "AlignOrientation"), ("AngularVelocity", "AngularVelocity"), ("SoundGroup", "SoundGroup"), ("PitchShiftSoundEffect", "PitchShiftSoundEffect"), ("DistortionSoundEffect", "DistortionSoundEffect"), ("EqualizerSoundEffect", "EqualizerSoundEffect"), ("ChorusSoundEffect", "ChorusSoundEffect"), ("CompressorSoundEffect", "CompressorSoundEffect"), ("EchoSoundEffect", "EchoSoundEffect"), ("FlangeSoundEffect", "FlangeSoundEffect"), ("TremoloSoundEffect", "TremoloSoundEffect"), ("ReverbSoundEffect", "ReverbSoundEffect"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector2Value", "Vector2Value"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky"), ("Atmosphere", "Atmosphere"), ("Clouds", "Clouds"), ("BlurEffect", "BlurEffect"), ("ColorCorrectionEffect", "ColorCorrectionEffect"), ("SurfaceAppearance", "SurfaceAppearance"), ("Fire", "Fire"), ("Smoke", "Smoke"), ("Sparkles", "Sparkles"), ("ParticleEmitter", "ParticleEmitter"), ("BillboardGui", "BillboardGui"), ("SurfaceGui", "SurfaceGui") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
         var search = new TextBox { Width = 190, Margin = new Thickness(5), Padding = new Thickness(5, 3, 5, 3), ToolTip = "Search objects" };
@@ -3514,6 +3837,15 @@ public partial class MainWindow : Window
         var useAsset = new MenuItem { Header = "Use on selected object" };
         useAsset.Click += (_, _) => ApplyAssetToSelectedObject(asset);
         menu.Items.Add(useAsset);
+        if (selected?.Type == "ImageButton" && IsImageAssetType(asset.Type))
+        {
+            var hoverImage = new MenuItem { Header = "Set as ImageButton hover image" };
+            hoverImage.Click += (_, _) => ApplyAssetToSelectedObject(asset, "HoverImage");
+            var pressedImage = new MenuItem { Header = "Set as ImageButton pressed image" };
+            pressedImage.Click += (_, _) => ApplyAssetToSelectedObject(asset, "PressedImage");
+            menu.Items.Add(hoverImage);
+            menu.Items.Add(pressedImage);
+        }
         if (selected is { } surfaceTarget && SceneNodeTypes.IsSurfaceAppearance(surfaceTarget) && IsImageAssetType(asset.Type))
         {
             var maps = new MenuItem { Header = "Set SurfaceAppearance map" };
@@ -3575,7 +3907,8 @@ public partial class MainWindow : Window
             "Trail" when imageAsset => "Texture",
             "MeshPart" when asset.Type == "obj" => "Asset",
             "SurfaceAppearance" when imageAsset => "ColorMap",
-            "ImageLabel" or "ImageButton" or "Decal" or "Texture" when imageAsset => "Asset",
+            "ImageLabel" or "ImageButton" when imageAsset => "Image",
+            "Decal" or "Texture" when imageAsset => "Asset",
             "Sound" when IsAudioAssetType(asset.Type) => "Asset",
             _ => null
         });
@@ -3595,6 +3928,8 @@ public partial class MainWindow : Window
         }
 
         if (property == "Texture") selected.Texture = relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) ? relativePath[7..] : relativePath;
+        else if (property == "HoverImage" && selected.Type == "ImageButton") selected.HoverImage = relativePath;
+        else if (property == "PressedImage" && selected.Type == "ImageButton") selected.PressedImage = relativePath;
         else if (property == "ColorMap" && SceneNodeTypes.IsSurfaceAppearance(selected)) selected.SurfaceAppearanceColorMap = relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) ? relativePath[7..] : relativePath;
         else if (property == "NormalMap" && SceneNodeTypes.IsSurfaceAppearance(selected)) selected.SurfaceAppearanceNormalMap = relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) ? relativePath[7..] : relativePath;
         else if (property == "RoughnessMap" && SceneNodeTypes.IsSurfaceAppearance(selected)) selected.SurfaceAppearanceRoughnessMap = relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) ? relativePath[7..] : relativePath;
@@ -4008,7 +4343,7 @@ public partial class MainWindow : Window
             var imageAssetContext = Regex.IsMatch(source, @"\b(?:Texture|Skybox(?:Front|Back|Left|Right|Top|Bottom))\s*=\s*(?:GetAssetPath\s*\(\s*)?(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase);
             return GetLuaXAssetPathCompletions(imageAssetContext);
         }
-        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "Gui", "StarterGui", "Debris", "CollectionService", "RunService", "UserInputService", "ContextActionService", "TweenService"];
+        if (Regex.IsMatch(source, @"\bgame:GetService\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Workspace", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "Gui", "StarterGui", "Debris", "CollectionService", "RunService", "UserInputService", "ContextActionService", "TweenService", "HttpService", "PathfindingService"];
         if (Regex.IsMatch(source, @"\bInstance\.new\s*\(\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return LuaXCreatableClassNameCompletions.Concat(["LocalScript"]).ToArray();
         if (Regex.IsMatch(source, @"\bCameraMode\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return ["Custom", "Subject"];
         if (Regex.IsMatch(source, @"\bMaterial\s*=\s*(?:['""][^'""\r\n]*)?$", RegexOptions.IgnoreCase)) return SceneNodeTypes.Materials.ToArray();
@@ -4359,7 +4694,7 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXParameterNamePattern = new(@"^\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TextChanged|Triggered|MouseClick|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Constraint", "BodyMover", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "VehicleSeat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "SoundGroup", "SoundEffect", "PitchShiftSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Model", "Camera", "Workspace", "Players", "Player", "Teams", "Team", "Lighting", "SoundService", "Sky", "Atmosphere", "PostEffect", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "PlayerGui", "BasePlayerGui", "Backpack", "PlayerScripts", "BasePlayerScripts", "Terrain", "DataModel", "CollectionService", "RunService", "UserInputService", "ContextActionService", "TweenService", "Tween", "TweenInfo", "Folder", "Configuration", "BindableEvent", "BindableFunction", "BaseRemoteEvent", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "ModuleScript", "LocalScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"], StringComparer.Ordinal);
+    private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "Constraint", "BodyMover", "Part", "MeshPart", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "VehicleSeat", "Humanoid", "PathfindingModifier", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "SoundGroup", "SoundEffect", "PitchShiftSoundEffect", "DistortionSoundEffect", "EqualizerSoundEffect", "ChorusSoundEffect", "CompressorSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "Motor6D", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Model", "Camera", "Workspace", "Players", "Player", "Teams", "Team", "Lighting", "SoundService", "Sky", "Atmosphere", "Clouds", "PostEffect", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "PlayerGui", "BasePlayerGui", "Backpack", "PlayerScripts", "BasePlayerScripts", "Terrain", "DataModel", "CollectionService", "RunService", "UserInputService", "ContextActionService", "TweenService", "HttpService", "PathfindingService", "Path", "PathWaypoint", "Tween", "TweenInfo", "Folder", "Configuration", "BindableEvent", "BindableFunction", "BaseRemoteEvent", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "ModuleScript", "LocalScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ViewportFrame", "VideoFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICanvasGroup", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem", "UIPageLayout"], StringComparer.Ordinal);
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -4402,7 +4737,7 @@ public partial class MainWindow : Window
 
     private string[] GetLuaXMembers(string receiver, TextEditor editor)
     {
-        if (receiver == "game") return ["GetService", "Gui", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "Workspace", "Debris", "CollectionService", "RunService", "UserInputService", "ContextActionService", "TweenService"];
+        if (receiver == "game") return ["GetService", "Gui", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "Workspace", "Debris", "CollectionService", "RunService", "UserInputService", "ContextActionService", "TweenService", "HttpService", "PathfindingService"];
         if (receiver is "game.UserInputService" or "UserInputService") return ["Name", "ClassName", "InputBegan", "InputChanged", "InputEnded", "MouseEnabled", "KeyboardEnabled", "TouchEnabled", "GamepadEnabled", "IsKeyDown", "GetKeysPressed", "GetMouseLocation"];
         if (receiver is "game.ContextActionService" or "ContextActionService") return ["Name", "ClassName", "BindAction", "BindActionAtPriority", "UnbindAction", "UnbindAllActions", "GetBoundActionInfo", "GetAllBoundActionInfo"];
         if (receiver == "game.SoundService") return ["Name", "ClassName", "Volume", "Children", "GetChildren", "FindFirstChild", "WaitForChild"];
@@ -4410,12 +4745,16 @@ public partial class MainWindow : Window
         if (receiver == "game.CollectionService") return ["Name", "ClassName", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
         if (receiver == "game.RunService") return ["Name", "ClassName", "IsRunning", "IsEdit", "IsStudio", "PreSimulation", "Stepped", "PostSimulation", "Heartbeat", "PreRender", "RenderStepped"];
         if (receiver == "game.TweenService") return ["Name", "ClassName", "Create"];
+        if (receiver is "game.HttpService" or "HttpService") return ["Name", "ClassName", "GenerateGUID", "UrlEncode", "UrlDecode", "JSONEncode", "JSONDecode"];
+        if (receiver is "game.PathfindingService" or "PathfindingService") return ["Name", "ClassName", "CreatePath"];
         if (receiver == "TweenInfo") return ["new"];
         if (receiver == "Enum.EasingStyle") return ["Linear", "Sine", "Quad", "Cubic", "Quart", "Quint", "Exponential", "Circular", "Back", "Bounce", "Elastic"];
         if (receiver == "Enum.EasingDirection") return ["In", "Out", "InOut"];
+        if (receiver == "Enum.PathStatus") return ["Success", "NoPath", "ClosestNoPath", "FailStartNotEmpty", "FailFinishNotEmpty", "FailFinishUnreachable", "FailTooFar"];
+        if (receiver == "Enum.PathWaypointAction") return ["Walk", "Jump", "Custom"];
         if (receiver == "Enum.PlaybackState") return ["Begin", "Delayed", "Playing", "Paused", "Completed", "Cancelled"];
         if (receiver == "Instance") return ["new"];
-        if (receiver == "Enum") return ["CameraMode", "KeyCode", "UserInputType", "UserInputState", "ContextActionResult", "LayoutDirection", "FillDirection", "PositionAlignmentMode", "OrientationAlignmentMode", "ActuatorRelativeTo", "RaycastFilterType", "NormalId", "Material", "EasingStyle", "EasingDirection", "PlaybackState"];
+        if (receiver == "Enum") return ["CameraMode", "KeyCode", "UserInputType", "UserInputState", "ContextActionResult", "LayoutDirection", "FillDirection", "ScrollingDirection", "AutomaticSize", "PositionAlignmentMode", "OrientationAlignmentMode", "ActuatorRelativeTo", "RaycastFilterType", "NormalId", "Material", "EasingStyle", "EasingDirection", "PlaybackState", "PathStatus", "PathWaypointAction"];
         if (receiver == "Enum.KeyCode") return ["W", "A", "S", "D", "Space", "E", "Escape", "Enter", "Backspace", "LeftShift", "RightShift", "LeftControl", "RightControl", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero", "Up", "Down", "Left", "Right"];
         if (receiver == "Enum.UserInputType") return ["Keyboard", "MouseButton1", "MouseButton2", "MouseButton3", "MouseMovement", "Touch", "Gamepad1"];
         if (receiver == "Enum.UserInputState") return ["Begin", "Change", "End"];
@@ -4424,6 +4763,8 @@ public partial class MainWindow : Window
         if (receiver == "Enum.NormalId") return ["Top", "Bottom", "Front", "Back", "Left", "Right"];
         if (receiver == "Enum.CameraMode") return ["Custom", "Subject"];
         if (receiver == "Enum.LayoutDirection") return ["Horizontal", "Vertical"];
+        if (receiver == "Enum.ScrollingDirection") return ["X", "Y", "XY"];
+        if (receiver == "Enum.AutomaticSize") return ["None", "X", "Y", "XY"];
         if (receiver == "Enum.PositionAlignmentMode") return ["OneAttachment", "TwoAttachment"];
         if (receiver == "Enum.OrientationAlignmentMode") return ["OneAttachment", "TwoAttachment"];
         if (receiver == "Enum.ActuatorRelativeTo") return ["World", "Attachment0", "Attachment1"];
@@ -4438,7 +4779,7 @@ public partial class MainWindow : Window
         if (receiver == "UDim") return ["new"];
         if (receiver == "UDim2") return ["fromOffset", "fromScale", "new", "zero"];
         if (LuaXStandardLibraryMembers.TryGetValue(receiver, out var libraryMembers)) return libraryMembers;
-        if (receiver.EndsWith(".Touched", StringComparison.Ordinal) || receiver == "Touched" || receiver.EndsWith(".Triggered", StringComparison.Ordinal) || receiver == "Triggered" || receiver.EndsWith(".MouseClick", StringComparison.Ordinal) || receiver == "MouseClick" || receiver.EndsWith(".Died", StringComparison.Ordinal) || receiver == "Died" || receiver.EndsWith(".Changed", StringComparison.Ordinal) || receiver == "Changed" || receiver.EndsWith(".AttributeChanged", StringComparison.Ordinal) || receiver == "AttributeChanged" || receiver.EndsWith(".Hit", StringComparison.Ordinal) || receiver == "Hit" || receiver.EndsWith(".InputBegan", StringComparison.Ordinal) || receiver.EndsWith(".InputChanged", StringComparison.Ordinal) || receiver.EndsWith(".InputEnded", StringComparison.Ordinal) || receiver.EndsWith(".PreSimulation", StringComparison.Ordinal) || receiver.EndsWith(".Stepped", StringComparison.Ordinal) || receiver.EndsWith(".PostSimulation", StringComparison.Ordinal) || receiver.EndsWith(".Heartbeat", StringComparison.Ordinal) || receiver.EndsWith(".PreRender", StringComparison.Ordinal) || receiver.EndsWith(".RenderStepped", StringComparison.Ordinal)) return ["Connect"];
+        if (receiver.EndsWith(".Touched", StringComparison.Ordinal) || receiver == "Touched" || receiver.EndsWith(".Triggered", StringComparison.Ordinal) || receiver == "Triggered" || receiver.EndsWith(".MouseClick", StringComparison.Ordinal) || receiver == "MouseClick" || receiver.EndsWith(".Died", StringComparison.Ordinal) || receiver == "Died" || receiver.EndsWith(".MoveToFinished", StringComparison.Ordinal) || receiver == "MoveToFinished" || receiver.EndsWith(".HealthChanged", StringComparison.Ordinal) || receiver == "HealthChanged" || receiver.EndsWith(".Changed", StringComparison.Ordinal) || receiver == "Changed" || receiver.EndsWith(".AttributeChanged", StringComparison.Ordinal) || receiver == "AttributeChanged" || receiver.EndsWith(".Hit", StringComparison.Ordinal) || receiver == "Hit" || receiver.EndsWith(".InputBegan", StringComparison.Ordinal) || receiver.EndsWith(".InputChanged", StringComparison.Ordinal) || receiver.EndsWith(".InputEnded", StringComparison.Ordinal) || receiver.EndsWith(".PreSimulation", StringComparison.Ordinal) || receiver.EndsWith(".Stepped", StringComparison.Ordinal) || receiver.EndsWith(".PostSimulation", StringComparison.Ordinal) || receiver.EndsWith(".Heartbeat", StringComparison.Ordinal) || receiver.EndsWith(".PreRender", StringComparison.Ordinal) || receiver.EndsWith(".RenderStepped", StringComparison.Ordinal)) return ["Connect"];
         var node = ResolveLuaXNode(receiver);
         if (node is null)
         {
@@ -4459,6 +4800,10 @@ public partial class MainWindow : Window
             if (inferredType == "TweenInfo") return ["Time", "EasingStyle", "EasingDirection", "RepeatCount", "Reverses", "DelayTime"];
             if (inferredType == "RBXScriptSignal") return ["Connect"];
             if (inferredType == "RunService") return ["Name", "ClassName", "IsRunning", "IsEdit", "IsStudio", "PreSimulation", "Stepped", "PostSimulation", "Heartbeat", "PreRender", "RenderStepped"];
+            if (inferredType == "HttpService") return ["Name", "ClassName", "GenerateGUID", "UrlEncode", "UrlDecode", "JSONEncode", "JSONDecode"];
+            if (inferredType == "PathfindingService") return ["Name", "ClassName", "CreatePath"];
+            if (inferredType == "Path") return ["Name", "ClassName", "Status", "ComputeAsync", "GetWaypoints", "CheckOcclusionAsync", "Destroy"];
+            if (inferredType == "PathWaypoint") return ["Position", "Action", "Label"];
             if (inferredType == "UserInputService") return ["Name", "ClassName", "InputBegan", "InputChanged", "InputEnded", "MouseEnabled", "KeyboardEnabled", "TouchEnabled", "GamepadEnabled", "IsKeyDown", "GetKeysPressed", "GetMouseLocation"];
             if (inferredType == "ContextActionService") return ["Name", "ClassName", "BindAction", "BindActionAtPriority", "UnbindAction", "UnbindAllActions", "GetBoundActionInfo", "GetAllBoundActionInfo"];
             if (inferredType is "number" or "string" or "boolean" or "table") return [];
@@ -4472,6 +4817,8 @@ public partial class MainWindow : Window
         if (node.Type == "Tween") members.AddRange(["Instance", "PlaybackState", "Completed", "Play", "Pause", "Cancel"]);
         if (node.Type == "TweenInfo") members.AddRange(["Time", "EasingStyle", "EasingDirection", "RepeatCount", "Reverses", "DelayTime"]);
         if (node.Type == "TweenService") members.Add("Create");
+        if (node.Type == "HttpService") members.AddRange(["GenerateGUID", "UrlEncode", "UrlDecode", "JSONEncode", "JSONDecode"]);
+        if (node.Type == "PathfindingService") members.Add("CreatePath");
         if (node.Type == "Model") members.AddRange(["Position", "Rotation", "MoveTo", "RotateTo"]);
         if (node.Type == "Model") members.Add("PrimaryPart");
         if (node.Type == "BasePart" || SceneNodeTypes.IsBasePart(node)) members.AddRange(["Position", "Rotation", "Size", "Color", "Material", "Transparency", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Touched", "touched"]);
@@ -4479,7 +4826,7 @@ public partial class MainWindow : Window
         if (node.Type == "SpawnLocation") members.Add("Enabled");
         if (node.Type == "Seat") members.Add("Occupant");
         if (node.Type == "VehicleSeat") members.AddRange(["Occupant", "Disabled", "HeadsUpDisplay", "MaxSpeed", "Torque", "TurnSpeed", "ThrottleFloat", "SteerFloat", "AreHingesDetected"]);
-        if (node.Type == "Humanoid") members.AddRange(["Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "TakeDamage"]);
+        if (node.Type == "Humanoid") members.AddRange(["Health", "MaxHealth", "WalkSpeed", "JumpPower", "HealthChanged", "Died", "MoveTo", "MoveToFinished", "TakeDamage"]);
         if (node.Type == "ForceField") members.Add("Visible");
         if (node.Type == "Explosion") members.AddRange(["Position", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Visible", "Hit"]);
         if (SceneNodeTypes.IsParticleEffect(node)) members.AddRange(["Enabled", "TimeScale"]);
@@ -4512,6 +4859,10 @@ public partial class MainWindow : Window
         if (node.Type == "SoundGroup") members.Add("Volume");
         if (node.Type == "SoundService") members.Add("Volume");
         if (node.Type == "PitchShiftSoundEffect") members.Add("Octave");
+        if (node.Type == "DistortionSoundEffect") members.Add("Level");
+        if (node.Type == "EqualizerSoundEffect") members.AddRange(["LowGain", "MidGain", "HighGain"]);
+        if (node.Type == "ChorusSoundEffect") members.AddRange(["Depth", "Mix", "Rate"]);
+        if (node.Type == "CompressorSoundEffect") members.AddRange(["Attack", "GainMakeup", "Ratio", "Release", "Threshold", "SideChain"]);
         if (node.Type == "EchoSoundEffect") members.AddRange(["Delay", "Feedback", "DryLevel", "WetLevel"]);
         if (node.Type == "FlangeSoundEffect") members.AddRange(["Depth", "Mix", "Rate"]);
         if (node.Type == "TremoloSoundEffect") members.AddRange(["Depth", "Duty", "Frequency"]);
@@ -4521,7 +4872,8 @@ public partial class MainWindow : Window
         if (node.Type == "Highlight") members.AddRange(["Adornee", "Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency"]);
         if (node.Type == "SelectionBox") members.AddRange(["Adornee", "Visible", "Color3", "Transparency", "LineThickness", "SurfaceColor3", "SurfaceTransparency"]);
         if (node.Type == "SelectionSphere") members.AddRange(["Adornee", "Visible", "Color3", "Transparency", "SurfaceColor3", "SurfaceTransparency"]);
-        if (node.Type is "WeldConstraint" or "NoCollisionConstraint") members.AddRange(["Enabled", "Part0", "Part1"]);
+        if (node.Type is "WeldConstraint" or "Motor6D" or "NoCollisionConstraint") members.AddRange(["Enabled", "Part0", "Part1"]);
+        if (node.Type == "Motor6D") members.AddRange(["Part0OffsetPosition", "Part0OffsetRotation", "Part1OffsetPosition", "Part1OffsetRotation", "TransformPosition", "TransformRotation"]);
         if (node.Type == "Beam") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Width0", "Width1", "Color", "Transparency"]);
         if (node.Type == "Trail") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Lifetime", "MinLength", "MaxLength", "WidthScale", "Color", "Transparency", "Texture", "FaceCamera", "TextureMode", "TextureLength", "Clear"]);
         if (node.Type == "VectorForce") members.AddRange(["Enabled", "Attachment0", "Force", "RelativeTo", "ApplyAtCenterOfMass"]);
@@ -4552,29 +4904,39 @@ public partial class MainWindow : Window
         if (node.Type == "RodConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "CurrentDistance", "Length", "LimitAngle0", "LimitAngle1", "LimitsEnabled", "Thickness"]);
         if (node.Type == "Attachment") members.AddRange(["Position", "Rotation"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
-        if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "CurrentCamera", "Raycast", "Blockcast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
+        if (node.Type == "ViewportFrame") members.Add("CurrentCamera");
+        if (node.Type == "Workspace") members.AddRange(["Gravity", "AutoManageCharacter", "CurrentCamera", "Raycast", "Blockcast", "Spherecast", "Shapecast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
         if (node.Type == "Terrain") members.AddRange(["FillBlock", "FillBall", "FillCylinder", "FillWedge", "ClearBlock", "Clear"]);
         if (node.Type == "Lighting") members.AddRange(["Ambient", "Brightness", "ClockTime", "GlobalShadows"]);
         if (node.Type == "Atmosphere") members.AddRange(["Color", "Decay", "Density", "Haze", "Glare", "Offset", "Enabled"]);
+        if (node.Type == "Clouds") members.AddRange(["Enabled", "Cover", "Density", "Color"]);
         if (node.Type == "Sky") members.AddRange(["SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn"]);
         if (node.Type == "Players") members.AddRange(["LocalPlayer", "GetPlayers", "GetPlayerFromCharacter"]);
         if (node.Type == "Tool") members.AddRange(["ToolTip", "RequiresHandle", "CanBeDropped", "ManualActivationOnly", "GripPosition", "GripRotation", "Activated", "Deactivated", "Equipped", "Unequipped", "Activate", "Deactivate"]);
         if (node.Type == "Player") members.AddRange(["Backpack", "Character", "CharacterAdded", "CharacterRemoving", "PlayerScripts", "Team", "TeamColor"]);
         if (node.Type == "Team") members.AddRange(["TeamColor", "AutoAssignable"]);
         if (node.Type == "SpawnLocation") members.AddRange(["Neutral", "TeamColor", "AllowTeamChangeOnTouch", "Duration"]);
-        if (node.Type == "ScreenGui") members.AddRange(["Enabled", "DisplayOrder"]);
-        if (node.Type == "BillboardGui") members.AddRange(["Enabled", "Adornee", "Size", "MaxDistance", "AlwaysOnTop"]);
-        if (node.Type == "SurfaceGui") members.AddRange(["Enabled", "Adornee", "Face", "MaxDistance", "PixelsPerStud", "AlwaysOnTop"]);
-        if (node.Type is "GuiBase2d" or "GuiObject" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Visible", "Position", "Size", "ZIndex", "LayoutOrder"]);
-        if (node.Type is "GuiObject" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Color", "BackgroundColor3", "Rotation", "BackgroundTransparency"]);
-        if (node.Type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.Add("AnchorPoint");
+        if (node.Type == "PathfindingModifier") members.AddRange(["Label", "PassThrough"]);
+        if (node.Type == "BodyColors") members.AddRange(["HeadColor3", "TorsoColor3", "LeftArmColor3", "RightArmColor3", "LeftLegColor3", "RightLegColor3"]);
+        if (node.Type == "ScreenGui") members.AddRange(["Enabled", "DisplayOrder", "ResetOnSpawn"]);
+        if (node.Type == "BillboardGui") members.AddRange(["Enabled", "Adornee", "Size", "MaxDistance", "AlwaysOnTop", "ClipsDescendants"]);
+        if (node.Type == "SurfaceGui") members.AddRange(["Enabled", "Adornee", "Face", "MaxDistance", "PixelsPerStud", "AlwaysOnTop", "ClipsDescendants"]);
+        if (node.Type is "GuiBase2d" or "GuiObject" or "Frame" or "UICanvasGroup" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Visible", "Position", "Size", "ZIndex", "LayoutOrder"]);
+        if (node.Type is "GuiObject" or "Frame" or "UICanvasGroup" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Color", "BackgroundColor3", "BorderColor3", "BorderSizePixel", "Rotation", "BackgroundTransparency"]);
+        if (node.Type is "Frame" or "UICanvasGroup" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.Add("AnchorPoint");
+        if (node.Type is "Frame" or "UICanvasGroup" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.Add("AutomaticSize");
+        if (node.Type is "Frame" or "UICanvasGroup" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox") members.Add("ClipsDescendants");
+        if (node.Type == "ScrollingFrame") members.AddRange(["CanvasPosition", "CanvasSize", "AutomaticCanvasSize", "ScrollBarThickness", "ScrollingEnabled", "ScrollingDirection"]);
+        if (node.Type == "UICanvasGroup") members.Add("GroupTransparency");
         if (node.Type is "TextLabel" or "TextButton" or "TextBox") members.AddRange(["Text", "TextColor", "TextSize", "TextTransparency", "TextScaled"]);
+        if (node.Type is "TextLabel" or "TextButton") members.Add("TextWrapped");
         if (node.Type == "TextBox") members.AddRange(["MultiLine", "TextEditable", "ClearTextOnFocus", "PlaceholderText"]);
         if (node.Type is "TextButton" or "ImageButton" or "Tool") members.Add("Activated");
         if (node.Type == "Tool") members.AddRange(["Equipped", "Unequipped"]);
         if (node.Type is "TextButton" or "ImageButton") members.Add("MouseButton1Click");
         if (node.Type == "TextBox") members.Add("TextChanged");
-        if (node.Type is "ImageLabel" or "ImageButton") members.AddRange(["Asset", "ImageTransparency"]);
+        if (node.Type is "ImageLabel" or "ImageButton") members.AddRange(["Image", "ImageColor3", "ImageTransparency", "ScaleType", "ImageRectOffset", "ImageRectSize", "SliceCenter", "SliceScale"]);
+        if (node.Type == "ImageButton") members.AddRange(["HoverImage", "PressedImage"]);
         if (node.Type == "UICorner") members.AddRange(["CornerRadius", "TopLeftRadius", "TopRightRadius", "BottomRightRadius", "BottomLeftRadius"]);
         if (node.Type is "UIOutline" or "UIStroke") members.AddRange(["StrokeColor", "StrokeThickness"]);
         if (node.Type == "UIGradient") members.AddRange(["Enabled", "StartColor", "EndColor", "Rotation"]);
@@ -4585,6 +4947,8 @@ public partial class MainWindow : Window
         if (node.Type == "UIFlexItem") members.AddRange(["FlexMode", "GrowRatio", "ShrinkRatio", "ItemLineAlignment"]);
         if (node.Type == "UIGridLayout") members.AddRange(["CellSize", "CellPadding", "FillDirection", "FillDirectionMaxCells"]);
         if (node.Type == "UITableLayout") members.AddRange(["LayoutSpacing", "TableColumns"]);
+        if (node.Type == "UIPageLayout") members.AddRange(["CurrentPage", "CurrentPageIndex", "Circular", "SortOrder"]);
+        if (node.Type == "UIPageLayout") members.AddRange(["Next", "Previous", "JumpTo", "JumpToIndex"]);
         if (node.Type is "UIAspectRatio" or "UIAspectRatioConstraint") members.Add("AspectRatio");
         if (node.Type == "UIAspectRatioConstraint") members.AddRange(["AspectType", "DominantAxis"]);
         if (node.Type == "UISizeConstraint") members.AddRange(["MinSize", "MaxSize"]);
@@ -4599,13 +4963,15 @@ public partial class MainWindow : Window
         if (receiver is "game.ContextActionService" or "ContextActionService") return ["BindAction", "BindActionAtPriority", "UnbindAction", "UnbindAllActions", "GetBoundActionInfo", "GetAllBoundActionInfo"];
         if (receiver == "game.RunService") return ["IsRunning", "IsEdit", "IsStudio"];
         if (receiver == "game.TweenService") return ["Create"];
+        if (receiver is "game.PathfindingService" or "PathfindingService") return ["CreatePath"];
         if (receiver.EndsWith(".InputChanged", StringComparison.OrdinalIgnoreCase)) return ["Connect"];
         if (receiver == "TweenInfo") return ["new"];
-        if (receiver == "workspace" || receiver == "game.Workspace") return ["Raycast", "Blockcast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "FindFirstChildWhichIsA", "FindFirstChildOfClass", "FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA", "GetChildren", "GetDescendants", "GetFullName", "IsDescendantOf", "IsA", "ClearAllChildren"];
+        if (receiver == "workspace" || receiver == "game.Workspace") return ["Raycast", "Blockcast", "Spherecast", "Shapecast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "FindFirstChildWhichIsA", "FindFirstChildOfClass", "FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA", "GetChildren", "GetDescendants", "GetFullName", "IsDescendantOf", "IsA", "ClearAllChildren"];
         if (receiver.Equals("Touched", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Touched", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".Activated", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".MouseButton1Click", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".TextChanged", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Triggered", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".MouseClick", StringComparison.OrdinalIgnoreCase) || receiver.EndsWith(".Changed", StringComparison.OrdinalIgnoreCase)
+            || receiver.EndsWith(".MoveToFinished", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".Hit", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".PreSimulation", StringComparison.OrdinalIgnoreCase)
             || receiver.EndsWith(".Stepped", StringComparison.OrdinalIgnoreCase)
@@ -4624,12 +4990,14 @@ public partial class MainWindow : Window
         if (inferredType == "UserInputService") return ["IsKeyDown", "GetKeysPressed", "GetMouseLocation"];
         if (inferredType == "ContextActionService") return ["BindAction", "BindActionAtPriority", "UnbindAction", "UnbindAllActions", "GetBoundActionInfo", "GetAllBoundActionInfo"];
         if (inferredType == "TweenService") return ["Create"];
+        if (inferredType == "PathfindingService") return ["CreatePath"];
+        if (inferredType == "Path") return ["ComputeAsync", "GetWaypoints", "CheckOcclusionAsync", "Destroy"];
         if (inferredType == "Tween") return ["Play", "Pause", "Cancel"];
-        if (inferredType == "Workspace") return ["Raycast", "Blockcast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "FindFirstChildWhichIsA", "FindFirstChildOfClass", "FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA", "GetChildren", "GetDescendants", "GetFullName", "IsDescendantOf", "IsA", "ClearAllChildren"];
+        if (inferredType == "Workspace") return ["Raycast", "Blockcast", "Spherecast", "Shapecast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "FindFirstChildWhichIsA", "FindFirstChildOfClass", "FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA", "GetChildren", "GetDescendants", "GetFullName", "IsDescendantOf", "IsA", "ClearAllChildren"];
         if (inferredType == "Model" || receiverNode?.Type == "Model") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "FindFirstChildWhichIsA", "FindFirstChildOfClass", "FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA", "GetChildren", "GetDescendants", "GetFullName", "IsDescendantOf", "IsA", "Clone", "Destroy", "ClearAllChildren", "MoveTo", "RotateTo"];
         if (inferredType is "number" or "string" or "boolean" or "table") return [];
         if (inferredType is "Seat" or "VehicleSeat" || receiverNode?.Type is "Seat" or "VehicleSeat") return ["Sit"];
-        if (inferredType == "Humanoid" || receiverNode?.Type == "Humanoid") return ["TakeDamage", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
+        if (inferredType == "Humanoid" || receiverNode?.Type == "Humanoid") return ["HealthChanged", "Died", "MoveTo", "MoveToFinished", "TakeDamage", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
         if (inferredType == "Sound" || receiverNode?.Type == "Sound") return ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Play", "Stop"];
         if (inferredType == "ParticleEmitter" || receiverNode?.Type == "ParticleEmitter") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Emit", "Clear"];
         if (inferredType == "Trail" || receiverNode?.Type == "Trail") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Clear"];
@@ -4974,6 +5342,7 @@ public partial class MainWindow : Window
             {
                 "position" => IsLuaXGuiObject(node) || node.Type is "GuiBase2d" or "GuiObject" ? "UDim2" : "Vector3",
                 "anchorpoint" => "Vector2",
+                "bordercolor3" => "Color3",
                 "rotation" => "Vector3",
                 "size" => IsLuaXGuiObject(node) || node.Type is "GuiBase2d" or "GuiObject" or "BillboardGui" ? "UDim2" : "Vector3",
                 "velocity" or "assemblylinearvelocity" => "Vector3",
@@ -5006,9 +5375,12 @@ public partial class MainWindow : Window
                 "parent" or "subject" => "Instance",
                 "part0" or "part1" => "BasePart",
                 "touched" or "activated" or "mousebutton1click" or "textchanged" or "triggered" or "mouseclick" or "hit" => "RBXScriptSignal",
-                "displayorder" or "fieldofview" or "textsize" or "mintextsize" or "maxtextsize" or "strokethickness" or "layoutspacing" or "growratio" or "shrinkratio" or "tablecolumns" or "aspectratio" or "transparency" or "backgroundtransparency" or "texttransparency" or "imagetransparency" or "filltransparency" or "outlinetransparency" or "surfacetransparency" or "linethickness" or "maxdistance" or "pixelsperstud" or "blastradius" or "blastpressure" or "destroyjointradiuspercent" => "number",
-                "anchored" or "cancollide" or "cantouch" or "castshadow" or "visible" or "enabled" or "alwaystop" or "textscaled" or "multiline" or "texteditable" or "cleartextonfocus" => "boolean",
-                "name" or "id" or "classname" or "type" or "texture" or "asset" or "face" or "text" or "placeholdertext" or "textcolor" or "strokecolor" or "layoutdirection" or "filldirection" or "horizontalalignment" or "verticalalignment" or "sortorder" or "flexmode" or "itemlinealignment" or "aspecttype" or "dominantaxis" or "cameramode" or "mode" or "skyboxfront" or "skyboxback" or "skyboxleft" or "skyboxright" or "skyboxtop" or "skyboxbottom" or "actiontext" or "objecttext" => "string",
+                "canvasposition" => "Vector2",
+                "canvassize" => "UDim2",
+                "scrollbarthickness" => "number",
+                "displayorder" or "fieldofview" or "textsize" or "mintextsize" or "maxtextsize" or "strokethickness" or "bordersizepixel" or "layoutspacing" or "growratio" or "shrinkratio" or "tablecolumns" or "aspectratio" or "transparency" or "backgroundtransparency" or "grouptransparency" or "texttransparency" or "imagetransparency" or "filltransparency" or "outlinetransparency" or "surfacetransparency" or "linethickness" or "maxdistance" or "pixelsperstud" or "blastradius" or "blastpressure" or "destroyjointradiuspercent" => "number",
+                "anchored" or "cancollide" or "cantouch" or "castshadow" or "visible" or "enabled" or "alwaystop" or "resetonspawn" or "scrollingenabled" or "clipsdescendants" or "textscaled" or "textwrapped" or "multiline" or "texteditable" or "cleartextonfocus" => "boolean",
+                "name" or "id" or "classname" or "type" or "texture" or "asset" or "face" or "text" or "placeholdertext" or "textcolor" or "strokecolor" or "layoutdirection" or "filldirection" or "horizontalalignment" or "verticalalignment" or "sortorder" or "flexmode" or "itemlinealignment" or "aspecttype" or "dominantaxis" or "cameramode" or "mode" or "scrollingdirection" or "automaticcanvassize" or "automaticsize" or "skyboxfront" or "skyboxback" or "skyboxleft" or "skyboxright" or "skyboxtop" or "skyboxbottom" or "actiontext" or "objecttext" => "string",
                 _ => null
             };
             if (propertyType is not null) return propertyType;
@@ -5016,6 +5388,13 @@ public partial class MainWindow : Window
 
         return (receiverType, member.ToLowerInvariant()) switch
         {
+            ("PathfindingService", "createpath") => "Path",
+            ("Path", "getwaypoints") => "{PathWaypoint}",
+            ("Path", "status") => "Enum.PathStatus",
+            ("PathWaypoint", "position") => "Vector3",
+            ("PathWaypoint", "action") => "Enum.PathWaypointAction",
+            ("PathWaypoint", "label") => "string",
+            ("Humanoid", "movetofinished") => "RBXScriptSignal",
             ("Tool", "tooltip") => "string",
             ("Tool", "requireshandle" or "canbedropped" or "manualactivationonly") => "boolean",
             ("Tool", "gripposition" or "griprotation") => "Vector3",
@@ -5121,7 +5500,7 @@ public partial class MainWindow : Window
     }
 
     private bool IsLuaXGuiObject(SceneNode node) =>
-        node.Type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox"
+        node.Type is "Frame" or "UICanvasGroup" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox"
         && IsGuiNode(node);
 
     private SceneNode? ResolveLuaXReceiverNode(string receiver, TextEditor editor, HashSet<string>? visited = null)
@@ -5194,6 +5573,10 @@ public partial class MainWindow : Window
         if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']CollectionService[""']\s*\)$")) return new SceneNode { Type = "CollectionService", Name = "CollectionService" };
         if (expression == "game.RunService") return new SceneNode { Type = "RunService", Name = "RunService" };
         if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']RunService[""']\s*\)$")) return new SceneNode { Type = "RunService", Name = "RunService" };
+        if (expression == "game.HttpService") return new SceneNode { Type = "HttpService", Name = "HttpService" };
+        if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']HttpService[""']\s*\)$")) return new SceneNode { Type = "HttpService", Name = "HttpService" };
+        if (expression == "game.PathfindingService") return new SceneNode { Type = "PathfindingService", Name = "PathfindingService" };
+        if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']PathfindingService[""']\s*\)$")) return new SceneNode { Type = "PathfindingService", Name = "PathfindingService" };
         if (expression == "game.UserInputService") return new SceneNode { Type = "UserInputService", Name = "UserInputService" };
         if (Regex.IsMatch(expression, @"^game:GetService\s*\(\s*[""']UserInputService[""']\s*\)$")) return new SceneNode { Type = "UserInputService", Name = "UserInputService" };
         if (expression == "game.ContextActionService") return new SceneNode { Type = "ContextActionService", Name = "ContextActionService" };
@@ -5234,10 +5617,11 @@ public partial class MainWindow : Window
         if (member.Equals("LocalPlayer", StringComparison.OrdinalIgnoreCase) && instance.Type == "Players")
             return new SceneNode { Type = "Player", Name = "LocalPlayer" };
         if (member.Equals("Subject", StringComparison.OrdinalIgnoreCase) && instance.Type == "Camera") return FindSceneNode(instance.Subject);
+        if (member.Equals("CurrentCamera", StringComparison.OrdinalIgnoreCase) && instance.Type == "ViewportFrame") return FindSceneNode(instance.ViewportCurrentCameraId);
         if (member.Equals("PrimaryPart", StringComparison.OrdinalIgnoreCase) && instance.Type == "Model") return FindSceneNode(instance.PrimaryPart);
         if (member.Equals("Character", StringComparison.OrdinalIgnoreCase) && instance.Type == "Player") return FindSceneNode(instance.Character);
-        if (member.Equals("Part0", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part0);
-        if (member.Equals("Part1", StringComparison.OrdinalIgnoreCase) && instance.Type == "WeldConstraint") return FindSceneNode(instance.Part1);
+        if (member.Equals("Part0", StringComparison.OrdinalIgnoreCase) && instance.Type is "WeldConstraint" or "Motor6D") return FindSceneNode(instance.Part0);
+        if (member.Equals("Part1", StringComparison.OrdinalIgnoreCase) && instance.Type is "WeldConstraint" or "Motor6D") return FindSceneNode(instance.Part1);
         if (member.Equals("Attachment0", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")) return FindSceneNode(instance.Attachment0);
         if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")) return FindSceneNode(instance.Attachment1);
         if (member.Equals("Attachment1", StringComparison.OrdinalIgnoreCase) && instance.Type is ("Beam" or "Trail")) return FindSceneNode(instance.Attachment1);
@@ -5294,18 +5678,18 @@ public partial class MainWindow : Window
     [
         "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
         "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs", "pcall", "print", "require", "warn", "rawequal", "rawget", "rawlen", "rawset", "select", "setmetatable", "tonumber", "tostring", "type", "typeof", "unpack", "xpcall",
-        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "Instance", "Enum", "Vector3", "Vector2", "NumberRange", "NumberSequence", "NumberSequenceKeypoint", "ColorSequence", "ColorSequenceKeypoint", "Color3", "UDim", "UDim2", "RaycastParams", "OverlapParams", "TweenInfo", "TweenService",
+        "math", "string", "table", "coroutine", "utf8", "task", "wait", "game", "workspace", "script", "Gui", "Players", "Teams", "Lighting", "SoundService", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "Instance", "Enum", "Vector3", "Vector2", "Rect", "NumberRange", "NumberSequence", "NumberSequenceKeypoint", "ColorSequence", "ColorSequenceKeypoint", "Color3", "UDim", "UDim2", "RaycastParams", "OverlapParams", "TweenInfo", "TweenService",
         "SetProperty", "GetProperty", "WaitForChild", "GetAssetPath", "ConnectTouched", "LookAtRotation", "Sit"
     ];
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "BackgroundTransparency", "TextTransparency", "ImageTransparency", "MinSize", "MaxSize", "AspectType", "DominantAxis", "MinTextSize", "MaxTextSize", "TextScaled", "TextSize", "Texture", "Asset", "Volume", "PlaybackSpeed", "Octave", "Delay", "Feedback", "DryLevel", "WetLevel", "SoundGroup", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "CurrentCamera", "Raycast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "FilterDescendantsInstances", "FilterType", "MaxParts", "RespectCanCollide", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "Team", "TeamColor", "AutoAssignable", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "Died", "TakeDamage", "Enabled", "Part0", "Part1", "PrimaryPart", "Attachment0", "Attachment1", "ActuatorType", "AngularActuatorType", "AngularLimitsEnabled", "AngularRestitution", "AngularResponsiveness", "AngularSpeed", "AngularVelocity", "CurrentAngle", "MaxAngle", "MaxTorque", "Coils", "Stiffness", "Damping", "LowerAngle", "MotorMaxAcceleration", "MotorMaxAngularAcceleration", "MotorMaxTorque", "ServoMaxTorque", "TargetAngle", "UpperAngle", "CurrentPosition", "CurrentDistance", "LimitAngle0", "LimitAngle1", "Thickness", "InclinationAngle", "RotationAxisVisible", "WorldRotationAxis", "LinearResponsiveness", "LowerLimit", "MotorMaxForce", "ServoMaxForce", "TargetPosition", "UpperLimit", "Speed", "TwistLowerAngle", "TwistUpperAngle", "TwistLimitsEnabled", "LimitsEnabled", "MaxFrictionTorque", "Radius", "Restitution", "Width0", "Width1", "Density", "Haze", "Glare", "Offset", "Decay", "Brightness", "Contrast", "Saturation", "TintColor", "Range", "Angle", "ActionText", "ObjectText", "HoldDuration", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "PlaybackState", "Completed", "EasingStyle", "EasingDirection", "Time", "RepeatCount", "Reverses", "DelayTime", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "Deactivated", "Activate", "Deactivate", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal", "CollectionService"
+        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "BackgroundTransparency", "BorderColor3", "BorderSizePixel", "GroupTransparency", "TextTransparency", "Image", "ImageColor3", "ImageTransparency", "ScaleType", "ImageRectOffset", "ImageRectSize", "SliceCenter", "SliceScale", "HoverImage", "PressedImage", "CanvasPosition", "CanvasSize", "AutomaticCanvasSize", "ScrollBarThickness", "ScrollingEnabled", "ScrollingDirection", "AutomaticSize", "MinSize", "MaxSize", "AspectType", "DominantAxis", "MinTextSize", "MaxTextSize", "TextScaled", "TextWrapped", "TextSize", "Texture", "Asset", "Volume", "PlaybackSpeed", "Octave", "Level", "LowGain", "MidGain", "HighGain", "Attack", "GainMakeup", "Ratio", "Release", "Threshold", "SideChain", "Delay", "Feedback", "DryLevel", "WetLevel", "SoundGroup", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "Play", "Stop", "Anchored", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "AutoManageCharacter", "CurrentCamera", "Raycast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "FilterDescendantsInstances", "FilterType", "MaxParts", "RespectCanCollide", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "Team", "TeamColor", "AutoAssignable", "LocalPlayer", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "HealthChanged", "Died", "TakeDamage", "Enabled", "ClipsDescendants", "Cover", "Part0", "Part1", "PrimaryPart", "Attachment0", "Attachment1", "ActuatorType", "AngularActuatorType", "AngularLimitsEnabled", "AngularRestitution", "AngularResponsiveness", "AngularSpeed", "AngularVelocity", "CurrentAngle", "MaxAngle", "MaxTorque", "Coils", "Stiffness", "Damping", "LowerAngle", "MotorMaxAcceleration", "MotorMaxAngularAcceleration", "MotorMaxTorque", "ServoMaxTorque", "TargetAngle", "UpperAngle", "CurrentPosition", "CurrentDistance", "LimitAngle0", "LimitAngle1", "Thickness", "InclinationAngle", "RotationAxisVisible", "WorldRotationAxis", "LinearResponsiveness", "LowerLimit", "MotorMaxForce", "ServoMaxForce", "TargetPosition", "UpperLimit", "Speed", "TwistLowerAngle", "TwistUpperAngle", "TwistLimitsEnabled", "LimitsEnabled", "MaxFrictionTorque", "Radius", "Restitution", "Width0", "Width1", "Density", "Haze", "Glare", "Offset", "Decay", "Brightness", "Contrast", "Saturation", "TintColor", "Range", "Angle", "ActionText", "ObjectText", "HoldDuration", "MaxActivationDistance", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "PlaybackState", "Completed", "EasingStyle", "EasingDirection", "Time", "RepeatCount", "Reverses", "DelayTime", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "Deactivated", "Activate", "Deactivate", "MouseButton1Click", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal", "CollectionService"
     ];
 
-    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "Blockcast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "GetPlayers", "GetPlayerFromCharacter", "IsA", "Clone", "Destroy", "Fire", "Abort", "Invoke", "Disconnect", "TakeDamage", "Sit", "AddItem", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
-    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "Script", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Atmosphere", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "Team", "Attachment", "Beam", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Accessory", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
-    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "Workspace", "Players", "Player", "Teams", "Team", "Lighting", "SoundService", "Sky", "Atmosphere", "PostEffect", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "PlayerGui", "BasePlayerGui", "Backpack", "PlayerScripts", "BasePlayerScripts", "Terrain", "Camera", "BasePart", "BodyMover", "Accoutrement", "Accessory", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Humanoid", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Accessory", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "BaseRemoteEvent", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
+    private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "Blockcast", "Spherecast", "Shapecast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "GetPlayers", "GetPlayerFromCharacter", "IsA", "Clone", "Destroy", "Fire", "Abort", "Invoke", "Disconnect", "TakeDamage", "Sit", "AddItem", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
+    private static readonly string[] LuaXCreatableClassNameCompletions = ["Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "Script", "ModuleScript", "Humanoid", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "Sky", "Atmosphere", "Clouds", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "Team", "Attachment", "Beam", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Accessory", "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "DistortionSoundEffect", "EqualizerSoundEffect", "ChorusSoundEffect", "CompressorSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "Motor6D", "NoCollisionConstraint", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ViewportFrame", "VideoFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICanvasGroup", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem", "UIPageLayout"];
+    private static readonly string[] LuaXClassNameCompletions = ["Instance", "DataModel", "HttpService", "PathfindingService", "Path", "PathWaypoint", "Workspace", "Players", "Player", "Teams", "Team", "Lighting", "SoundService", "Sky", "Atmosphere", "Clouds", "PostEffect", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "PlayerGui", "BasePlayerGui", "Backpack", "PlayerScripts", "BasePlayerScripts", "Terrain", "Camera", "BasePart", "JointInstance", "BodyMover", "Accoutrement", "Accessory", "Part", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Humanoid", "PathfindingModifier", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "MeshPart", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "DistortionSoundEffect", "EqualizerSoundEffect", "ChorusSoundEffect", "CompressorSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "Motor6D", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Accessory", "Model", "Folder", "Configuration", "BindableEvent", "BindableFunction", "BaseRemoteEvent", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "ModuleScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ViewportFrame", "VideoFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICanvasGroup", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem", "UIPageLayout"];
     private static readonly IReadOnlyDictionary<string, string[]> LuaXStandardLibraryMembers = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["math"] = ["abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "modf", "pi", "rad", "random", "round", "sign", "sin", "sqrt", "tan"],
@@ -5371,7 +5755,7 @@ public partial class MainWindow : Window
                   <Word>math</Word><Word>string</Word><Word>table</Word><Word>coroutine</Word><Word>utf8</Word><Word>task</Word><Word>wait</Word>
                   <Word>workspace</Word><Word>game</Word><Word>script</Word><Word>Gui</Word><Word>Players</Word><Word>Teams</Word><Word>Lighting</Word><Word>SoundService</Word><Word>ReplicatedStorage</Word><Word>ServerScriptService</Word><Word>ServerStorage</Word><Word>LocalPlayer</Word><Word>Instance</Word><Word>Enum</Word><Word>SetProperty</Word><Word>GetProperty</Word><Word>WaitForChild</Word><Word>GetAssetPath</Word><Word>ConnectTouched</Word><Word>Vector3</Word><Word>LookAtRotation</Word><Word>Color3</Word><Word>GetService</Word>
                 </Keywords>
-                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>NumberRange</Word><Word>NumberSequence</Word><Word>NumberSequenceKeypoint</Word><Word>ColorSequence</Word><Word>ColorSequenceKeypoint</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Players</Word><Word>Teams</Word><Word>Team</Word><Word>Lighting</Word><Word>Sky</Word><Word>Atmosphere</Word><Word>PostEffect</Word><Word>BlurEffect</Word><Word>ColorCorrectionEffect</Word><Word>SurfaceAppearance</Word><Word>Camera</Word><Word>StarterGui</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>BaseRemoteEvent</Word><Word>RemoteEvent</Word><Word>UnreliableRemoteEvent</Word><Word>RemoteFunction</Word><Word>SoundGroup</Word><Word>SoundEffect</Word><Word>PitchShiftSoundEffect</Word><Word>EchoSoundEffect</Word><Word>ModuleScript</Word><Word>LocalScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector2Value</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ParticleEmitter</Word><Word>Trail</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>UIAspectRatioConstraint</Word><Word>UISizeConstraint</Word><Word>UITextSizeConstraint</Word><Word>UIFlexItem</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
+                <Keywords color="Type"><Word>any</Word><Word>boolean</Word><Word>never</Word><Word>number</Word><Word>string</Word><Word>unknown</Word><Word>userdata</Word><Word>vector</Word><Word>Vector2</Word><Word>Vector3</Word><Word>NumberRange</Word><Word>NumberSequence</Word><Word>NumberSequenceKeypoint</Word><Word>ColorSequence</Word><Word>ColorSequenceKeypoint</Word><Word>Color3</Word><Word>UDim</Word><Word>UDim2</Word><Word>BrickColor</Word><Word>Instance</Word><Word>DataModel</Word><Word>BasePart</Word><Word>Part</Word><Word>MeshPart</Word><Word>Model</Word><Word>Workspace</Word><Word>Players</Word><Word>Teams</Word><Word>Team</Word><Word>Lighting</Word><Word>Sky</Word><Word>Atmosphere</Word><Word>PostEffect</Word><Word>BlurEffect</Word><Word>ColorCorrectionEffect</Word><Word>SurfaceAppearance</Word><Word>Camera</Word><Word>StarterGui</Word><Word>Gui</Word><Word>GuiBase2d</Word><Word>GuiObject</Word><Word>LayerCollector</Word><Word>Folder</Word><Word>Configuration</Word><Word>BindableEvent</Word><Word>BindableFunction</Word><Word>BaseRemoteEvent</Word><Word>RemoteEvent</Word><Word>UnreliableRemoteEvent</Word><Word>RemoteFunction</Word><Word>SoundGroup</Word><Word>SoundEffect</Word><Word>PitchShiftSoundEffect</Word><Word>DistortionSoundEffect</Word><Word>EqualizerSoundEffect</Word><Word>ChorusSoundEffect</Word><Word>CompressorSoundEffect</Word><Word>EchoSoundEffect</Word><Word>ModuleScript</Word><Word>LocalScript</Word><Word>LuaSourceContainer</Word><Word>BaseScript</Word><Word>Script</Word><Word>ValueBase</Word><Word>BoolValue</Word><Word>IntValue</Word><Word>NumberValue</Word><Word>StringValue</Word><Word>Vector2Value</Word><Word>Vector3Value</Word><Word>Color3Value</Word><Word>ObjectValue</Word><Word>ForceField</Word><Word>Explosion</Word><Word>Fire</Word><Word>Smoke</Word><Word>Sparkles</Word><Word>ParticleEmitter</Word><Word>Trail</Word><Word>ScreenGui</Word><Word>Frame</Word><Word>ScrollingFrame</Word><Word>TextLabel</Word><Word>TextButton</Word><Word>TextBox</Word><Word>ImageLabel</Word><Word>ImageButton</Word><Word>UICorner</Word><Word>UIOutline</Word><Word>UIStroke</Word><Word>UIListLayout</Word><Word>UITableLayout</Word><Word>UIGradient</Word><Word>UIPadding</Word><Word>UIScale</Word><Word>UIGridLayout</Word><Word>UIAspectRatio</Word><Word>UIAspectRatioConstraint</Word><Word>UISizeConstraint</Word><Word>UITextSizeConstraint</Word><Word>UIFlexItem</Word><Word>RBXScriptSignal</Word><Word>RBXScriptConnection</Word></Keywords>
                 <Rule color="LuauKeyword">(?m)^\s*(?:export\s+)?type\b</Rule>
                 <Rule color="Method">(?&lt;=[:.])[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
                 <Rule color="FunctionName">(?&lt;=function\s+)[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*</Rule>
@@ -6315,7 +6699,7 @@ public partial class MainWindow : Window
         if (removedNodes.Count == 0) return;
         var removedIds = removedNodes.Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var player in GameProjectStore.Flatten(project.Players.Children).Where(node => node.Type == "Player" && removedIds.Contains(node.Team))) player.Team = string.Empty;
-        foreach (var weld in GameProjectStore.Flatten(project).Where(node => node.Type is "WeldConstraint" or "NoCollisionConstraint"))
+        foreach (var weld in GameProjectStore.Flatten(project).Where(node => node.Type is "WeldConstraint" or "Motor6D" or "NoCollisionConstraint"))
         {
             if (removedIds.Contains(weld.Part0)) weld.Part0 = string.Empty;
             if (removedIds.Contains(weld.Part1)) weld.Part1 = string.Empty;
@@ -6327,8 +6711,12 @@ public partial class MainWindow : Window
         }
         foreach (var objectValue in GameProjectStore.Flatten(project).Where(node => node.Type == "ObjectValue" && removedIds.Contains(node.ObjectValueId)))
             objectValue.ObjectValueId = string.Empty;
+        foreach (var viewportFrame in GameProjectStore.Flatten(project).Where(node => node.Type == "ViewportFrame" && removedIds.Contains(node.ViewportCurrentCameraId)))
+            viewportFrame.ViewportCurrentCameraId = string.Empty;
         foreach (var sound in GameProjectStore.Flatten(project).Where(node => node.Type == "Sound" && removedIds.Contains(node.SoundGroupId)))
             sound.SoundGroupId = string.Empty;
+        foreach (var effect in GameProjectStore.Flatten(project).Where(node => node.Type == "CompressorSoundEffect" && removedIds.Contains(node.CompressorSideChainId)))
+            effect.CompressorSideChainId = string.Empty;
         foreach (var model in GameProjectStore.Flatten(project).Where(node => node.Type == "Model" && removedIds.Contains(node.PrimaryPart)))
         {
             if (removedNodes.FirstOrDefault(node => node.Id == model.PrimaryPart) is { } deletedPrimaryPart)
@@ -6358,7 +6746,8 @@ public partial class MainWindow : Window
         RecordEdit(); RefreshEditor();
     }
 
-    private static bool IsDeletableSceneObject(SceneNode node) => node.Type is not ("Terrain" or "Camera" or "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Gui" or "StarterGui");
+    private bool IsDeletableSceneObject(SceneNode node) => node.Type is not ("Terrain" or "Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Gui" or "StarterGui")
+        && !(node.Type == "Camera" && project?.Workspace.Children.Any(camera => camera.Id == node.Id) == true);
 
     private List<SceneNode> GetSelectedRoots(Func<SceneNode, bool>? predicate = null)
     {
@@ -6387,7 +6776,7 @@ public partial class MainWindow : Window
         if (project is null || selected is null) return false;
         var roots = GetSelectedRoots();
         if (roots.Count == 0 || roots.Any(node => IsGuiNode(node)
-            || node.Type is "Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "SelectionBox" or "SelectionSphere" or "WeldConstraint" or "NoCollisionConstraint" or "Humanoid"
+            || node.Type is "Workspace" or "Players" or "Lighting" or "Sky" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Terrain" or "Gui" or "StarterGui" or "Camera" or "Decal" or "Texture" or "ProximityPrompt" or "ClickDetector" or "Highlight" or "SelectionBox" or "SelectionSphere" or "WeldConstraint" or "Motor6D" or "NoCollisionConstraint" or "Humanoid"
             || SceneNodeTypes.IsLight(node) || FindParentNode(node) is null)) return false;
         var parent = FindParentNode(roots[0]);
         return roots.All(node => ReferenceEquals(FindParentNode(node), parent));
@@ -6686,7 +7075,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Color3.fromRGB"] = "fromRGB(r: number, g: number, b: number): Color3 — Creates a color from 0–255 RGB components.",
         ["Color3.fromHSV"] = "fromHSV(h: number, s: number, v: number): Color3 — Creates a color from hue, saturation, and value.",
         ["Color3.fromHex"] = "fromHex(hex: string): Color3 — Creates a color from a hexadecimal color string.",
-        ["Color3"] = "Color3 — Color value with normalized red, green, and blue components.",
+        ["Color3"] = "Color3 — Color value with normalized red, green, and blue components; SelectionBox and SelectionSphere use this property for their outline color.",
         ["UDim.new"] = "new(scale: number, offset: number): UDim — Creates a one-dimensional scale and pixel offset.",
         ["UDim2.new"] = "new(xScale: number, xOffset: number, yScale: number, yOffset: number): UDim2 — Creates a 2D scale and pixel offset.",
         ["UDim2.fromScale"] = "fromScale(xScale: number, yScale: number): UDim2 — Creates a size or position from scale values.",
@@ -6707,7 +7096,15 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["string.format"] = "format(format: string, ...: any): string — Formats values into a string.",
         ["table.insert"] = "insert(list: table, value: any): () — Appends a value to a list.",
         ["coroutine.yield"] = "yield(...: any): (...any) — Suspends the current Lua X script until the runtime resumes it.",
-        ["GetService"] = "GetService(name: string): Instance? — Returns a built-in service such as Workspace, Players, UserInputService, Debris, CollectionService, or RunService.",
+        ["GetService"] = "GetService(name: string): Instance — Returns a built-in service such as Workspace, Players, UserInputService, Debris, CollectionService, RunService, HttpService, or PathfindingService. Unknown names raise an error.",
+        ["CreatePath"] = "CreatePath(agentParameters?): Path — Creates a path using AgentRadius, AgentHeight, AgentCanJump, WaypointSpacing, and Costs label weights.",
+        ["ComputeAsync"] = "ComputeAsync(start: Vector3, finish: Vector3): () — Computes a walkable route through collidable Workspace parts.",
+        ["GetWaypoints"] = "GetWaypoints(): {PathWaypoint} — Returns path positions and Walk or Jump actions.",
+        ["JSONEncode"] = "JSONEncode(value: any): string — Encodes a Lua value or table as JSON.",
+        ["JSONDecode"] = "JSONDecode(json: string): any — Decodes JSON into Lua values and tables.",
+        ["GenerateGUID"] = "GenerateGUID(wrapInBraces: boolean?): string — Creates a unique identifier.",
+        ["UrlEncode"] = "UrlEncode(value: string): string — Escapes a string for use in a URL.",
+        ["UrlDecode"] = "UrlDecode(value: string): string — Decodes URL-escaped text.",
         ["CurrentCamera"] = "Camera? — Workspace camera used for rendering in the play preview.",
         ["IsKeyDown"] = "IsKeyDown(keyCode: Enum.KeyCode): boolean — Returns whether the key is currently held in the game preview.",
         ["GetKeysPressed"] = "GetKeysPressed(): {InputObject} — Returns keyboard keys currently held in the game preview.",
@@ -6726,7 +7123,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["GetFullName"] = "GetFullName(): string — Returns the instance path from game, joined with periods.",
         ["IsDescendantOf"] = "IsDescendantOf(ancestor: Instance): boolean — Returns whether this instance is below the given ancestor.",
         ["ClearAllChildren"] = "ClearAllChildren(): () — Destroys all direct children and their descendants.",
-        ["MoveTo"] = "MoveTo(position: Vector3): () — Moves every part in a Model so its Position pivot reaches the target.",
+        ["MoveTo"] = "MoveTo(position: Vector3): () — On a Model, moves its pivot to the target. On a Humanoid, moves its root toward the target, jumps toward higher ground when needed, and fires MoveToFinished on arrival or after eight seconds.",
         ["RotateTo"] = "RotateTo(rotation: Vector3): () — Rotates every part in a Model around its pivot using degree-based Rotation.",
         ["InputBegan"] = "InputBegan:Connect(function(input: InputObject, gameProcessed: boolean) ...) — Fires when a keyboard key or mouse button is pressed in the game preview.",
         ["InputChanged"] = "InputChanged:Connect(function(input: InputObject, gameProcessed: boolean) ...) — Fires when the mouse moves in the game preview.",
@@ -6759,6 +7156,8 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["Instance.new"] = "Instance.new(className: string, parent: Instance?): Instance? — Creates a supported object during play.",
         ["Raycast"] = "Raycast(origin: Vector3, direction: Vector3, params: RaycastParams?): RaycastResult? — Casts through Workspace parts; direction sets the maximum range.",
         ["Blockcast"] = "Workspace:Blockcast(position: Vector3, size: Vector3, rotation: Vector3, direction: Vector3, params: RaycastParams?): RaycastResult? — Sweeps a rotated box through Workspace parts.",
+        ["Spherecast"] = "Workspace:Spherecast(position: Vector3, radius: number, direction: Vector3, params: RaycastParams?): RaycastResult? — Sweeps a sphere through Workspace parts.",
+        ["Shapecast"] = "Workspace:Shapecast(part: BasePart, direction: Vector3, params: RaycastParams?): RaycastResult? — Sweeps a BasePart's shape through Workspace parts.",
         ["RaycastParams"] = "RaycastParams.new(): RaycastParams — FilterDescendantsInstances and FilterType (Enum.RaycastFilterType.Exclude or Include) filter hits; RespectCanCollide switches eligibility from CanQuery to CanCollide.",
         ["GetPartsInPart"] = "Workspace:GetPartsInPart(part: BasePart, overlapParams: OverlapParams?): {BasePart} — Returns queryable Workspace parts intersecting the input part.",
         ["GetPartBoundsInBox"] = "Workspace:GetPartBoundsInBox(position: Vector3, size: Vector3, rotation: Vector3?, overlapParams: OverlapParams?): {BasePart} — Returns part bounds intersecting a rotated box region.",
@@ -6775,8 +7174,10 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["FillCylinder"] = "Terrain:FillCylinder(position: Vector3, size: Vector3, rotation: Vector3, material: Enum.Material) — Adds an oriented cylinder on the 4-stud terrain grid.",
         ["FillWedge"] = "Terrain:FillWedge(position: Vector3, size: Vector3, rotation: Vector3, material: Enum.Material) — Adds an oriented wedge on the 4-stud terrain grid.",
         ["ClearBlock"] = "Terrain:ClearBlock(position: Vector3, size: Vector3) — Removes terrain pieces that intersect the box.",
-        ["Clear"] = "Terrain:Clear() — Removes all terrain pieces.",
+        ["Clear"] = "Terrain:Clear() removes all terrain pieces; ParticleEmitter:Clear() removes its active particles.",
         ["TakeDamage"] = "TakeDamage(amount: number): () — Changes Humanoid Health unless protected by a ForceField. A negative amount heals.",
+        ["MoveToFinished"] = "RBXScriptSignal — Connect a callback that receives true when MoveTo reaches its target, or false on timeout.",
+        ["HealthChanged"] = "RBXScriptSignal — Fires with the new Health value after a Humanoid's health changes.",
         ["ForceField"] = "ForceField — Protects a Humanoid from TakeDamage when placed in its Model; Visible controls the shield effect.",
         ["Explosion"] = "Explosion — Detonates once in Workspace, applying outward velocity and hitting parts within BlastRadius.",
         ["Smoke"] = "Smoke — Emits a colored smoke effect from a BasePart or Attachment.",
@@ -6814,7 +7215,6 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["SpreadAngle"] = "Vector2 — Horizontal and vertical emission spread in degrees.",
         ["EmissionDirection"] = "Enum.NormalId — Face from which particles emit.",
         ["Emit"] = "Emit(count: number): () — Emits a burst of particles, including while disabled.",
-        ["Clear"] = "Clear(): () — Removes active emitted particles.",
         ["SparkleColor"] = "Color3 — Color of the particles emitted by Sparkles.",
         ["SecondaryColor"] = "Color3 — Inner flame color of a Fire effect.",
         ["Heat"] = "number — Fire rise speed, from -25 to 25; negative values move downward.",
@@ -6881,7 +7281,18 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["TintColor"] = "Color3 — ColorCorrectionEffect tint applied to scene materials.",
         ["Contrast"] = "number — ColorCorrectionEffect contrast adjustment from -1 to 1.",
         ["Saturation"] = "number — ColorCorrectionEffect saturation adjustment from -1 to 1.",
-        ["Delay"] = "number — EchoSoundEffect delay in seconds, from 0 to 2.",
+        ["Level"] = "number — DistortionSoundEffect strength from 0 to 1.",
+        ["LowGain"] = "number — EqualizerSoundEffect low band gain in dB, from -80 to 10.",
+        ["MidGain"] = "number — EqualizerSoundEffect mid band gain in dB, from -80 to 10.",
+        ["HighGain"] = "number — EqualizerSoundEffect high band gain in dB, from -80 to 10.",
+        ["Depth"] = "number — ChorusSoundEffect intensity from 0 to 1, or Flange/Tremolo depth.",
+        ["Attack"] = "number — CompressorSoundEffect attack time in seconds.",
+        ["GainMakeup"] = "number — CompressorSoundEffect overall gain in dB.",
+        ["Ratio"] = "number — CompressorSoundEffect compression ratio from 1 to 50.",
+        ["Release"] = "number — CompressorSoundEffect release time in seconds.",
+        ["Threshold"] = "number — CompressorSoundEffect threshold in dB.",
+        ["SideChain"] = "Sound or SoundGroup — the audio level that drives CompressorSoundEffect ducking.",
+        ["Delay"] = "number — EchoSoundEffect delay in seconds, from 0.01 to 5.",
         ["Feedback"] = "number — EchoSoundEffect repeat feedback, from 0 to 0.95.",
         ["DryLevel"] = "number — EchoSoundEffect original signal level in decibels.",
         ["WetLevel"] = "number — EchoSoundEffect delayed signal level in decibels.",
@@ -6898,7 +7309,6 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["FillTransparency"] = "number — Highlight fill transparency from 0 to 1.",
         ["OutlineTransparency"] = "number — Highlight outline transparency from 0 to 1.",
         ["Adornee"] = "Instance — BasePart or Model targeted by a Highlight, SelectionBox, or SelectionSphere.",
-        ["Color3"] = "Color3 — SelectionBox or SelectionSphere outline color.",
         ["SurfaceColor3"] = "Color3 — SelectionBox or SelectionSphere surface color.",
         ["SurfaceTransparency"] = "number — SelectionBox or SelectionSphere surface transparency from 0 to 1.",
         ["LineThickness"] = "number — SelectionBox outline thickness in studs.",
@@ -6914,9 +7324,15 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["CameraMode"] = "string — Custom or Subject.",
         ["Mode"] = "string — Camera mode alias: Custom or Subject.",
         ["Subject"] = "BasePart? — Part or MeshPart tracked by a Subject-mode Camera.",
-        ["Part0"] = "BasePart? — First endpoint of a WeldConstraint.",
+        ["Part0"] = "BasePart? — First endpoint of a joint or constraint.",
         ["PrimaryPart"] = "BasePart? — Model descendant used as its pivot.",
-        ["Part1"] = "BasePart? — Second endpoint of a WeldConstraint.",
+        ["Part1"] = "BasePart? — Second endpoint of a joint or constraint.",
+        ["Part0OffsetPosition"] = "Vector3 — Joint position offset in Part0 local space.",
+        ["Part0OffsetRotation"] = "Vector3 — Joint rotation offset in Part0 local space, in degrees.",
+        ["Part1OffsetPosition"] = "Vector3 — Joint position offset in Part1 local space.",
+        ["Part1OffsetRotation"] = "Vector3 — Joint rotation offset in Part1 local space, in degrees.",
+        ["TransformPosition"] = "Vector3 — Local translation applied by a Motor6D during play.",
+        ["TransformRotation"] = "Vector3 — Local Euler rotation in degrees applied by a Motor6D during play.",
         ["FieldOfView"] = "number — Camera field of view in degrees.",
         ["Ambient"] = "Color3 — Ambient lighting color for the scene.",
         ["ClockTime"] = "number — Lighting time of day in hours, from 0 to 24.",
@@ -6965,6 +7381,7 @@ internal sealed class LuaXCompletionData : ICompletionData
         ["CellPadding"] = "UDim2 — Horizontal and vertical gap between UIGridLayout cells.",
         ["AnchorPoint"] = "Vector2 — GUI origin as a fraction of object size; position is measured from this point.",
         ["DisplayOrder"] = "integer — ScreenGui draw order; higher values appear over lower values.",
+        ["ResetOnSpawn"] = "boolean — recreate this ScreenGui from StarterGui when the player's character respawns.",
         ["FillDirection"] = "string — Fill UIListLayout or UIGridLayout horizontally or vertically.",
         ["FillDirectionMaxCells"] = "integer — Maximum grid cells per row or column; zero uses available space.",
         ["AspectRatio"] = "number — width-to-height ratio for UIAspectRatioConstraint.",

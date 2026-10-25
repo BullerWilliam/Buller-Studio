@@ -121,6 +121,9 @@ public static class GameProjectStore
         foreach (var node in Flatten(project))
         {
             UpdateReference(node, "Asset", node.Asset, newRelativePath);
+            UpdateReference(node, "Video", node.Video, newAssetsRelativePath);
+            UpdateReference(node, "HoverImage", node.HoverImage, newAssetsRelativePath);
+            UpdateReference(node, "PressedImage", node.PressedImage, newAssetsRelativePath);
             UpdateReference(node, "Texture", node.Texture, newAssetsRelativePath);
             UpdateReference(node, "SurfaceAppearanceColorMap", node.SurfaceAppearanceColorMap, newAssetsRelativePath);
             UpdateReference(node, "SurfaceAppearanceNormalMap", node.SurfaceAppearanceNormalMap, newAssetsRelativePath);
@@ -163,6 +166,9 @@ public static class GameProjectStore
             switch (property)
             {
                 case "Asset": node.Asset = value; break;
+                case "Video": node.Video = value; break;
+                case "HoverImage": node.HoverImage = value; break;
+                case "PressedImage": node.PressedImage = value; break;
                 case "Texture": node.Texture = value; break;
                 case "SurfaceAppearanceColorMap": node.SurfaceAppearanceColorMap = value; break;
                 case "SurfaceAppearanceNormalMap": node.SurfaceAppearanceNormalMap = value; break;
@@ -354,12 +360,31 @@ public static class GameProjectStore
             node.Children ??= [];
             node.Position = EnsureVector(node.Position, [0, 0, 0]);
             node.Rotation = EnsureVector(node.Rotation, [0, 0, 0]);
+            node.Part0OffsetPosition = EnsureVector(node.Part0OffsetPosition, [0, 0, 0]);
+            node.Part0OffsetRotation = EnsureVector(node.Part0OffsetRotation, [0, 0, 0]);
+            node.Part1OffsetPosition = EnsureVector(node.Part1OffsetPosition, [0, 0, 0]);
+            node.Part1OffsetRotation = EnsureVector(node.Part1OffsetRotation, [0, 0, 0]);
+            node.MotorTransformPosition = EnsureVector(node.MotorTransformPosition, [0, 0, 0]);
+            node.MotorTransformRotation = EnsureVector(node.MotorTransformRotation, [0, 0, 0]);
+            for (var axis = 0; axis < 3; axis++)
+            {
+                node.Part0OffsetPosition[axis] = float.IsFinite(node.Part0OffsetPosition[axis]) ? Math.Clamp(node.Part0OffsetPosition[axis], -1000000, 1000000) : 0;
+                node.Part1OffsetPosition[axis] = float.IsFinite(node.Part1OffsetPosition[axis]) ? Math.Clamp(node.Part1OffsetPosition[axis], -1000000, 1000000) : 0;
+                node.Part0OffsetRotation[axis] = float.IsFinite(node.Part0OffsetRotation[axis]) ? Math.Clamp(node.Part0OffsetRotation[axis], -360000, 360000) : 0;
+                node.Part1OffsetRotation[axis] = float.IsFinite(node.Part1OffsetRotation[axis]) ? Math.Clamp(node.Part1OffsetRotation[axis], -360000, 360000) : 0;
+                node.MotorTransformPosition[axis] = float.IsFinite(node.MotorTransformPosition[axis]) ? Math.Clamp(node.MotorTransformPosition[axis], -1000000, 1000000) : 0;
+                node.MotorTransformRotation[axis] = float.IsFinite(node.MotorTransformRotation[axis]) ? Math.Clamp(node.MotorTransformRotation[axis], -360000, 360000) : 0;
+            }
             node.Size = EnsureVector(node.Size, [2, 2, 2]);
             node.Velocity = EnsureVector(node.Velocity, [0, 0, 0]);
             node.PositionScale = EnsurePair(node.PositionScale);
             node.AnchorPoint = EnsureVector(node.AnchorPoint, [0, 0]);
             for (var axis = 0; axis < 2; axis++) node.AnchorPoint[axis] = Math.Clamp(node.AnchorPoint[axis], 0, 1);
             node.SizeScale = EnsurePair(node.SizeScale);
+            if (node.AutomaticSize is not ("None" or "X" or "Y" or "XY")) node.AutomaticSize = "None";
+            if (node.BorderColor3 is null || !System.Text.RegularExpressions.Regex.IsMatch(node.BorderColor3, "^#[0-9A-Fa-f]{6}$")) node.BorderColor3 = "#000000";
+            node.BorderColor3 = node.BorderColor3.ToUpperInvariant();
+            node.BorderSizePixel = Math.Clamp(node.BorderSizePixel, 0, 64);
             node.PaddingLeft = EnsurePair(node.PaddingLeft);
             node.PaddingTop = EnsurePair(node.PaddingTop);
             node.PaddingRight = EnsurePair(node.PaddingRight);
@@ -368,6 +393,18 @@ public static class GameProjectStore
             node.CellSizeScale = EnsurePair(node.CellSizeScale);
             node.CellPadding = EnsurePair(node.CellPadding);
             node.CellPaddingScale = EnsurePair(node.CellPaddingScale);
+            node.CanvasPosition = EnsurePair(node.CanvasPosition);
+            node.CanvasSize = EnsurePair(node.CanvasSize);
+            node.CanvasSizeScale = EnsurePair(node.CanvasSizeScale);
+            if (node.AutomaticCanvasSize is not ("None" or "X" or "Y" or "XY")) node.AutomaticCanvasSize = "None";
+            node.ScrollBarThickness = Math.Clamp(node.ScrollBarThickness, 0, 100);
+            if (node.ScrollingDirection is not ("X" or "Y" or "XY")) node.ScrollingDirection = "XY";
+            for (var axis = 0; axis < 2; axis++)
+            {
+                node.CanvasPosition[axis] = float.IsFinite(node.CanvasPosition[axis]) ? Math.Clamp(node.CanvasPosition[axis], 0, 1000000) : 0;
+                node.CanvasSize[axis] = float.IsFinite(node.CanvasSize[axis]) ? Math.Clamp(node.CanvasSize[axis], 0, 1000000) : 0;
+                node.CanvasSizeScale[axis] = float.IsFinite(node.CanvasSizeScale[axis]) ? Math.Clamp(node.CanvasSizeScale[axis], 0, 100) : 0;
+            }
             node.MinSize = EnsurePair(node.MinSize);
             node.MaxSize = node.MaxSize is null ? [1000000, 1000000] : EnsurePair(node.MaxSize);
             for (var axis = 0; axis < 2; axis++)
@@ -387,8 +424,21 @@ public static class GameProjectStore
             if (!SceneNodeTypes.IsMaterial(node.Material)) node.Material = "Plastic";
             node.Transparency = float.IsFinite(node.Transparency) ? Math.Clamp(node.Transparency, 0, 1) : 0;
             node.BackgroundTransparency = float.IsFinite(node.BackgroundTransparency) ? Math.Clamp(node.BackgroundTransparency, 0, 1) : 0;
+            node.GroupTransparency = float.IsFinite(node.GroupTransparency) ? Math.Clamp(node.GroupTransparency, 0, 1) : 0;
             node.TextTransparency = float.IsFinite(node.TextTransparency) ? Math.Clamp(node.TextTransparency, 0, 1) : 0;
             node.ImageTransparency = float.IsFinite(node.ImageTransparency) ? Math.Clamp(node.ImageTransparency, 0, 1) : 0;
+            if (node.ImageColor3 is null || !System.Text.RegularExpressions.Regex.IsMatch(node.ImageColor3, "^#[0-9A-Fa-f]{6}$")) node.ImageColor3 = "#FFFFFF";
+            node.HeadColor3 = NormalizeHexColor(node.HeadColor3, "#E3B98A");
+            node.TorsoColor3 = NormalizeHexColor(node.TorsoColor3, "#3973CF");
+            node.LeftArmColor3 = NormalizeHexColor(node.LeftArmColor3, "#E3B98A");
+            node.RightArmColor3 = NormalizeHexColor(node.RightArmColor3, "#E3B98A");
+            node.LeftLegColor3 = NormalizeHexColor(node.LeftLegColor3, "#343B58");
+            node.RightLegColor3 = NormalizeHexColor(node.RightLegColor3, "#343B58");
+            if (node.ScaleType is not ("Stretch" or "Fit" or "Crop" or "Tile" or "Slice")) node.ScaleType = "Stretch";
+            node.SliceCenter = NormalizeSliceCenter(node.SliceCenter);
+            node.SliceScale = float.IsFinite(node.SliceScale) ? Math.Clamp(node.SliceScale, .01f, 100) : 1;
+            node.ImageRectOffset = NormalizeImageRectPair(node.ImageRectOffset);
+            node.ImageRectSize = NormalizeImageRectPair(node.ImageRectSize);
             node.TextSize = float.IsFinite(node.TextSize) ? Math.Clamp(node.TextSize, 1, 200) : 18;
             node.LayoutSpacing = float.IsFinite(node.LayoutSpacing) ? Math.Clamp(node.LayoutSpacing, 0, 1000000) : 0;
             node.ListPaddingScale = float.IsFinite(node.ListPaddingScale) ? Math.Clamp(node.ListPaddingScale, 0, 100) : 0;
@@ -400,6 +450,7 @@ public static class GameProjectStore
             if (node.HorizontalAlignment is not ("Left" or "Center" or "Right")) node.HorizontalAlignment = "Left";
             if (node.VerticalAlignment is not ("Top" or "Center" or "Bottom")) node.VerticalAlignment = "Top";
             if (node.SortOrder is not ("LayoutOrder" or "Name")) node.SortOrder = "LayoutOrder";
+            node.CurrentPageIndex = Math.Clamp(node.CurrentPageIndex, 1, 1000000);
             if (node.FlexMode is not ("None" or "Grow" or "Shrink" or "Fill" or "Custom")) node.FlexMode = "None";
             node.GrowRatio = float.IsFinite(node.GrowRatio) ? Math.Clamp(node.GrowRatio, 0, 1000) : 0;
             node.ShrinkRatio = float.IsFinite(node.ShrinkRatio) ? Math.Clamp(node.ShrinkRatio, 0, 1000) : 0;
@@ -415,6 +466,10 @@ public static class GameProjectStore
             if (node.Type == "UICorner") UICornerRadiusService.Normalize(node);
             if (node.Type == "UIShadow") UIShadowService.Normalize(node);
             node.Adornee ??= string.Empty;
+            node.ViewportCurrentCameraId ??= string.Empty;
+            node.Video ??= string.Empty;
+            node.HoverImage ??= string.Empty;
+            node.PressedImage ??= string.Empty;
             if (node.SurfaceColor3 is null || !System.Text.RegularExpressions.Regex.IsMatch(node.SurfaceColor3, "^#[0-9A-Fa-f]{6}$")) node.SurfaceColor3 = "#FFFFFF";
             if (node.TintColor is null || !System.Text.RegularExpressions.Regex.IsMatch(node.TintColor, "^#[0-9A-Fa-f]{6}$")) node.TintColor = "#FFFFFF";
             node.ColorCorrectionContrast = float.IsFinite(node.ColorCorrectionContrast) ? Math.Clamp(node.ColorCorrectionContrast, -1, 1) : 0;
@@ -701,6 +756,9 @@ public static class GameProjectStore
             .Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var adornment in Flatten(project).Where(node => node.Type is ("SelectionBox" or "SelectionSphere" or "Highlight" or "BillboardGui" or "SurfaceGui") && node.Adornee.Length > 0))
             if (!validAdorneeIds.Contains(adornment.Adornee)) adornment.Adornee = string.Empty;
+        var validCameraIds = Flatten(project).Where(node => node.Type == "Camera").Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var viewport in Flatten(project).Where(node => node.Type == "ViewportFrame" && node.ViewportCurrentCameraId.Length > 0))
+            if (!validCameraIds.Contains(viewport.ViewportCurrentCameraId)) viewport.ViewportCurrentCameraId = string.Empty;
         var scriptNames = Flatten(project.Workspace.Children).Concat(Flatten(project.ReplicatedStorage.Children)).Concat(Flatten(project.ServerScriptService.Children)).Concat(Flatten(project.ServerStorage.Children)).Concat(Flatten(project.StarterPack.Children)).Concat(Flatten(project.StarterPlayer.Children)).Concat(Flatten(project.Gui.Children))
         .Where(node => node.Type is "Script" or "LocalScript" or "ModuleScript")
             .GroupBy(node => node.Id, StringComparer.Ordinal)
@@ -728,6 +786,26 @@ public static class GameProjectStore
         if (values is not null) Array.Copy(values, result, Math.Min(values.Length, result.Length));
         return result;
     }
+
+    private static float[] NormalizeImageRectPair(float[]? values)
+    {
+        var result = EnsurePair(values);
+        for (var index = 0; index < result.Length; index++)
+            result[index] = float.IsFinite(result[index]) ? Math.Clamp(result[index], 0, 1000000) : 0;
+        return result;
+    }
+
+    private static float[] NormalizeSliceCenter(float[]? values)
+    {
+        var result = EnsureVector(values, [0, 0, 0, 0]);
+        for (var index = 0; index < result.Length; index++) result[index] = Math.Clamp(result[index], 0, 1000000);
+        result[2] = Math.Max(result[0], result[2]);
+        result[3] = Math.Max(result[1], result[3]);
+        return result;
+    }
+
+    private static string NormalizeHexColor(string? value, string fallback) =>
+        value is not null && System.Text.RegularExpressions.Regex.IsMatch(value, "^#[0-9A-Fa-f]{6}$") ? value.ToUpperInvariant() : fallback;
 
     private static float[] EnsureVector(float[]? values, float[] defaults)
     {
@@ -787,6 +865,7 @@ public static class GameProjectStore
             if (idMap.TryGetValue(node.ObjectValueId, out var referencedObject)) node.ObjectValueId = referencedObject;
             if (idMap.TryGetValue(node.SoundGroupId, out var soundGroup)) node.SoundGroupId = soundGroup;
             if (idMap.TryGetValue(node.Adornee, out var adornee)) node.Adornee = adornee;
+            if (idMap.TryGetValue(node.ViewportCurrentCameraId, out var viewportCamera)) node.ViewportCurrentCameraId = viewportCamera;
         }
         if (!respectArchivable) clone.Archivable = true;
         return clone;
@@ -797,13 +876,22 @@ public static class GameProjectStore
         if (source.Id == project.Workspace.Id || source.Id == project.Players.Id || source.Id == project.Teams.Id || source.Id == project.Lighting.Id || source.Id == project.SoundService.Id || source.Id == project.ReplicatedStorage.Id || source.Id == project.ServerScriptService.Id || source.Id == project.ServerStorage.Id || source.Id == project.StarterPack.Id || source.Id == project.StarterPlayer.Id || source.Id == project.Gui.Id || source.Type == "Terrain" || source.Id == destinationParent.Id) return false;
         if (!IsNodeInTree(project.Workspace, destinationParent.Id) && !IsNodeInTree(project.Players, destinationParent.Id) && !IsNodeInTree(project.Teams, destinationParent.Id) && !IsNodeInTree(project.Lighting, destinationParent.Id) && !IsNodeInTree(project.SoundService, destinationParent.Id) && !IsNodeInTree(project.ReplicatedStorage, destinationParent.Id) && !IsNodeInTree(project.ServerScriptService, destinationParent.Id) && !IsNodeInTree(project.ServerStorage, destinationParent.Id) && !IsNodeInTree(project.StarterPack, destinationParent.Id) && !IsNodeInTree(project.StarterPlayer, destinationParent.Id) && !IsNodeInTree(project.Gui, destinationParent.Id)) return false;
         if (Flatten(source.Children).Any(node => node.Id == destinationParent.Id)) return false;
-        if (destinationParent.Type == "Terrain") return SceneNodeTypes.IsBasePart(source)
-            && IsWorkspaceSubtreeCompatible(source, "Terrain");
+        if (destinationParent.Type == "Terrain") return source.Type == "Clouds" && source.Children.Count == 0
+            || SceneNodeTypes.IsBasePart(source) && IsWorkspaceSubtreeCompatible(source, "Terrain");
         if (source.Type == "Humanoid")
             return destinationParent.Type == "Model" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == "Humanoid" && child.Id != source.Id);
+        if (source.Type == "BodyColors")
+            return destinationParent.Type == "Model" && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => child.Type == "BodyColors" && child.Id != source.Id);
+        if (source.Type == "PathfindingModifier")
+            return SceneNodeTypes.IsBasePart(destinationParent) && source.Children.Count == 0
+                && !destinationParent.Children.Any(child => child.Type == "PathfindingModifier" && child.Id != source.Id);
         if (source.Type == "Camera")
-            return destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
+            return IsNodeInTree(project.Workspace, source.Id)
+                ? destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"))
+                : destinationParent.Type == "ViewportFrame" && IsNodeInTree(project.Gui, destinationParent.Id)
+                    && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
         if (SceneNodeTypes.IsSurfaceAppearance(source))
             return destinationParent.Type == "MeshPart" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => SceneNodeTypes.IsSurfaceAppearance(child) && child.Id != source.Id);
@@ -813,7 +901,7 @@ public static class GameProjectStore
         if (destinationParent.Id == project.Lighting.Id)
             return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == source.Type && child.Id != source.Id);
-        if (source.Type is "Sky" or "Atmosphere" or "ColorCorrectionEffect" || IsNodeInTree(project.Lighting, destinationParent.Id)) return false;
+        if (source.Type is "Sky" or "Atmosphere" or "Clouds" or "ColorCorrectionEffect" || IsNodeInTree(project.Lighting, destinationParent.Id)) return false;
         if (destinationParent.Id == project.SoundService.Id) return IsWorkspaceSubtreeCompatible(source, "SoundService") || source.Type == "Folder";
         if (IsNodeInTree(project.SoundService, destinationParent.Id)) return destinationParent.Type is "Folder" or "Configuration" or "Sound" or "SoundGroup" && IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
 
@@ -877,7 +965,8 @@ public static class GameProjectStore
     public static bool CanParentDetachedNode(SceneNode source, SceneNode destinationParent)
     {
         if (source.Id == destinationParent.Id || Flatten(source.Children).Any(child => child.Id == destinationParent.Id)) return false;
-        if (source.Type is "Workspace" or "Players" or "PlayerGui" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Gui" or "StarterGui" or "Camera" or "Terrain") return false;
+        if (source.Type is "Workspace" or "Players" or "PlayerGui" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Gui" or "StarterGui" or "Terrain") return false;
+        if (source.Type == "Camera") return destinationParent.Type == "ViewportFrame" && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
         if (destinationParent.Type == "Teams") return source.Type == "Team" && source.Children.Count == 0;
         if (destinationParent.Type == "StarterPlayer") return source.Type == "Folder" && source.Name is ("StarterPlayerScripts" or "StarterCharacterScripts") && IsStarterPlayerTemplateCompatible(source);
         if (destinationParent.Name is "StarterPlayerScripts" or "StarterCharacterScripts") return IsStarterPlayerTemplateCompatible(source);
@@ -1003,14 +1092,16 @@ public static class GameProjectStore
         _ => false
     };
 
-    private static bool IsGuiContainer(string type) => type is "Gui" or "StarterGui" or "PlayerGui" or "ScreenGui" or "BillboardGui" or "SurfaceGui" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox" or "UIShadow";
+    private static bool IsGuiContainer(string type) => type is "Gui" or "StarterGui" or "PlayerGui" or "ScreenGui" or "BillboardGui" or "SurfaceGui" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Frame" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox" or "UICanvasGroup" or "UIShadow";
 
-    private static bool IsGuiObject(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
+    private static bool IsGuiObject(string type) => type is "Frame" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox" or "UICanvasGroup";
 
-    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIShadow" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIAspectRatio" or "UIAspectRatioConstraint" or "UISizeConstraint" or "UITextSizeConstraint" or "UIFlexItem";
+    private static bool IsGuiComponent(string type) => type is "UICorner" or "UIOutline" or "UIStroke" or "UIGradient" or "UIShadow" or "UIPadding" or "UIScale" or "UIListLayout" or "UIGridLayout" or "UITableLayout" or "UIPageLayout" or "UIAspectRatio" or "UIAspectRatioConstraint" or "UISizeConstraint" or "UITextSizeConstraint" or "UIFlexItem";
 
     private static bool IsGuiSubtreeCompatible(SceneNode node, bool isGuiServiceChild, string? destinationType = null)
     {
+        if (destinationType == "ViewportFrame" && (SceneNodeTypes.IsBasePart(node) || node.Type is "Camera" or "Folder" or "Model"))
+            return IsViewportFrameChildCompatible(node);
         if (node.Type == "ScreenGui") return isGuiServiceChild && node.Children.All(child => IsGuiSubtreeCompatible(child, false, "ScreenGui"));
         if (node.Type is "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript") return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (node.Type is "Script" or "LocalScript") return node.Children.Count == 0;
@@ -1024,6 +1115,14 @@ public static class GameProjectStore
         return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
     }
 
+    private static bool IsViewportFrameChildCompatible(SceneNode node)
+    {
+        if (node.Type == "Camera") return node.Children.Count == 0;
+        if (node.Type is "Folder" or "Model") return node.Children.All(IsViewportFrameChildCompatible);
+        if (SceneNodeTypes.IsBasePart(node)) return IsWorkspaceSubtreeCompatible(node, "Workspace");
+        return false;
+    }
+
     private static bool IsWorkspaceSubtreeCompatible(SceneNode node, string? parentType)
     {
         if (SceneNodeTypes.IsSurfaceAppearance(node)) return parentType == "MeshPart" && node.Children.Count == 0;
@@ -1035,7 +1134,7 @@ public static class GameProjectStore
         if (node.Type == "SoundGroup")
             return (parentType is "Workspace" or "SoundService" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
-        if (node.Type is "PitchShiftSoundEffect" or "EchoSoundEffect" or "FlangeSoundEffect" or "TremoloSoundEffect" or "ReverbSoundEffect")
+        if (node.Type is "PitchShiftSoundEffect" or "DistortionSoundEffect" or "EqualizerSoundEffect" or "ChorusSoundEffect" or "CompressorSoundEffect" or "EchoSoundEffect" or "FlangeSoundEffect" or "TremoloSoundEffect" or "ReverbSoundEffect")
             return parentType is "Sound" or "SoundGroup" && node.Children.Count == 0;
         if (node.Type is "RemoteEvent" or "UnreliableRemoteEvent" or "RemoteFunction")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType))
@@ -1048,6 +1147,8 @@ public static class GameProjectStore
             return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (node.Type == "Humanoid") return parentType == "Model" && node.Children.Count == 0;
+        if (node.Type == "BodyColors") return parentType == "Model" && node.Children.Count == 0;
+        if (node.Type == "PathfindingModifier") return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type == "Attachment")
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
@@ -1075,7 +1176,7 @@ public static class GameProjectStore
             return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Model") && node.Children.Count == 0;
         if (node.Type == "Explosion")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
-        if (node.Type is "WeldConstraint" or "NoCollisionConstraint")
+        if (node.Type is "WeldConstraint" or "Motor6D" or "NoCollisionConstraint")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
         if (SceneNodeTypes.IsLight(node))
             return SceneNodeTypes.IsBasePartType(parentType)

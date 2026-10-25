@@ -17,7 +17,7 @@ public partial class PlayerWindow : Window
     private readonly GameProject project;
     private readonly SceneRenderService renderer;
     private readonly PhysicsSimulationService physics;
-    private readonly PlayerCharacterService? character;
+    private PlayerCharacterService? character;
     private readonly SceneNode localPlayer;
     private readonly SceneNode backpack;
     private readonly SceneNode playerGui;
@@ -27,7 +27,7 @@ public partial class PlayerWindow : Window
     private SceneNode? activeTool;
     private sealed record EquippedPartState(float[] LocalOffset, Matrix4x4 RotationOffset, float[] Position, float[] Rotation, bool Anchored, bool CanCollide);
     private readonly Dictionary<string, EquippedPartState> equippedToolParts = new(StringComparer.Ordinal);
-    private readonly SeatInteractionService? seats;
+    private SeatInteractionService? seats;
     private readonly SoundPlaybackService soundPlayback;
     private LuaXRuntime? runtime;
     private readonly DispatcherTimer updateTimer;
@@ -40,6 +40,23 @@ public partial class PlayerWindow : Window
     private float promptHoldElapsed;
     private bool promptTriggered;
     private float spawnProtectionRemaining;
+    private bool autoManageCharacterEnabled;
+    private bool autoManagedCameraOverride;
+    private bool resettingPlayerGui;
+    private bool isPaused;
+    private string cameraModeBeforeAutoManage = "Custom";
+    private string cameraSubjectBeforeAutoManage = string.Empty;
+
+    private void CopyLocalScripts(SceneNode clonedRoot, IReadOnlyDictionary<string, string> renewedIds)
+    {
+        var clonedNodes = new[] { clonedRoot }.Concat(GameProjectStore.Flatten(clonedRoot.Children)).ToDictionary(node => node.Id, StringComparer.Ordinal);
+        foreach (var (originalId, clonedId) in renewedIds)
+        {
+            if (project.Scripts.FirstOrDefault(script => script.Id == originalId) is not { } source
+                || !clonedNodes.TryGetValue(clonedId, out var clonedNode) || clonedNode.Type is not ("LocalScript" or "ModuleScript")) continue;
+            project.Scripts.Add(new GameScript { Id = clonedId, Name = clonedNode.Name, Source = source.Source });
+        }
+    }
 
     public PlayerWindow(GameProject project, string? startupScriptId = null, Action<string>? scriptOutput = null)
     {
@@ -47,16 +64,6 @@ public partial class PlayerWindow : Window
         GameGuiCanvas.SizeChanged += (_, _) => RefreshGameGui();
         this.project = project;
         GameProjectStore.EnsureProject(project);
-        void CopyLocalScripts(SceneNode clonedRoot, IReadOnlyDictionary<string, string> renewedIds)
-        {
-            var clonedNodes = new[] { clonedRoot }.Concat(GameProjectStore.Flatten(clonedRoot.Children)).ToDictionary(node => node.Id, StringComparer.Ordinal);
-            foreach (var (originalId, clonedId) in renewedIds)
-            {
-                if (project.Scripts.FirstOrDefault(script => script.Id == originalId) is not { } source
-                    || !clonedNodes.TryGetValue(clonedId, out var clonedNode) || clonedNode.Type is not ("LocalScript" or "ModuleScript")) continue;
-                project.Scripts.Add(new GameScript { Id = clonedId, Name = clonedNode.Name, Source = source.Source });
-            }
-        }
         project.Players.Children.RemoveAll(node => node.Type == "Player" && node.Name == "LocalPlayer");
         localPlayer = new SceneNode { Type = "Player", Name = "LocalPlayer" };
         localPlayer.Team = project.Teams.Children.FirstOrDefault(team => team.Type == "Team" && team.AutoAssignable)?.Id ?? string.Empty;
@@ -87,13 +94,17 @@ public partial class PlayerWindow : Window
                 if (item.Type == "Tool") toolHotbar.Add(item);
                 CopyLocalScripts(item, renewedIds);
             }
-        if (project.Workspace.AutoManageCharacter)
+        var camera = project.Workspace.Children.First(node => node.Type == "Camera");
+        autoManageCharacterEnabled = project.Workspace.AutoManageCharacter;
+        cameraModeBeforeAutoManage = camera.CameraMode;
+        cameraSubjectBeforeAutoManage = camera.Subject;
+        if (autoManageCharacterEnabled)
         {
             character = new PlayerCharacterService(project, localPlayer);
             localPlayer.Character = character.Model.Id;
             spawnProtectionRemaining = character.SpawnProtection.Enabled ? character.SpawnLocation?.Duration ?? 0 : 0;
+            autoManagedCameraOverride = true;
         }
-        var camera = project.Workspace.Children.First(node => node.Type == "Camera");
         if (character is not null)
         {
             camera.CameraMode = "Subject";
@@ -109,9 +120,20 @@ public partial class PlayerWindow : Window
 #else
         const bool isStudioBuild = true;
 #endif
+        PlayTestControls.Visibility = isStudioBuild ? Visibility.Visible : Visibility.Collapsed;
         var gameRuntime = new LuaXRuntime(project,
             (node, property, _) => Dispatcher.Invoke(() =>
             {
+                if (node.Type == "Workspace" && property == "AutoManageCharacter")
+                {
+                    UpdateAutoManageCharacter();
+                    return;
+                }
+                if (node.Type == "Player" && node.Id == localPlayer.Id && property == "Character" && FindRuntimeNode(node.Character) is { Type: "Model" })
+                {
+                    ResetPlayerGui();
+                    return;
+                }
                 if (node.Type == "Sound") return;
                 var isGuiNode = node.Id == project.Gui.Id
                     || GameProjectStore.Flatten(project.Gui.Children).Any(guiNode => guiNode.Id == node.Id)
@@ -142,6 +164,7 @@ public partial class PlayerWindow : Window
         physics = new PhysicsSimulationService(project, node =>
         {
             runtime?.SynchronizeExternalProperty(node, "Position");
+            runtime?.SynchronizeExternalProperty(node, "Rotation");
             runtime?.SynchronizeExternalProperty(node, "Velocity");
             renderer.UpdateNode(node, project);
             renderer.UpdateCamera(project);
@@ -165,11 +188,106 @@ public partial class PlayerWindow : Window
         };
     }
 
+    private void UpdateAutoManageCharacter()
+    {
+        var shouldManage = project.Workspace.AutoManageCharacter;
+        if (autoManageCharacterEnabled == shouldManage)
+        {
+            if (shouldManage && string.IsNullOrEmpty(localPlayer.Character))
+            {
+                if (character is null || FindRuntimeNode(character.Model.Id) is null)
+                    CreateManagedCharacter();
+                else
+                    runtime?.SetExternalPlayerCharacter(localPlayer, character.Model);
+            }
+            return;
+        }
+        autoManageCharacterEnabled = shouldManage;
+        var camera = project.Workspace.Children.First(node => node.Type == "Camera");
+        if (shouldManage)
+        {
+            if (FindRuntimeNode(localPlayer.Character) is { Type: "Model" }) return;
+            CreateManagedCharacter();
+            return;
+        }
+        else if (character is { } generatedCharacter)
+        {
+            if (activeTool is not null) EquipTool(null);
+            if (seats is not null)
+                foreach (var node in seats.BeforePhysics(true)) SyncSeatNode(node);
+            runtime?.RemoveExternalSubtree(generatedCharacter.Model);
+            character = null;
+            seats = null;
+            spawnProtectionRemaining = 0;
+            if (autoManagedCameraOverride)
+            {
+                camera.CameraMode = cameraModeBeforeAutoManage;
+                camera.Subject = cameraSubjectBeforeAutoManage;
+                runtime?.SynchronizeExternalProperty(camera, "CameraMode");
+                runtime?.SynchronizeExternalProperty(camera, "Subject");
+                autoManagedCameraOverride = false;
+            }
+        }
+        renderer.Refresh(project);
+        renderer.UpdateCamera(project);
+    }
+
+    private void CreateManagedCharacter()
+    {
+        var camera = project.Workspace.Children.First(node => node.Type == "Camera");
+        cameraModeBeforeAutoManage = camera.CameraMode;
+        cameraSubjectBeforeAutoManage = camera.Subject;
+        character = new PlayerCharacterService(project, localPlayer);
+        seats = new SeatInteractionService(project, character);
+        spawnProtectionRemaining = character.SpawnProtection.Enabled ? character.SpawnLocation?.Duration ?? 0 : 0;
+        camera.CameraMode = "Subject";
+        camera.Subject = character.Root.Id;
+        runtime?.RegisterExternalSubtree(character.Model);
+        runtime?.SetExternalPlayerCharacter(localPlayer, character.Model);
+        autoManagedCameraOverride = true;
+        runtime?.SynchronizeExternalProperty(camera, "CameraMode");
+        runtime?.SynchronizeExternalProperty(camera, "Subject");
+        renderer.Refresh(project);
+        renderer.UpdateCamera(project);
+    }
+
+    private void ResetPlayerGui()
+    {
+        if (resettingPlayerGui || runtime is null) return;
+        resettingPlayerGui = true;
+        try
+        {
+            foreach (var oldScreen in playerGui.Children.Where(node => node.Type == "ScreenGui" && node.ResetOnSpawn).ToArray())
+                runtime.RemoveExternalSubtree(oldScreen);
+            var localScripts = new List<SceneNode>();
+            foreach (var template in project.Gui.Children.Where(node => node.Type == "ScreenGui" && node.ResetOnSpawn))
+            {
+                if (GameProjectStore.CloneSubtree(template, out var renewedIds, respectArchivable: true) is not { } screen) continue;
+                playerGui.Children.Add(screen);
+                CopyLocalScripts(screen, renewedIds);
+                runtime.RegisterExternalSubtree(screen);
+                localScripts.AddRange(new[] { screen }.Concat(GameProjectStore.Flatten(screen.Children))
+                    .Where(node => node.Type == "LocalScript" && node.Enabled));
+            }
+            foreach (var localScript in localScripts) runtime.Run(localScript.Id);
+            RefreshGameGui();
+        }
+        finally
+        {
+            resettingPlayerGui = false;
+        }
+    }
+
+    private SceneNode? FindRuntimeNode(string id) => string.IsNullOrEmpty(id)
+        ? null
+        : GameProjectStore.Flatten(project).FirstOrDefault(node => node.Id == id);
+
     private void UpdateTimer_Tick(object? sender, EventArgs e)
     {
         var now = Stopwatch.GetTimestamp();
         var elapsed = Math.Clamp((float)Stopwatch.GetElapsedTime(lastUpdateTimestamp, now).TotalSeconds, .001f, .25f);
         lastUpdateTimestamp = now;
+        UpdateAutoManageCharacter();
         UpdateSpawnProtection(elapsed);
         var canMove = IsActive && Keyboard.FocusedElement is not TextBox && Keyboard.FocusedElement is not Button;
         var forward = canMove ? (Keyboard.IsKeyDown(Key.W) && !contextSunkKeys.Contains(Key.W) ? 1 : 0) - (Keyboard.IsKeyDown(Key.S) && !contextSunkKeys.Contains(Key.S) ? 1 : 0) : 0;
@@ -180,7 +298,7 @@ public partial class PlayerWindow : Window
         if (seats is not null)
             foreach (var motor in seats.UpdateVehicleMotorTargets()) SyncSeatNode(motor);
         if (seats?.IsSeated != true)
-            character?.ApplyInput(physics, renderer.CameraYaw, forward, strafe, canMove && jumpRequested);
+            character?.ApplyInput(physics, renderer.CameraYaw, forward, strafe, canMove && jumpRequested, elapsed);
         jumpRequested = false;
         if (character is not null) runtime?.SynchronizeExternalProperty(character.Root, "Velocity");
         runtime?.UpdateBeforePhysics(elapsed);
@@ -197,6 +315,7 @@ public partial class PlayerWindow : Window
             foreach (var node in character.Respawn()) SyncCharacterNode(node);
             ResetSpawnProtection();
             runtime?.SynchronizeExternalProperty(character.Humanoid, "Health");
+            ResetPlayerGui();
         }
         else if (character is not null)
         {
@@ -247,6 +366,50 @@ public partial class PlayerWindow : Window
         UpdateBillboardGuiPositions();
     }
 
+    private void PausePlayTest_Click(object sender, RoutedEventArgs e)
+    {
+        if (!isPaused)
+        {
+            isPaused = true;
+            updateTimer.Stop();
+            soundPlayback.Pause();
+            foreach (var media in FindVisualDescendants<MediaElement>(GameGuiCanvas))
+                if (media.Tag is SceneNode node && node.Playing) media.Pause();
+            runtime?.ReleaseAllPressedKeys();
+            contextSunkKeys.Clear();
+            contextSunkMouseButtons.Clear();
+            jumpRequested = false;
+            ResetPromptHold();
+            PauseButton.Content = "▶  Resume";
+            GameTitle.Text = $"{project.Name} — Paused";
+            Title = $"{project.Name} — Paused";
+            return;
+        }
+
+        foreach (var media in FindVisualDescendants<MediaElement>(GameGuiCanvas))
+            if (media.Tag is SceneNode node && node.Playing) media.Play();
+        soundPlayback.Resume();
+        lastUpdateTimestamp = Stopwatch.GetTimestamp();
+        isPaused = false;
+        PauseButton.Content = "Ⅱ  Pause";
+        GameTitle.Text = project.Name;
+        Title = project.Name;
+        updateTimer.Start();
+        GameViewport.Focus();
+    }
+
+    private void StopPlayTest_Click(object sender, RoutedEventArgs e) => Close();
+
+    private static IEnumerable<T> FindVisualDescendants<T>(DependencyObject root) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T match) yield return match;
+            foreach (var descendant in FindVisualDescendants<T>(child)) yield return descendant;
+        }
+    }
+
     private void SyncCharacterNode(SceneNode node)
     {
         runtime?.SynchronizeExternalProperty(node, "Position");
@@ -254,6 +417,11 @@ public partial class PlayerWindow : Window
         runtime?.SynchronizeExternalProperty(node, "Velocity");
         runtime?.SynchronizeExternalProperty(node, "Anchored");
         runtime?.SynchronizeExternalProperty(node, "CanCollide");
+        if (node.Type == "Motor6D")
+        {
+            runtime?.SynchronizeExternalProperty(node, "TransformPosition");
+            runtime?.SynchronizeExternalProperty(node, "TransformRotation");
+        }
         renderer.UpdateNode(node, project);
     }
 
@@ -539,7 +707,8 @@ public partial class PlayerWindow : Window
             GameGuiCanvas.ActualHeight,
             activated: node => runtime?.InvokeGuiActivated(node.Id),
             textChanged: (node, value) => runtime?.UpdateGuiTextInput(node.Id, value),
-            screenGuiRoot: playerGui);
+            screenGuiRoot: playerGui,
+            propertyChanged: (node, property) => runtime?.SynchronizeExternalProperty(node, property));
         var children = rendered.Children.Cast<UIElement>().ToArray();
         rendered.Children.Clear();
         GameGuiCanvas.Children.Clear();
@@ -556,14 +725,16 @@ public partial class PlayerWindow : Window
             new Vector3((float)camera.UpDirection.X, (float)camera.UpDirection.Y, (float)camera.UpDirection.Z),
             (float)camera.FieldOfView, GameGuiCanvas.ActualWidth, GameGuiCanvas.ActualHeight, true,
             activated: node => runtime?.InvokeGuiActivated(node.Id),
-            textChanged: (node, value) => runtime?.UpdateGuiTextInput(node.Id, value));
+            textChanged: (node, value) => runtime?.UpdateGuiTextInput(node.Id, value),
+            propertyChanged: (node, property) => runtime?.SynchronizeExternalProperty(node, property));
         GuiRenderService.AddSurfaceGuis(GameGuiCanvas, project,
             new Vector3((float)camera.Position.X, (float)camera.Position.Y, (float)camera.Position.Z),
             new Vector3((float)camera.LookDirection.X, (float)camera.LookDirection.Y, (float)camera.LookDirection.Z),
             new Vector3((float)camera.UpDirection.X, (float)camera.UpDirection.Y, (float)camera.UpDirection.Z),
             (float)camera.FieldOfView, GameGuiCanvas.ActualWidth, GameGuiCanvas.ActualHeight, true,
             activated: node => runtime?.InvokeGuiActivated(node.Id),
-            textChanged: (node, value) => runtime?.UpdateGuiTextInput(node.Id, value));
+            textChanged: (node, value) => runtime?.UpdateGuiTextInput(node.Id, value),
+            propertyChanged: (node, property) => runtime?.SynchronizeExternalProperty(node, property));
     }
 
     private void UpdateBillboardGuiPositions()

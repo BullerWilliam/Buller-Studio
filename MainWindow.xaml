@@ -6,7 +6,7 @@
         xmlns:models="clr-namespace:BullerStudio.Models"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Buller Studio" Icon="{StaticResource BullerStudioIcon}" Width="1540" Height="980" MinWidth="980" MinHeight="620" WindowState="Maximized" WindowStyle="None" ResizeMode="CanResize"
-        Background="#1F2022" Foreground="#F2F3F4" KeyDown="Window_KeyDown">
+        Background="#1F2022" Foreground="#F2F3F4" PreviewKeyDown="Window_KeyDown">
   <shell:WindowChrome.WindowChrome>
     <shell:WindowChrome CaptionHeight="32" ResizeBorderThickness="6" GlassFrameThickness="0" UseAeroCaptionButtons="False" />
   </shell:WindowChrome.WindowChrome>

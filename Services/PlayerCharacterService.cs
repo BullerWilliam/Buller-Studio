@@ -7,7 +7,10 @@ public sealed class PlayerCharacterService
     private readonly GameProject project;
     private readonly SceneNode player;
     private readonly (SceneNode Node, float[] Offset)[] body;
+    private readonly Dictionary<string, SceneNode> motors = new(StringComparer.Ordinal);
     private float facingYaw;
+    private float gaitPhase;
+    private float gaitStrength;
 
     public PlayerCharacterService(GameProject project, SceneNode player)
     {
@@ -27,6 +30,7 @@ public sealed class PlayerCharacterService
         Model.Children.Add(Root);
         Humanoid = new SceneNode { Type = "Humanoid", Name = "Humanoid" };
         Model.Children.Add(Humanoid);
+        Model.Children.Add(new SceneNode { Type = "BodyColors", Name = "Body Colors" });
         body =
         [
             (CreateBodyPart("Torso", "Block", [1.35f, 1.7f, .8f], "#3973CF"), [0, .12f, 0]),
@@ -36,7 +40,18 @@ public sealed class PlayerCharacterService
             (CreateBodyPart("LeftLeg", "Block", [.52f, 1.35f, .52f], "#343B58"), [-.37f, -1.05f, 0]),
             (CreateBodyPart("RightLeg", "Block", [.52f, 1.35f, .52f], "#343B58"), [.37f, -1.05f, 0])
         ];
-        foreach (var (part, _) in body) Model.Children.Add(part);
+        foreach (var (part, offset) in body)
+        {
+            part.Position = [Root.Position[0] + offset[0], Root.Position[1] + offset[1], Root.Position[2] + offset[2]];
+            Model.Children.Add(part);
+        }
+        var torso = body[0].Node;
+        AddMotor("RootJoint", Root, torso, [0, .12f, 0], [0, 0, 0]);
+        AddMotor("Neck", torso, body[1].Node, [0, .625f, 0], [0, -.575f, 0]);
+        AddMotor("LeftShoulder", torso, body[2].Node, [-.84f, .60f, 0], [.18f, .64f, 0]);
+        AddMotor("RightShoulder", torso, body[3].Node, [.84f, .60f, 0], [-.18f, .64f, 0]);
+        AddMotor("LeftHip", torso, body[4].Node, [-.37f, -.5f, 0], [0, .67f, 0]);
+        AddMotor("RightHip", torso, body[5].Node, [.37f, -.5f, 0], [0, .67f, 0]);
         SpawnProtection = new SceneNode { Type = "ForceField", Name = "ForceField", Enabled = SpawnLocation?.Duration > 0 };
         Model.Children.Add(SpawnProtection);
         project.Workspace.Children.Add(Model);
@@ -53,21 +68,27 @@ public sealed class PlayerCharacterService
 
     public void SetFacingYaw(float yaw) => facingYaw = yaw;
 
-    public void ApplyInput(PhysicsSimulationService physics, float cameraYaw, float forward, float strafe, bool jump)
+    public void ApplyInput(PhysicsSimulationService physics, float cameraYaw, float forward, float strafe, bool jump, float elapsedSeconds = .02f)
     {
+        var elapsed = Math.Clamp(float.IsFinite(elapsedSeconds) ? elapsedSeconds : .02f, .001f, .25f);
         if (Humanoid.Health <= 0)
         {
             Root.Velocity[0] = 0;
             Root.Velocity[2] = 0;
+            gaitStrength = Math.Max(0, gaitStrength - elapsed * 8);
             return;
         }
         var yaw = cameraYaw * MathF.PI / 180;
         var x = strafe * MathF.Cos(yaw) - forward * MathF.Sin(yaw);
         var z = -strafe * MathF.Sin(yaw) - forward * MathF.Cos(yaw);
         var length = MathF.Sqrt(x * x + z * z);
-        if (length > 1) { x /= length; z /= length; }
+        if (length > 1) { x /= length; z /= length; length = 1; }
         Root.Velocity[0] = x * Math.Clamp(Humanoid.WalkSpeed, 0, 1000);
         Root.Velocity[2] = z * Math.Clamp(Humanoid.WalkSpeed, 0, 1000);
+        var walkSpeed = Math.Clamp(Humanoid.WalkSpeed, 0, 1000);
+        var targetGaitStrength = walkSpeed > .001f ? length * Math.Clamp(walkSpeed / 7.5f, 0, 1) : 0;
+        gaitStrength += (targetGaitStrength - gaitStrength) * Math.Clamp(elapsed * 10, 0, 1);
+        if (length > .001f) gaitPhase += elapsed * Math.Clamp(walkSpeed / 7.5f, .25f, 3) * 8;
         if (jump && physics.IsGrounded(Root)) Root.Velocity[1] = Math.Clamp(Humanoid.JumpPower, 0, 1000);
         if (length > .001f) facingYaw = MathF.Atan2(-x, -z) * 180 / MathF.PI;
     }
@@ -80,23 +101,40 @@ public sealed class PlayerCharacterService
             Root.Rotation[1] = facingYaw;
             changed.Add(Root);
         }
-        var yaw = facingYaw * MathF.PI / 180;
-        var cosine = MathF.Cos(yaw);
-        var sine = MathF.Sin(yaw);
-        foreach (var (part, offset) in body)
+        var wave = IsSeated ? 0 : MathF.Sin(gaitPhase) * gaitStrength;
+        var bounce = IsSeated ? 0 : MathF.Abs(MathF.Sin(gaitPhase * 2)) * gaitStrength * .035f;
+        var airborne = !IsSeated && Root.Velocity[1] > 1.5f;
+        SetMotorTransform("RootJoint", [0, bounce, 0], [0, 0, 0], changed);
+        foreach (var (part, _) in body)
         {
-            var localY = IsSeated && part.Name.EndsWith("Leg", StringComparison.Ordinal) ? -.5f : offset[1];
-            var localZ = IsSeated && part.Name.EndsWith("Leg", StringComparison.Ordinal) ? -.45f : offset[2];
-            var position = new[]
+            var pitch = 0f;
+            var isLeg = part.Name.EndsWith("Leg", StringComparison.Ordinal);
+            var transformPosition = new float[] { 0, 0, 0 };
+            if (IsSeated && isLeg)
             {
-                Root.Position[0] + offset[0] * cosine + localZ * sine,
-                Root.Position[1] + localY,
-                Root.Position[2] - offset[0] * sine + localZ * cosine
+                transformPosition[2] = -.45f;
+                pitch = -12;
+            }
+            else if (part.Name is "LeftLeg" or "RightLeg" or "LeftArm" or "RightArm")
+            {
+                var leftSide = part.Name.StartsWith("Left", StringComparison.Ordinal);
+                var opposingSide = leftSide ? -wave : wave;
+                var arm = part.Name.EndsWith("Arm", StringComparison.Ordinal);
+                pitch = airborne
+                    ? arm ? -28 : 14
+                    : (arm ? opposingSide : -opposingSide) * 28;
+            }
+            var motorName = part.Name switch
+            {
+                "Head" => "Neck",
+                "LeftArm" => "LeftShoulder",
+                "RightArm" => "RightShoulder",
+                "LeftLeg" => "LeftHip",
+                "RightLeg" => "RightHip",
+                _ => string.Empty
             };
-            if (part.Position.SequenceEqual(position) && part.Rotation[1] == facingYaw) continue;
-            part.Position = position;
-            part.Rotation[1] = facingYaw;
-            changed.Add(part);
+            if (motorName.Length > 0)
+                SetMotorTransform(motorName, transformPosition, [-pitch, 0, 0], changed);
         }
         return changed;
     }
@@ -109,14 +147,38 @@ public sealed class PlayerCharacterService
         IsSeated = false;
         Humanoid.Health = Humanoid.MaxHealth;
         facingYaw = 0;
+        gaitStrength = 0;
+        gaitPhase = 0;
         return new[] { Root }.Concat(UpdatePose()).ToArray();
     }
 
     private SceneNode CreateBodyPart(string name, string shape, float[] size, string color) => new()
     {
         Type = "Part", Name = name, Shape = shape, Size = size, Color = color,
-        Anchored = true, CanCollide = false, CanTouch = false
+        Anchored = false, CanCollide = false, CanTouch = false
     };
+
+    private void AddMotor(string name, SceneNode part0, SceneNode part1, float[] part0Offset, float[] part1Offset)
+    {
+        var motor = new SceneNode
+        {
+            Type = "Motor6D", Name = name, Part0 = part0.Id, Part1 = part1.Id,
+            Part0OffsetPosition = part0Offset, Part1OffsetPosition = part1Offset,
+            Enabled = true
+        };
+        part0.Children.Add(motor);
+        motors[name] = motor;
+    }
+
+    private void SetMotorTransform(string name, float[] position, float[] rotation, List<SceneNode> changed)
+    {
+        if (!motors.TryGetValue(name, out var motor)) return;
+        var normalizedRotation = rotation.Select(value => Math.Clamp(value, -360000, 360000)).ToArray();
+        if (motor.MotorTransformPosition.SequenceEqual(position) && motor.MotorTransformRotation.SequenceEqual(normalizedRotation)) return;
+        motor.MotorTransformPosition = (float[])position.Clone();
+        motor.MotorTransformRotation = normalizedRotation;
+        changed.Add(motor);
+    }
 
     private float[] FindSpawnPosition()
     {

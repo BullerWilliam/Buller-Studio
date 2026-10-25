@@ -1,5 +1,6 @@
 using System.IO;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Windows.Threading;
 using BullerStudio.Models;
 using NAudio.Wave;
@@ -13,9 +14,13 @@ public sealed class SoundPlaybackService : IDisposable
     private readonly Action<SceneNode> stateChanged;
     private readonly Dispatcher dispatcher;
     private readonly Dictionary<string, Playback> active = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, float> audioMeters = new(StringComparer.Ordinal);
     private bool disposed;
 
     private readonly record struct EchoParameters(float Delay, float Feedback, float DryLevel, float WetLevel, bool ContinueTail);
+    private readonly record struct DistortionParameters(float Level);
+    private readonly record struct EqualizerParameters(float LowGain, float MidGain, float HighGain);
+    private readonly record struct CompressorParameters(float Attack, float GainMakeup, float Ratio, float Release, float Threshold, Func<float>? SideChainLevel);
     private readonly record struct FlangeParameters(float Depth, float Mix, float Rate);
     private readonly record struct TremoloParameters(float Depth, float Duty, float Frequency);
     private readonly record struct ReverbParameters(float DecayTime, float Density, float Diffusion, float DryLevel, float WetLevel);
@@ -28,6 +33,18 @@ public sealed class SoundPlaybackService : IDisposable
     }
 
     public int ActiveCount => active.Count;
+
+    public void Pause()
+    {
+        if (disposed) return;
+        foreach (var playback in active.Values) playback.Output.Pause();
+    }
+
+    public void Resume()
+    {
+        if (disposed) return;
+        foreach (var playback in active.Values) playback.Output.Play();
+    }
 
     public void Update(float[] listenerPosition)
     {
@@ -53,16 +70,25 @@ public sealed class SoundPlaybackService : IDisposable
             if (soundGroup?.Type != "SoundGroup") soundGroup = null;
             var soundGroupVolume = soundGroup?.SoundGroupVolume ?? 1;
             var pitchOctaves = GetPitchOctaves(sound, soundGroup);
+            var distortionParameters = GetDistortionParameters(sound, soundGroup);
+            var equalizerParameters = GetEqualizerParameters(sound, soundGroup);
+            var chorusParameters = GetChorusParameters(sound, soundGroup);
             var echoParameters = GetEchoParameters(sound, soundGroup);
             var flangeParameters = GetFlangeParameters(sound, soundGroup);
             var tremoloParameters = GetTremoloParameters(sound, soundGroup);
             var reverbParameters = GetReverbParameters(sound, soundGroup);
             var volume = CalculateVolume(sound, parentPart, listenerPosition, soundGroupVolume, project.SoundService.SoundServiceVolume);
+            var compressorParameters = GetCompressorParameters(sound, nodes, nodesById);
             if (active.TryGetValue(sound.Id, out var playback) && string.Equals(playback.Path, path, StringComparison.OrdinalIgnoreCase))
             {
                 playback.Output.Volume = (float)volume;
+                playback.Meter.SetGain((float)volume);
                 playback.Provider.Rate = GetPlaybackSpeed(sound.PlaybackSpeed);
                 playback.Provider.PitchOctaves = pitchOctaves;
+                playback.Distortion.SetParameters(distortionParameters);
+                playback.Equalizer.SetParameters(equalizerParameters);
+                playback.Chorus.SetParameters(chorusParameters);
+                playback.Compressor.SetParameters(compressorParameters);
                 playback.Echo.SetParameters(echoParameters);
                 playback.Flange.SetParameters(flangeParameters);
                 playback.Tremolo.SetParameters(tremoloParameters);
@@ -71,7 +97,7 @@ public sealed class SoundPlaybackService : IDisposable
             }
 
             Stop(sound.Id);
-            Start(sound, path, volume, pitchOctaves, echoParameters, flangeParameters, tremoloParameters, reverbParameters);
+            Start(sound, path, volume, pitchOctaves, distortionParameters, equalizerParameters, chorusParameters, compressorParameters, echoParameters, flangeParameters, tremoloParameters, reverbParameters);
         }
     }
 
@@ -129,6 +155,65 @@ public sealed class SoundPlaybackService : IDisposable
                 continueTail);
     }
 
+    private static DistortionParameters GetDistortionParameters(SceneNode sound, SceneNode? soundGroup)
+    {
+        var effect = sound.Children.FirstOrDefault(child => child.Type == "DistortionSoundEffect" && child.Enabled)
+            ?? soundGroup?.Children.FirstOrDefault(child => child.Type == "DistortionSoundEffect" && child.Enabled);
+        return new DistortionParameters(effect is null ? 0 : Math.Clamp(float.IsFinite(effect.DistortionLevel) ? effect.DistortionLevel : .5f, 0, 1));
+    }
+
+    private static EqualizerParameters GetEqualizerParameters(SceneNode sound, SceneNode? soundGroup)
+    {
+        var effect = sound.Children.FirstOrDefault(child => child.Type == "EqualizerSoundEffect" && child.Enabled)
+            ?? soundGroup?.Children.FirstOrDefault(child => child.Type == "EqualizerSoundEffect" && child.Enabled);
+        return effect is null
+            ? new EqualizerParameters(0, 0, 0)
+            : new EqualizerParameters(
+                Math.Clamp(float.IsFinite(effect.EqualizerLowGain) ? effect.EqualizerLowGain : 0, -80, 10),
+                Math.Clamp(float.IsFinite(effect.EqualizerMidGain) ? effect.EqualizerMidGain : 0, -80, 10),
+                Math.Clamp(float.IsFinite(effect.EqualizerHighGain) ? effect.EqualizerHighGain : 0, -80, 10));
+    }
+
+    private static FlangeParameters GetChorusParameters(SceneNode sound, SceneNode? soundGroup)
+    {
+        var effect = sound.Children.FirstOrDefault(child => child.Type == "ChorusSoundEffect" && child.Enabled)
+            ?? soundGroup?.Children.FirstOrDefault(child => child.Type == "ChorusSoundEffect" && child.Enabled);
+        return effect is null
+            ? new FlangeParameters(0, 0, 0)
+            : new FlangeParameters(
+                Math.Clamp(float.IsFinite(effect.ChorusDepth) ? effect.ChorusDepth : .15f, 0, 1),
+                Math.Clamp(float.IsFinite(effect.ChorusMix) ? effect.ChorusMix : .5f, 0, 1),
+                Math.Clamp(float.IsFinite(effect.ChorusRate) ? effect.ChorusRate : .5f, 0, 20));
+    }
+
+    private CompressorParameters GetCompressorParameters(SceneNode sound, SceneNode[] sounds, IReadOnlyDictionary<string, SceneNode> nodesById)
+    {
+        var effect = sound.Children.FirstOrDefault(child => child.Type == "CompressorSoundEffect" && child.Enabled)
+            ?? (nodesById.GetValueOrDefault(sound.SoundGroupId) is { Type: "SoundGroup" } soundGroup
+                ? soundGroup.Children.FirstOrDefault(child => child.Type == "CompressorSoundEffect" && child.Enabled)
+                : null);
+        Func<float>? sideChainLevel = null;
+        if (effect is not null && nodesById.TryGetValue(effect.CompressorSideChainId, out var sideChain))
+        {
+            if (sideChain.Type == "Sound")
+                sideChainLevel = () => audioMeters.GetValueOrDefault(sideChain.Id);
+            else if (sideChain.Type == "SoundGroup")
+            {
+                var sideChainSoundIds = sounds.Where(candidate => candidate.SoundGroupId == sideChain.Id).Select(candidate => candidate.Id).ToArray();
+                sideChainLevel = () => MathF.Min(1, MathF.Sqrt(sideChainSoundIds.Sum(id => MathF.Pow(audioMeters.GetValueOrDefault(id), 2))));
+            }
+        }
+        return effect is null
+            ? new CompressorParameters(.1f, 0, 1, .1f, 0, null)
+            : new CompressorParameters(
+                Math.Clamp(float.IsFinite(effect.CompressorAttack) ? effect.CompressorAttack : .1f, .1f, 1),
+                Math.Clamp(float.IsFinite(effect.CompressorGainMakeup) ? effect.CompressorGainMakeup : 0, -30, 30),
+                Math.Clamp(float.IsFinite(effect.CompressorRatio) ? effect.CompressorRatio : 1, 1, 50),
+                Math.Clamp(float.IsFinite(effect.CompressorRelease) ? effect.CompressorRelease : .1f, 0, 5),
+                Math.Clamp(float.IsFinite(effect.CompressorThreshold) ? effect.CompressorThreshold : 0, -80, 0),
+                sideChainLevel);
+    }
+
     private static FlangeParameters GetFlangeParameters(SceneNode sound, SceneNode? soundGroup)
     {
         var effect = sound.Children.FirstOrDefault(child => child.Type == "FlangeSoundEffect" && child.Enabled)
@@ -167,7 +252,7 @@ public sealed class SoundPlaybackService : IDisposable
                 Math.Clamp(float.IsFinite(effect.ReverbWetLevel) ? effect.ReverbWetLevel : 0, -80, 10));
     }
 
-    private void Start(SceneNode sound, string path, double volume, float pitchOctaves, EchoParameters echoParameters, FlangeParameters flangeParameters, TremoloParameters tremoloParameters, ReverbParameters reverbParameters)
+    private void Start(SceneNode sound, string path, double volume, float pitchOctaves, DistortionParameters distortionParameters, EqualizerParameters equalizerParameters, FlangeParameters chorusParameters, CompressorParameters compressorParameters, EchoParameters echoParameters, FlangeParameters flangeParameters, TremoloParameters tremoloParameters, ReverbParameters reverbParameters)
     {
         MediaFoundationReader? reader = null;
         WaveOutEvent? output = null;
@@ -175,7 +260,17 @@ public sealed class SoundPlaybackService : IDisposable
         {
             reader = new MediaFoundationReader(path);
             var provider = new SoundTouchWaveProvider(reader) { Rate = GetPlaybackSpeed(sound.PlaybackSpeed), PitchOctaves = pitchOctaves };
-            var echo = new EchoWaveProvider(provider);
+            var meter = new LevelMeterWaveProvider(provider, level => audioMeters[sound.Id] = level) { Gain = (float)volume };
+            audioMeters[sound.Id] = 0;
+            var distortion = new DistortionWaveProvider(meter);
+            distortion.SetParameters(distortionParameters);
+            var equalizer = new EqualizerWaveProvider(distortion);
+            equalizer.SetParameters(equalizerParameters);
+            var chorus = new FlangeWaveProvider(equalizer);
+            chorus.SetParameters(chorusParameters);
+            var compressor = new CompressorWaveProvider(chorus);
+            compressor.SetParameters(compressorParameters);
+            var echo = new EchoWaveProvider(compressor);
             echo.SetParameters(echoParameters);
             var flange = new FlangeWaveProvider(echo);
             flange.SetParameters(flangeParameters);
@@ -185,7 +280,7 @@ public sealed class SoundPlaybackService : IDisposable
             reverb.SetParameters(reverbParameters);
             output = new WaveOutEvent { Volume = (float)volume };
             output.Init(reverb);
-            var playback = new Playback(output, reader, provider, echo, flange, tremolo, reverb, path);
+            var playback = new Playback(output, reader, provider, meter, distortion, equalizer, chorus, compressor, echo, flange, tremolo, reverb, path);
             active[sound.Id] = playback;
             output.PlaybackStopped += (_, eventArgs) => dispatcher.BeginInvoke(new Action(() => HandlePlaybackStopped(sound, playback, eventArgs.Exception)));
             output.Play();
@@ -196,6 +291,7 @@ public sealed class SoundPlaybackService : IDisposable
                 active.Remove(sound.Id);
             output?.Dispose();
             reader?.Dispose();
+            audioMeters.TryRemove(sound.Id, out _);
             sound.Playing = false;
             stateChanged(sound);
         }
@@ -210,6 +306,8 @@ public sealed class SoundPlaybackService : IDisposable
             {
                 playback.Reader.Position = 0;
                 playback.Provider.Clear();
+                playback.Chorus.Reset();
+                playback.Compressor.Reset();
                 playback.Echo.Reset();
                 playback.Flange.Reset();
                 playback.Tremolo.Reset();
@@ -244,13 +342,183 @@ public sealed class SoundPlaybackService : IDisposable
 
     private void Stop(string id)
     {
-        if (!active.Remove(id, out var playback)) return;
+        if (!active.Remove(id, out var playback))
+        {
+            audioMeters.TryRemove(id, out _);
+            return;
+        }
         playback.Output.Stop();
         playback.Output.Dispose();
         playback.Reader.Dispose();
+        audioMeters.TryRemove(id, out _);
     }
 
-    private sealed record Playback(WaveOutEvent Output, MediaFoundationReader Reader, SoundTouchWaveProvider Provider, EchoWaveProvider Echo, FlangeWaveProvider Flange, TremoloWaveProvider Tremolo, ReverbWaveProvider Reverb, string Path);
+    private sealed record Playback(WaveOutEvent Output, MediaFoundationReader Reader, SoundTouchWaveProvider Provider, LevelMeterWaveProvider Meter, DistortionWaveProvider Distortion, EqualizerWaveProvider Equalizer, FlangeWaveProvider Chorus, CompressorWaveProvider Compressor, EchoWaveProvider Echo, FlangeWaveProvider Flange, TremoloWaveProvider Tremolo, ReverbWaveProvider Reverb, string Path);
+
+    private sealed class LevelMeterWaveProvider(IWaveProvider source, Action<float> report) : IWaveProvider
+    {
+        public float Gain { get; set; } = 1;
+        public WaveFormat WaveFormat => source.WaveFormat;
+        public void SetGain(float value) => Gain = float.IsFinite(value) ? Math.Clamp(value, 0, 1) : 0;
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            var read = source.Read(buffer, offset, count);
+            var format = source.WaveFormat;
+            var sampleSize = format.Encoding == WaveFormatEncoding.IeeeFloat && format.BitsPerSample == 32 ? 4
+                : format.Encoding == WaveFormatEncoding.Pcm && format.BitsPerSample == 16 ? 2 : 0;
+            if (read <= 0 || sampleSize == 0)
+            {
+                report(0);
+                return read;
+            }
+            var sampleCount = read / sampleSize;
+            double sumSquares = 0;
+            for (var sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++)
+            {
+                var sampleOffset = offset + sampleIndex * sampleSize;
+                var sample = sampleSize == 4 ? BitConverter.ToSingle(buffer, sampleOffset) : BinaryPrimitives.ReadInt16LittleEndian(buffer.AsSpan(sampleOffset, 2)) / 32768f;
+                if (float.IsFinite(sample)) sumSquares += sample * sample;
+            }
+            report((float)Math.Clamp(Math.Sqrt(sumSquares / Math.Max(1, sampleCount)) * Gain, 0, 1));
+            return read;
+        }
+    }
+
+    private sealed class DistortionWaveProvider(IWaveProvider source) : IWaveProvider
+    {
+        private float level;
+        public WaveFormat WaveFormat => source.WaveFormat;
+        public void SetParameters(DistortionParameters parameters) => level = Math.Clamp(parameters.Level, 0, 1);
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            var read = source.Read(buffer, offset, count);
+            if (level <= 0 || read <= 0) return read;
+            var format = source.WaveFormat;
+            var sampleSize = format.Encoding == WaveFormatEncoding.IeeeFloat && format.BitsPerSample == 32 ? 4
+                : format.Encoding == WaveFormatEncoding.Pcm && format.BitsPerSample == 16 ? 2 : 0;
+            if (sampleSize == 0) return read;
+            var end = offset + read - (read % sampleSize);
+            var drive = 1 + 24 * level * level;
+            var normalization = MathF.Tanh(drive);
+            for (var index = offset; index < end; index += sampleSize)
+            {
+                var original = sampleSize == 4 ? BitConverter.ToSingle(buffer, index) : BinaryPrimitives.ReadInt16LittleEndian(buffer.AsSpan(index, 2)) / 32768f;
+                if (!float.IsFinite(original)) continue;
+                var clipped = MathF.Tanh(original * drive) / normalization;
+                var output = Math.Clamp(original + (clipped - original) * level, -1, 1);
+                if (sampleSize == 4) BitConverter.TryWriteBytes(buffer.AsSpan(index, 4), output);
+                else BinaryPrimitives.WriteInt16LittleEndian(buffer.AsSpan(index, 2), (short)Math.Clamp((int)MathF.Round(output * 32767), short.MinValue, short.MaxValue));
+            }
+            return read;
+        }
+    }
+
+    private sealed class EqualizerWaveProvider(IWaveProvider source) : IWaveProvider
+    {
+        private EqualizerParameters parameters;
+        private float[] lowPassState = [];
+        private float[] midPassState = [];
+        public WaveFormat WaveFormat => source.WaveFormat;
+        public void SetParameters(EqualizerParameters value) => parameters = value;
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            var read = source.Read(buffer, offset, count);
+            var format = source.WaveFormat;
+            var sampleSize = format.Encoding == WaveFormatEncoding.IeeeFloat && format.BitsPerSample == 32 ? 4
+                : format.Encoding == WaveFormatEncoding.Pcm && format.BitsPerSample == 16 ? 2 : 0;
+            var channels = format.Channels;
+            if (sampleSize == 0 || channels < 1 || format.SampleRate < 1 || read <= 0) return read;
+            if (lowPassState.Length != channels)
+            {
+                lowPassState = new float[channels];
+                midPassState = new float[channels];
+            }
+
+            var lowCoefficient = 1 - MathF.Exp(-2 * MathF.PI * 400 / format.SampleRate);
+            var midCoefficient = 1 - MathF.Exp(-2 * MathF.PI * Math.Min(4000, format.SampleRate * .45f) / format.SampleRate);
+            var lowGain = MathF.Pow(10, Math.Clamp(parameters.LowGain, -80, 10) / 20);
+            var midGain = MathF.Pow(10, Math.Clamp(parameters.MidGain, -80, 10) / 20);
+            var highGain = MathF.Pow(10, Math.Clamp(parameters.HighGain, -80, 10) / 20);
+            var frameSize = sampleSize * channels;
+            var end = offset + read - read % frameSize;
+            for (var index = offset; index < end; index += sampleSize)
+            {
+                var channel = (index - offset) / sampleSize % channels;
+                var input = sampleSize == 4 ? BitConverter.ToSingle(buffer, index) : BinaryPrimitives.ReadInt16LittleEndian(buffer.AsSpan(index, 2)) / 32768f;
+                if (!float.IsFinite(input)) continue;
+                lowPassState[channel] += lowCoefficient * (input - lowPassState[channel]);
+                midPassState[channel] += midCoefficient * (input - midPassState[channel]);
+                var low = lowPassState[channel];
+                var mid = midPassState[channel] - low;
+                var high = input - midPassState[channel];
+                var output = Math.Clamp(low * lowGain + mid * midGain + high * highGain, -1, 1);
+                if (sampleSize == 4) BitConverter.TryWriteBytes(buffer.AsSpan(index, 4), output);
+                else BinaryPrimitives.WriteInt16LittleEndian(buffer.AsSpan(index, 2), (short)Math.Clamp((int)MathF.Round(output * 32767), short.MinValue, short.MaxValue));
+            }
+            return read;
+        }
+    }
+
+    private sealed class CompressorWaveProvider(IWaveProvider source) : IWaveProvider
+    {
+        private CompressorParameters parameters = new(.1f, 0, 1, .1f, 0, null);
+        private float envelope;
+        public WaveFormat WaveFormat => source.WaveFormat;
+        public void SetParameters(CompressorParameters value) => parameters = value;
+        public void Reset() => envelope = 0;
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            var read = source.Read(buffer, offset, count);
+            var format = source.WaveFormat;
+            var sampleSize = format.Encoding == WaveFormatEncoding.IeeeFloat && format.BitsPerSample == 32 ? 4
+                : format.Encoding == WaveFormatEncoding.Pcm && format.BitsPerSample == 16 ? 2 : 0;
+            var channels = format.Channels;
+            if (sampleSize == 0 || channels < 1 || format.SampleRate < 1 || read <= 0) return read;
+
+            var attack = Math.Clamp(parameters.Attack, .1f, 1);
+            var release = Math.Clamp(parameters.Release, 0, 5);
+            var attackCoefficient = MathF.Exp(-1 / (attack * format.SampleRate));
+            var releaseCoefficient = release <= 0 ? 0 : MathF.Exp(-1 / (release * format.SampleRate));
+            var threshold = Math.Clamp(parameters.Threshold, -80, 0);
+            var ratio = Math.Clamp(parameters.Ratio, 1, 50);
+            var makeupGain = MathF.Pow(10, Math.Clamp(parameters.GainMakeup, -30, 30) / 20);
+            var sideChainLevel = parameters.SideChainLevel?.Invoke();
+            var frameSize = sampleSize * channels;
+            var frameCount = read / frameSize;
+            var samples = new float[channels];
+            for (var frame = 0; frame < frameCount; frame++)
+            {
+                var frameOffset = offset + frame * frameSize;
+                var peak = 0f;
+                for (var channel = 0; channel < channels; channel++)
+                {
+                    var sampleOffset = frameOffset + channel * sampleSize;
+                    var sample = sampleSize == 4 ? BitConverter.ToSingle(buffer, sampleOffset) : BinaryPrimitives.ReadInt16LittleEndian(buffer.AsSpan(sampleOffset, 2)) / 32768f;
+                    samples[channel] = float.IsFinite(sample) ? sample : 0;
+                    peak = Math.Max(peak, Math.Abs(samples[channel]));
+                }
+
+                var detectedLevel = sideChainLevel is { } sideChain ? Math.Clamp(sideChain, 0, 1) : peak;
+                var coefficient = detectedLevel > envelope ? attackCoefficient : releaseCoefficient;
+                envelope = coefficient * envelope + (1 - coefficient) * detectedLevel;
+                var inputDb = 20 * MathF.Log10(Math.Max(envelope, 1e-6f));
+                var reductionDb = inputDb > threshold ? (threshold - inputDb) * (1 - 1 / ratio) : 0;
+                var gain = MathF.Pow(10, reductionDb / 20) * makeupGain;
+                for (var channel = 0; channel < channels; channel++)
+                {
+                    var sampleOffset = frameOffset + channel * sampleSize;
+                    var output = Math.Clamp(samples[channel] * gain, -1, 1);
+                    if (sampleSize == 4) BitConverter.TryWriteBytes(buffer.AsSpan(sampleOffset, 4), output);
+                    else BinaryPrimitives.WriteInt16LittleEndian(buffer.AsSpan(sampleOffset, 2), (short)Math.Clamp((int)MathF.Round(output * 32767), short.MinValue, short.MaxValue));
+                }
+            }
+            return read;
+        }
+    }
 
     private sealed class EchoWaveProvider(IWaveProvider source) : IWaveProvider
     {
@@ -384,7 +652,7 @@ public sealed class SoundPlaybackService : IDisposable
 
             var sampleCount = read / sampleSize;
             var frameCount = sampleCount / channels;
-            var maxDelay = format.SampleRate * .04 * Math.Clamp(depth, .01f, 1);
+            var maxDelay = format.SampleRate * .04 * Math.Clamp(depth, 0, 1);
             var mixAmount = Math.Clamp(mix, 0, 1);
             var frameStride = channels;
             for (var frame = 0; frame < frameCount; frame++)
@@ -403,7 +671,7 @@ public sealed class SoundPlaybackService : IDisposable
                     var writeSample = writeFrame * channels + channel;
                     var readFrame = (writeFrame - delayFrames + maxDelayFrames + 1) % (maxDelayFrames + 1);
                     var delayed = delayLine[readFrame * channels + channel];
-                    var output = input * (1 - mixAmount) + delayed * mixAmount;
+                    var output = depth <= 0 ? input : input * (1 - mixAmount) + delayed * mixAmount;
                     delayLine[writeSample] = input;
                     if (sampleSize == 4) BitConverter.TryWriteBytes(buffer.AsSpan(sampleOffset, 4), Math.Clamp(output, -1, 1));
                     else BinaryPrimitives.WriteInt16LittleEndian(buffer.AsSpan(sampleOffset, 2), (short)Math.Clamp((int)MathF.Round(output * 32767), short.MinValue, short.MaxValue));

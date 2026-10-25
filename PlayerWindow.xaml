@@ -16,6 +16,13 @@
             Background="#BB111725" IsHitTestVisible="False">
       <TextBlock x:Name="GameTitle" FontSize="13" FontWeight="SemiBold" />
     </Border>
+    <Border x:Name="PlayTestControls" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="12" Padding="6"
+            Background="#DD111725" BorderBrush="#33446688" BorderThickness="1" CornerRadius="6">
+      <StackPanel Orientation="Horizontal">
+        <Button x:Name="PauseButton" Content="Ⅱ  Pause" MinWidth="92" Padding="10,5" Click="PausePlayTest_Click" />
+        <Button Content="■  Stop" MinWidth="82" Padding="10,5" Margin="6,0,0,0" Click="StopPlayTest_Click" />
+      </StackPanel>
+    </Border>
     <Border x:Name="VehicleHud" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="12" Padding="12,9"
             Background="#DD111725" BorderBrush="#6689B9FF" BorderThickness="1" CornerRadius="7"
             IsHitTestVisible="False" Visibility="Collapsed">

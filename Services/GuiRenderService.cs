@@ -1,9 +1,11 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Effects;
+using System.Windows.Media.Media3D;
 using Vector3 = System.Numerics.Vector3;
 using BullerStudio.Models;
 
@@ -11,9 +13,9 @@ namespace BullerStudio.Services;
 
 public static class GuiRenderService
 {
-    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
+    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIPageLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
 
-    public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, SceneNode? screenGuiRoot = null)
+    public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, SceneNode? screenGuiRoot = null, Action<SceneNode, string>? propertyChanged = null)
     {
         var canvas = new Canvas { Background = Brushes.Transparent, ClipToBounds = true, IsHitTestVisible = isInteractive };
         var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
@@ -21,7 +23,7 @@ public static class GuiRenderService
         foreach (var screen in (screenGuiRoot ?? project.Gui).Children.Where(node => node.Type == "ScreenGui" && node.Enabled && node.Visible).OrderBy(node => node.DisplayOrder))
         {
             var screenCanvas = new Canvas { Width = width, Height = height, Background = Brushes.Transparent };
-            AddChildren(screenCanvas, screen, project, width, height, selectedId, activated, textChanged);
+            AddChildren(screenCanvas, screen, project, width, height, selectedId, activated, textChanged, propertyChanged);
             if (screen.Id == selectedId)
             {
                 var outline = new Border { Width = width, Height = height, BorderBrush = new SolidColorBrush(Color.FromRgb(74, 163, 255)), BorderThickness = new Thickness(2), IsHitTestVisible = false };
@@ -37,7 +39,7 @@ public static class GuiRenderService
 
     public static void AddBillboards(Canvas canvas, GameProject project, Vector3 cameraPosition, Vector3 lookDirection,
         Vector3 upDirection, float fieldOfView, double viewportWidth, double viewportHeight, bool isInteractive,
-        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null)
+        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null, Action<SceneNode, string>? propertyChanged = null)
     {
         var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
         var height = double.IsFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
@@ -53,9 +55,10 @@ public static class GuiRenderService
                 Width = billboardWidth,
                 Height = billboardHeight,
                 Background = Brushes.Transparent,
+                ClipToBounds = billboard.ClipsDescendants,
                 IsHitTestVisible = isInteractive
             };
-            AddChildren(element, billboard, project, billboardWidth, billboardHeight, selectedId, activated, textChanged);
+            AddChildren(element, billboard, project, billboardWidth, billboardHeight, selectedId, activated, textChanged, propertyChanged);
             Panel.SetZIndex(element, billboard.AlwaysOnTop ? int.MaxValue : int.MinValue);
             canvas.Children.Add(element);
         }
@@ -87,7 +90,7 @@ public static class GuiRenderService
 
     public static void AddSurfaceGuis(Canvas canvas, GameProject project, Vector3 cameraPosition, Vector3 lookDirection,
         Vector3 upDirection, float fieldOfView, double viewportWidth, double viewportHeight, bool isInteractive,
-        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null)
+        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null, Action<SceneNode, string>? propertyChanged = null)
     {
         var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
         var height = double.IsFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
@@ -103,10 +106,11 @@ public static class GuiRenderService
                 Width = guiWidth,
                 Height = guiHeight,
                 Background = Brushes.Transparent,
+                ClipToBounds = surfaceGui.ClipsDescendants,
                 IsHitTestVisible = isInteractive,
                 RenderTransformOrigin = new Point(.5, .5)
             };
-            AddChildren(element, surfaceGui, project, guiWidth, guiHeight, selectedId, activated, textChanged);
+            AddChildren(element, surfaceGui, project, guiWidth, guiHeight, selectedId, activated, textChanged, propertyChanged);
             Panel.SetZIndex(element, surfaceGui.AlwaysOnTop ? int.MaxValue : int.MinValue + 1);
             canvas.Children.Add(element);
         }
@@ -246,7 +250,7 @@ public static class GuiRenderService
         return false;
     }
 
-    private static void AddChildren(Canvas canvas, SceneNode parent, GameProject project, double availableWidth, double availableHeight, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged)
+    private static void AddChildren(Canvas canvas, SceneNode parent, GameProject project, double availableWidth, double availableHeight, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged)
     {
         var padding = GetPadding(parent, availableWidth, availableHeight);
         var innerWidth = Math.Max(0, availableWidth - padding.Left - padding.Right);
@@ -254,11 +258,22 @@ public static class GuiRenderService
         var listLayout = parent.Children.FirstOrDefault(node => node.Type == "UIListLayout");
         var gridLayout = parent.Children.FirstOrDefault(node => node.Type == "UIGridLayout");
         var tableLayout = parent.Children.FirstOrDefault(node => node.Type == "UITableLayout");
+        var pageLayout = parent.Children.FirstOrDefault(node => node.Type == "UIPageLayout");
         var children = GetRenderableChildren(parent).ToArray();
         if (listLayout is not null && listLayout.SortOrder == "Name")
             children = children.OrderBy(node => node.Name, StringComparer.Ordinal).ToArray();
         else if (listLayout is not null || gridLayout is not null || tableLayout is not null)
             children = children.OrderBy(node => node.LayoutOrder).ToArray();
+        if (pageLayout is not null && children.Length > 0)
+        {
+            children = pageLayout.SortOrder == "Name"
+                ? children.OrderBy(node => node.Name, StringComparer.Ordinal).ToArray()
+                : children.OrderBy(node => node.LayoutOrder).ToArray();
+            pageLayout.CurrentPageIndex = pageLayout.Circular
+                ? (pageLayout.CurrentPageIndex - 1 + children.Length) % children.Length + 1
+                : Math.Clamp(pageLayout.CurrentPageIndex, 1, children.Length);
+            children = [children[pageLayout.CurrentPageIndex - 1]];
+        }
         var grid = gridLayout is null ? default : GetGridMetrics(gridLayout, innerWidth, innerHeight, children.Length);
         var listSizes = listLayout is null ? [] : GetListSizes(children, listLayout, innerWidth, innerHeight);
         var listSpacing = listLayout is null ? 0 : GetListSpacing(listLayout, innerWidth, innerHeight);
@@ -337,7 +352,7 @@ public static class GuiRenderService
             }
             left -= Math.Clamp(node.AnchorPoint[0], 0, 1) * width * visualScale;
             top -= Math.Clamp(node.AnchorPoint[1], 0, 1) * height * visualScale;
-            var visual = CreateNode(node, project, width, height, selectedId, activated, textChanged);
+            var visual = CreateNode(node, project, width, height, selectedId, activated, textChanged, propertyChanged);
             if (visual is null) continue;
             Canvas.SetLeft(visual, left);
             Canvas.SetTop(visual, top);
@@ -346,10 +361,10 @@ public static class GuiRenderService
         }
     }
 
-    private static FrameworkElement? CreateNode(SceneNode node, GameProject project, double width, double height, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged)
+    private static FrameworkElement? CreateNode(SceneNode node, GameProject project, double width, double height, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged)
     {
         var rounded = node.Children.FirstOrDefault(child => child.Type == "UICorner");
-        var outline = node.Children.FirstOrDefault(child => child.Type is "UIOutline" or "UIStroke");
+        var outline = node.Children.FirstOrDefault(child => child.Enabled && child.Type is ("UIOutline" or "UIStroke"));
         var visualScale = GetScale(node);
         var transform = new TransformGroup();
         transform.Children.Add(new ScaleTransform(visualScale, visualScale));
@@ -360,15 +375,18 @@ public static class GuiRenderService
             Width = width,
             Height = height,
             Background = Brushes.Transparent,
-            BorderBrush = outline is null ? Brushes.Transparent : BrushFrom(outline.StrokeColor, Brushes.White),
-            BorderThickness = outline is null ? new Thickness(0) : new Thickness(Math.Max(0, outline.StrokeThickness)),
+            BorderBrush = outline is null ? BrushFrom(node.BorderColor3, Brushes.Black) : BrushFrom(outline.StrokeColor, Brushes.White),
+            BorderThickness = outline is null
+                ? new Thickness(node.BackgroundTransparency >= 1 ? 0 : Math.Clamp(node.BorderSizePixel, 0, 64))
+                : new Thickness(Math.Max(0, outline.StrokeThickness)),
             CornerRadius = rounded is null ? new CornerRadius(0) : UICornerRadiusService.Render(rounded, width, height),
             ClipToBounds = rounded is not null,
             RenderTransform = transform
         };
+        if (node.Type == "UICanvasGroup") root.Opacity = 1 - Math.Clamp(node.GroupTransparency, 0, 1);
         var content = new Grid();
         root.Child = content;
-        var element = CreateVisual(node, project, width, height, activated, textChanged);
+        var element = CreateVisual(node, project, width, height, activated, textChanged, propertyChanged);
         var textShadows = node.Children.Where(child => child.Type == "UIShadow" && child.Enabled && child.ShadowMode == "Text")
             .OrderBy(child => child.ZIndex).ToArray();
         if (textShadows.Length > 0 && parentSupportsTextShadow(node))
@@ -383,24 +401,73 @@ public static class GuiRenderService
             else if (element is Grid textBoxGrid) textBoxGrid.Background = Brushes.Transparent;
         }
         if (element is not null) content.Children.Add(element);
-        var childCanvas = new Canvas { ClipToBounds = node.Type != "ScrollingFrame" };
-        var childExtent = GetChildrenExtent(node, width, height);
-        childCanvas.Width = Math.Max(width, childExtent.Width);
-        childCanvas.Height = Math.Max(height, childExtent.Height);
+        var childCanvas = new Canvas { ClipToBounds = node.Type == "ScrollingFrame" || node.ClipsDescendants };
+        var requestedCanvasWidth = node.CanvasSizeScale[0] * width + node.CanvasSize[0];
+        var requestedCanvasHeight = node.CanvasSizeScale[1] * height + node.CanvasSize[1];
+        childCanvas.Width = Math.Max(width, requestedCanvasWidth);
+        childCanvas.Height = Math.Max(height, requestedCanvasHeight);
         if (node.Type == "ScrollingFrame")
         {
+            var canScrollHorizontally = node.ScrollingEnabled && node.ScrollingDirection is ("X" or "XY");
+            var canScrollVertically = node.ScrollingEnabled && node.ScrollingDirection is ("Y" or "XY");
             var scroll = new ScrollViewer
             {
                 Content = childCanvas,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = canScrollHorizontally ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden,
+                VerticalScrollBarVisibility = canScrollVertically ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden,
                 Background = Brushes.Transparent,
                 BorderThickness = new Thickness(0)
+            };
+            var scrollBarStyle = new Style(typeof(ScrollBar));
+            scrollBarStyle.Setters.Add(new Setter(FrameworkElement.WidthProperty, (double)node.ScrollBarThickness));
+            scrollBarStyle.Setters.Add(new Setter(FrameworkElement.HeightProperty, (double)node.ScrollBarThickness));
+            scroll.Resources[typeof(ScrollBar)] = scrollBarStyle;
+            scroll.PreviewMouseWheel += (_, args) =>
+            {
+                if (!node.ScrollingEnabled)
+                {
+                    args.Handled = true;
+                    return;
+                }
+                if (node.ScrollingDirection == "X")
+                {
+                    scroll.ScrollToHorizontalOffset(scroll.HorizontalOffset - args.Delta);
+                    args.Handled = true;
+                }
+            };
+            void ApplyCanvasPosition()
+            {
+                scroll.ScrollToHorizontalOffset(canScrollHorizontally ? Math.Clamp(node.CanvasPosition[0], 0, Math.Max(0, childCanvas.Width - width)) : 0);
+                scroll.ScrollToVerticalOffset(canScrollVertically ? Math.Clamp(node.CanvasPosition[1], 0, Math.Max(0, childCanvas.Height - height)) : 0);
+            }
+            ApplyCanvasPosition();
+            scroll.Loaded += (_, _) => ApplyCanvasPosition();
+            scroll.ScrollChanged += (_, _) =>
+            {
+                var next = new[]
+                {
+                    canScrollHorizontally ? (float)scroll.HorizontalOffset : 0,
+                    canScrollVertically ? (float)scroll.VerticalOffset : 0
+                };
+                if (node.CanvasPosition.SequenceEqual(next)) return;
+                node.CanvasPosition = next;
+                propertyChanged?.Invoke(node, "CanvasPosition");
             };
             content.Children.Add(scroll);
         }
         else content.Children.Add(childCanvas);
-        AddChildren(childCanvas, node, project, width, height, selectedId, activated, textChanged);
+        AddChildren(childCanvas, node, project, width, height, selectedId, activated, textChanged, propertyChanged);
+        if (node.Type == "ScrollingFrame" && node.AutomaticCanvasSize != "None")
+        {
+            var contentWidth = childCanvas.Children.OfType<FrameworkElement>()
+                .Select(child => Canvas.GetLeft(child) + (double.IsFinite(child.Width) ? child.Width : child.ActualWidth))
+                .Where(double.IsFinite).DefaultIfEmpty(width).Max();
+            var contentHeight = childCanvas.Children.OfType<FrameworkElement>()
+                .Select(child => Canvas.GetTop(child) + (double.IsFinite(child.Height) ? child.Height : child.ActualHeight))
+                .Where(double.IsFinite).DefaultIfEmpty(height).Max();
+            if (node.AutomaticCanvasSize is "X" or "XY") childCanvas.Width = Math.Max(childCanvas.Width, contentWidth);
+            if (node.AutomaticCanvasSize is "Y" or "XY") childCanvas.Height = Math.Max(childCanvas.Height, contentHeight);
+        }
         foreach (var shadow in node.Children.Where(child => child.Type == "UIShadow" && child.Enabled && child.ShadowInset && child.ShadowMode == "Shape").OrderBy(child => child.ZIndex))
         {
             var insetLayer = new Canvas { Width = width, Height = height, ClipToBounds = true, IsHitTestVisible = false };
@@ -470,7 +537,7 @@ public static class GuiRenderService
         return visual;
     }
 
-    private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, double width, double height, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged)
+    private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, double width, double height, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged)
     {
         var background = BackgroundFor(node);
         var fontSize = FontSizeFor(node, width, height);
@@ -513,12 +580,14 @@ public static class GuiRenderService
         }
         FrameworkElement? visual = node.Type switch
         {
-            "Frame" => new Border { Background = background },
+            "Frame" or "UICanvasGroup" => new Border { Background = background },
             "ScrollingFrame" => new Border { Background = background },
+            "ViewportFrame" => CreateViewportFrame(node, project),
+            "VideoFrame" => CreateVideoFrame(node, project, background, propertyChanged),
             "ImageLabel" => CreateImageLabel(node, project, background),
-            "ImageButton" => new Button { Content = new Image { Source = ImageFor(node, project), Stretch = Stretch.Fill }, Background = background, BorderThickness = new Thickness(0), Padding = new Thickness(0) },
-            "TextLabel" => new TextBlock { Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap },
-            "TextButton" => new Button { Content = node.TextScaled ? new TextBlock { Text = node.Text, FontSize = fontSize, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center } : node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, Padding = new Thickness(2) },
+            "ImageButton" => CreateImageButton(node, project, background),
+            "TextLabel" => new TextBlock { Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextWrapping = node.TextWrapped || node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap },
+            "TextButton" => new Button { Content = node.TextScaled || node.TextWrapped ? new TextBlock { Text = node.Text, FontSize = fontSize, TextWrapping = node.TextWrapped || node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap, TextAlignment = TextAlignment.Center } : node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, Padding = new Thickness(2) },
             _ => null
         };
         if (visual is Button button && activated is not null) button.Click += (_, _) => activated(node);
@@ -550,12 +619,412 @@ public static class GuiRenderService
 
     private static Grid CreateImageLabel(SceneNode node, GameProject project, Brush background)
     {
-        var grid = new Grid { Background = background };
-        grid.Children.Add(new Image { Source = ImageFor(node, project), Stretch = Stretch.Fill });
+        var grid = new Grid { Background = background, ClipToBounds = true };
+        grid.Children.Add(CreateImageContent(node, project));
         return grid;
     }
 
-    private static bool IsRenderable(string type) => type is "Frame" or "ScrollingFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox";
+    private static Button CreateImageButton(SceneNode node, GameProject project, Brush background)
+    {
+        FrameworkElement Image(string? assetOverride = null) => CreateImageContent(node, project, assetOverride);
+        var button = new Button { Content = Image(), Background = background, BorderThickness = new Thickness(0), Padding = new Thickness(0), ClipToBounds = true };
+        var hover = string.IsNullOrWhiteSpace(node.HoverImage) ? null : Image(node.HoverImage);
+        var pressed = string.IsNullOrWhiteSpace(node.PressedImage) ? null : Image(node.PressedImage);
+        button.MouseEnter += (_, _) => { if (hover is not null) button.Content = hover; };
+        button.MouseLeave += (_, _) => button.Content = Image();
+        button.PreviewMouseLeftButtonDown += (_, _) => { if (pressed is not null) button.Content = pressed; };
+        button.PreviewMouseLeftButtonUp += (_, _) => button.Content = button.IsMouseOver ? hover ?? Image() : Image();
+        return button;
+    }
+
+    private static FrameworkElement CreateImageContent(SceneNode node, GameProject project, string? assetOverride = null)
+    {
+        var source = ImageRectFor(node, project, assetOverride);
+        if (node.ScaleType == "Slice" && source is BitmapSource bitmap && node.SliceCenter is { Length: >= 4 } center)
+            return CreateSlicedImage(bitmap, center, node.SliceScale);
+        if (node.ScaleType == "Tile" && source is not null)
+        {
+            var brush = new ImageBrush(source)
+            {
+                TileMode = TileMode.Tile,
+                ViewportUnits = BrushMappingMode.Absolute,
+                Viewport = new Rect(0, 0, Math.Max(1, source.Width), Math.Max(1, source.Height)),
+                Stretch = Stretch.Fill
+            };
+            return new Border { Background = brush, ClipToBounds = true };
+        }
+        var stretch = node.ScaleType switch
+        {
+            "Fit" => Stretch.Uniform,
+            "Crop" => Stretch.UniformToFill,
+            _ => Stretch.Fill
+        };
+        return new Image { Source = source, Stretch = stretch, ClipToBounds = true };
+    }
+
+    private static Grid CreateSlicedImage(BitmapSource source, float[] center, float sliceScale)
+    {
+        if (source.PixelWidth <= 0 || source.PixelHeight <= 0)
+            return new Grid { ClipToBounds = true, Children = { new Image { Source = source, Stretch = Stretch.Fill } } };
+        var x1 = Math.Clamp((int)MathF.Floor(center[0]), 0, source.PixelWidth);
+        var y1 = Math.Clamp((int)MathF.Floor(center[1]), 0, source.PixelHeight);
+        var x2 = Math.Clamp((int)MathF.Floor(center[2]), x1, source.PixelWidth);
+        var y2 = Math.Clamp((int)MathF.Floor(center[3]), y1, source.PixelHeight);
+        if (x1 == 0 && y1 == 0 && x2 == 0 && y2 == 0)
+            return new Grid { ClipToBounds = true, Children = { new Image { Source = source, Stretch = Stretch.Fill } } };
+
+        var scale = float.IsFinite(sliceScale) ? Math.Clamp(sliceScale, .01f, 100) : 1;
+        var widths = new[] { x1 * source.Width / source.PixelWidth * scale, (x2 - x1) * source.Width / source.PixelWidth, (source.PixelWidth - x2) * source.Width / source.PixelWidth * scale };
+        var heights = new[] { y1 * source.Height / source.PixelHeight * scale, (y2 - y1) * source.Height / source.PixelHeight, (source.PixelHeight - y2) * source.Height / source.PixelHeight * scale };
+        var grid = new Grid { ClipToBounds = true };
+        for (var index = 0; index < 3; index++)
+        {
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = index == 1 ? new GridLength(1, GridUnitType.Star) : new GridLength(widths[index]) });
+            grid.RowDefinitions.Add(new RowDefinition { Height = index == 1 ? new GridLength(1, GridUnitType.Star) : new GridLength(heights[index]) });
+        }
+        void FitSliceBands(double available, double first, double last, Action<double, double> apply)
+        {
+            if (!double.IsFinite(available) || available <= 0) return;
+            var total = first + last;
+            var factor = total > available && total > 0 ? available / total : 1;
+            apply(first * factor, last * factor);
+        }
+        void FitSliceToSize()
+        {
+            FitSliceBands(grid.ActualWidth, widths[0], widths[2], (first, last) =>
+            {
+                grid.ColumnDefinitions[0].Width = new GridLength(first);
+                grid.ColumnDefinitions[2].Width = new GridLength(last);
+            });
+            FitSliceBands(grid.ActualHeight, heights[0], heights[2], (first, last) =>
+            {
+                grid.RowDefinitions[0].Height = new GridLength(first);
+                grid.RowDefinitions[2].Height = new GridLength(last);
+            });
+        }
+        grid.SizeChanged += (_, _) => FitSliceToSize();
+        var xEdges = new[] { 0, x1, x2 };
+        var xEnds = new[] { x1, x2, source.PixelWidth };
+        var yEdges = new[] { 0, y1, y2 };
+        var yEnds = new[] { y1, y2, source.PixelHeight };
+        for (var row = 0; row < 3; row++)
+        for (var column = 0; column < 3; column++)
+        {
+            var cropWidth = xEnds[column] - xEdges[column];
+            var cropHeight = yEnds[row] - yEdges[row];
+            if (cropWidth <= 0 || cropHeight <= 0) continue;
+            var crop = new CroppedBitmap(source, new Int32Rect(xEdges[column], yEdges[row], cropWidth, cropHeight));
+            if (crop.CanFreeze) crop.Freeze();
+            var image = new Image { Source = crop, Stretch = Stretch.Fill };
+            Grid.SetColumn(image, column);
+            Grid.SetRow(image, row);
+            grid.Children.Add(image);
+        }
+        return grid;
+    }
+
+    private static Grid CreateVideoFrame(SceneNode node, GameProject project, Brush background, Action<SceneNode, string>? propertyChanged)
+    {
+        var grid = new Grid { Background = background, ClipToBounds = true };
+        string path;
+        try { path = GameProjectStore.GetSafeAssetFilePathInAssets(project, node.Video); }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { path = string.Empty; }
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return grid;
+        var media = new MediaElement
+        {
+            Source = new Uri(path, UriKind.Absolute),
+            LoadedBehavior = MediaState.Manual,
+            UnloadedBehavior = MediaState.Stop,
+            Stretch = Stretch.Uniform,
+            Volume = Math.Clamp(node.Volume, 0, 1),
+            Tag = node
+        };
+        media.Loaded += (_, _) =>
+        {
+            if (node.Playing) media.Play();
+        };
+        media.MediaEnded += (_, _) =>
+        {
+            if (node.Looped)
+            {
+                media.Position = TimeSpan.Zero;
+                media.Play();
+            }
+            else if (node.Playing)
+            {
+                node.Playing = false;
+                propertyChanged?.Invoke(node, "Playing");
+            }
+        };
+        media.MediaFailed += (_, _) =>
+        {
+            if (!node.Playing) return;
+            node.Playing = false;
+            propertyChanged?.Invoke(node, "Playing");
+        };
+        grid.Children.Add(media);
+        return grid;
+    }
+
+    private static FrameworkElement CreateViewportFrame(SceneNode node, GameProject project)
+    {
+        var container = new Grid { Background = BackgroundFor(node), ClipToBounds = true };
+        var viewport = new Viewport3D { ClipToBounds = true };
+        var allNodes = GameProjectStore.Flatten(project).ToArray();
+        var camera = allNodes.FirstOrDefault(item => item.Id == node.ViewportCurrentCameraId && item.Type == "Camera");
+        if (camera is null) return container;
+        var cameraPosition = camera.Position;
+        var rotation = camera.Rotation;
+        var yaw = rotation[1] * Math.PI / 180;
+        var pitch = rotation[0] * Math.PI / 180;
+        var direction = new Vector3D(Math.Sin(yaw) * Math.Cos(pitch), -Math.Sin(pitch), -Math.Cos(yaw) * Math.Cos(pitch));
+        viewport.Camera = new PerspectiveCamera
+        {
+            Position = new Point3D(cameraPosition[0], cameraPosition[1], cameraPosition[2]),
+            LookDirection = direction,
+            UpDirection = new Vector3D(0, 1, 0),
+            FieldOfView = Math.Clamp(camera.FieldOfView, 10, 120)
+        };
+        var scene = new Model3DGroup();
+        scene.Children.Add(new AmbientLight(Color.FromRgb(120, 120, 120)));
+        scene.Children.Add(new DirectionalLight(Colors.White, new Vector3D(-.5, -1, -.7)));
+        var bodyColorOverrides = BodyColorsService.BuildOverrides(node);
+        foreach (var part in GameProjectStore.Flatten(node.Children).Where(SceneNodeTypes.IsBasePart).Take(1000))
+        {
+            if (!part.Visible || part.Transparency >= 1) continue;
+            var color = ColorFrom(bodyColorOverrides.GetValueOrDefault(part.Id, part.Color), Colors.LightGray);
+            color.A = (byte)Math.Round(color.A * (1 - Math.Clamp(part.Transparency, 0, 1)));
+            var brush = new SolidColorBrush(color);
+            var material = new DiffuseMaterial(brush);
+            var geometry = CreateViewportGeometry(part, project);
+            var transform = new Transform3DGroup();
+            transform.Children.Add(new ScaleTransform3D(Math.Max(.001, part.Size[0]), Math.Max(.001, part.Size[1]), Math.Max(.001, part.Size[2])));
+            transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(1, 0, 0), part.Rotation[0])));
+            transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), part.Rotation[1])));
+            transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 0, 1), part.Rotation[2])));
+            transform.Children.Add(new TranslateTransform3D(part.Position[0], part.Position[1], part.Position[2]));
+            scene.Children.Add(new GeometryModel3D(geometry, material) { BackMaterial = material, Transform = transform });
+        }
+        viewport.Children.Add(new ModelVisual3D { Content = scene });
+        container.Children.Add(viewport);
+        return container;
+    }
+
+    private static MeshGeometry3D CreateViewportGeometry(SceneNode node, GameProject project)
+    {
+        if (node.Type == "MeshPart" && !string.IsNullOrWhiteSpace(node.Asset))
+        {
+            try
+            {
+                var path = GameProjectStore.GetSafeAssetFilePathInAssets(project, node.Asset);
+                if (File.Exists(path)) return ReadViewportObj(path);
+            }
+            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+        }
+        if (node.Type == "Part" && node.Shape == "Ball") return CreateViewportSphere();
+        if (node.Type == "Part" && node.Shape == "Cylinder") return CreateViewportCylinder();
+        if (node.Type == "WedgePart") return CreateViewportWedge(false);
+        if (node.Type == "CornerWedgePart") return CreateViewportWedge(true);
+        if (node.Type == "SpawnLocation") return CreateViewportSpawnLocation();
+        if (node.Type is "Seat" or "VehicleSeat") return CreateViewportSeat();
+        if (node.Type == "TrussPart") return CreateViewportTruss();
+
+        var mesh = new MeshGeometry3D();
+        AddViewportBox(mesh, new Point3D(0, 0, 0), 1, 1, 1);
+        return mesh;
+    }
+
+    private static MeshGeometry3D ReadViewportObj(string path)
+    {
+        var vertices = new List<Point3D>();
+        var mesh = new MeshGeometry3D();
+        foreach (var line in File.ReadLines(path))
+        {
+            var fields = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (fields.Length == 4 && fields[0] == "v"
+                && double.TryParse(fields[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var x)
+                && double.TryParse(fields[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var y)
+                && double.TryParse(fields[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z))
+                vertices.Add(new Point3D(x, y, z));
+            if (fields.Length < 4 || fields[0] != "f") continue;
+            var indices = fields.Skip(1).Select(field => int.TryParse(field.Split('/')[0], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var index)
+                ? index < 0 ? vertices.Count + index : index - 1 : -1).ToArray();
+            for (var index = 1; index < indices.Length - 1; index++)
+                if (indices[0] >= 0 && indices[index] >= 0 && indices[index + 1] >= 0
+                    && indices[0] < vertices.Count && indices[index] < vertices.Count && indices[index + 1] < vertices.Count)
+                    AddViewportTriangle(mesh, vertices[indices[0]], vertices[indices[index]], vertices[indices[index + 1]], orientAwayFromOrigin: false);
+        }
+        return mesh.Positions.Count > 0 ? mesh : CreateViewportBoxGeometry();
+    }
+
+    private static MeshGeometry3D CreateViewportBoxGeometry()
+    {
+        var mesh = new MeshGeometry3D();
+        AddViewportBox(mesh, new Point3D(0, 0, 0), 1, 1, 1);
+        return mesh;
+    }
+
+    private static void AddViewportBox(MeshGeometry3D mesh, Point3D center, double x, double y, double z)
+    {
+        var hx = x * .5; var hy = y * .5; var hz = z * .5;
+        var a = new Point3D(center.X - hx, center.Y - hy, center.Z - hz);
+        var b = new Point3D(center.X + hx, center.Y - hy, center.Z - hz);
+        var c = new Point3D(center.X + hx, center.Y + hy, center.Z - hz);
+        var d = new Point3D(center.X - hx, center.Y + hy, center.Z - hz);
+        var e = new Point3D(center.X - hx, center.Y - hy, center.Z + hz);
+        var f = new Point3D(center.X + hx, center.Y - hy, center.Z + hz);
+        var g = new Point3D(center.X + hx, center.Y + hy, center.Z + hz);
+        var h = new Point3D(center.X - hx, center.Y + hy, center.Z + hz);
+        AddViewportQuad(mesh, a, b, c, d); AddViewportQuad(mesh, f, e, h, g);
+        AddViewportQuad(mesh, e, a, d, h); AddViewportQuad(mesh, b, f, g, c);
+        AddViewportQuad(mesh, d, c, g, h); AddViewportQuad(mesh, e, f, b, a);
+    }
+
+    private static MeshGeometry3D CreateViewportSphere()
+    {
+        var mesh = new MeshGeometry3D();
+        const int longitude = 24, latitude = 16;
+        for (var row = 0; row < latitude; row++)
+        for (var column = 0; column < longitude; column++)
+        {
+            var a = SpherePoint(row, column, latitude, longitude);
+            var b = SpherePoint(row + 1, column, latitude, longitude);
+            var c = SpherePoint(row + 1, column + 1, latitude, longitude);
+            var d = SpherePoint(row, column + 1, latitude, longitude);
+            AddViewportTriangle(mesh, a, b, c); AddViewportTriangle(mesh, a, c, d);
+        }
+        return mesh;
+    }
+
+    private static Point3D SpherePoint(int row, int column, int latitude, int longitude)
+    {
+        var theta = Math.PI * row / latitude;
+        var phi = Math.PI * 2 * column / longitude;
+        return new Point3D(.5 * Math.Sin(theta) * Math.Cos(phi), .5 * Math.Cos(theta), .5 * Math.Sin(theta) * Math.Sin(phi));
+    }
+
+    private static MeshGeometry3D CreateViewportCylinder()
+    {
+        var mesh = new MeshGeometry3D();
+        const int segments = 32;
+        for (var segment = 0; segment < segments; segment++)
+        {
+            var a = 2 * Math.PI * segment / segments;
+            var b = 2 * Math.PI * (segment + 1) / segments;
+            var bottomA = new Point3D(.5 * Math.Cos(a), -.5, .5 * Math.Sin(a));
+            var bottomB = new Point3D(.5 * Math.Cos(b), -.5, .5 * Math.Sin(b));
+            var topA = new Point3D(bottomA.X, .5, bottomA.Z);
+            var topB = new Point3D(bottomB.X, .5, bottomB.Z);
+            AddViewportQuad(mesh, bottomA, bottomB, topB, topA);
+            AddViewportTriangle(mesh, new Point3D(0, -.5, 0), bottomB, bottomA);
+            AddViewportTriangle(mesh, new Point3D(0, .5, 0), topA, topB);
+        }
+        return mesh;
+    }
+
+    private static MeshGeometry3D CreateViewportWedge(bool corner)
+    {
+        var mesh = new MeshGeometry3D();
+        var a = new Point3D(-.5, -.5, -.5); var b = new Point3D(.5, -.5, -.5);
+        var c = new Point3D(.5, -.5, .5); var d = new Point3D(-.5, -.5, .5);
+        var e = new Point3D(-.5, .5, .5); var f = new Point3D(.5, .5, .5);
+        AddViewportQuad(mesh, a, b, c, d);
+        if (corner)
+        {
+            AddViewportTriangle(mesh, a, d, e); AddViewportTriangle(mesh, d, c, e);
+            AddViewportTriangle(mesh, c, b, e); AddViewportTriangle(mesh, b, a, e);
+        }
+        else
+        {
+            AddViewportQuad(mesh, d, c, f, e); AddViewportQuad(mesh, a, e, f, b);
+            AddViewportTriangle(mesh, a, d, e); AddViewportTriangle(mesh, b, f, c);
+        }
+        return mesh;
+    }
+
+    private static MeshGeometry3D CreateViewportSpawnLocation()
+    {
+        var mesh = new MeshGeometry3D();
+        AddViewportBox(mesh, new Point3D(0, -.06, 0), 1, .88, 1);
+        AddViewportBox(mesh, new Point3D(0, .41, 0), .65, .06, .13);
+        AddViewportBox(mesh, new Point3D(0, .41, 0), .13, .06, .65);
+        return mesh;
+    }
+
+    private static MeshGeometry3D CreateViewportSeat()
+    {
+        var mesh = new MeshGeometry3D();
+        AddViewportBox(mesh, new Point3D(0, .25, 0), 1, .5, 1);
+        AddViewportBox(mesh, new Point3D(0, .08, .42), 1, .84, .16);
+        return mesh;
+    }
+
+    private static MeshGeometry3D CreateViewportTruss()
+    {
+        var mesh = new MeshGeometry3D();
+        foreach (var x in new[] { -.42, .42 })
+        foreach (var z in new[] { -.42, .42 })
+            AddViewportBox(mesh, new Point3D(x, 0, z), .12, 1, .12);
+        foreach (var y in new[] { -.42, 0d, .42 })
+        {
+            AddViewportBox(mesh, new Point3D(0, y, -.42), .9, .1, .1);
+            AddViewportBox(mesh, new Point3D(0, y, .42), .9, .1, .1);
+            AddViewportBox(mesh, new Point3D(-.42, y, 0), .1, .1, .9);
+            AddViewportBox(mesh, new Point3D(.42, y, 0), .1, .1, .9);
+        }
+        AddViewportSegment(mesh, new Point3D(-.42, -.42, -.42), new Point3D(.42, .42, -.42), .045);
+        AddViewportSegment(mesh, new Point3D(.42, -.42, .42), new Point3D(-.42, .42, .42), .045);
+        return mesh;
+    }
+
+    private static void AddViewportSegment(MeshGeometry3D mesh, Point3D start, Point3D end, double thickness)
+    {
+        var axis = end - start;
+        var length = axis.Length;
+        if (length < 1e-9) return;
+        axis.Normalize();
+        var up = Math.Abs(Vector3D.DotProduct(axis, new Vector3D(0, 1, 0))) > .98 ? new Vector3D(1, 0, 0) : new Vector3D(0, 1, 0);
+        var side = Vector3D.CrossProduct(axis, up);
+        side.Normalize();
+        var vertical = Vector3D.CrossProduct(side, axis);
+        vertical.Normalize();
+        var half = thickness * .5;
+        var a = start + side * half + vertical * half;
+        var b = start - side * half + vertical * half;
+        var c = end - side * half + vertical * half;
+        var d = end + side * half + vertical * half;
+        var e = start + side * half - vertical * half;
+        var f = start - side * half - vertical * half;
+        var g = end - side * half - vertical * half;
+        var h = end + side * half - vertical * half;
+        AddViewportQuad(mesh, a, b, c, d); AddViewportQuad(mesh, f, e, h, g);
+        AddViewportQuad(mesh, e, a, d, h); AddViewportQuad(mesh, b, f, g, c);
+        AddViewportQuad(mesh, d, c, g, h); AddViewportQuad(mesh, e, f, b, a);
+    }
+
+    private static void AddViewportQuad(MeshGeometry3D mesh, Point3D a, Point3D b, Point3D c, Point3D d)
+    {
+        AddViewportTriangle(mesh, a, b, c); AddViewportTriangle(mesh, a, c, d);
+    }
+
+    private static void AddViewportTriangle(MeshGeometry3D mesh, Point3D a, Point3D b, Point3D c, bool orientAwayFromOrigin = true)
+    {
+        var normal = Vector3D.CrossProduct(b - a, c - a);
+        if (normal.LengthSquared < 1e-12) return;
+        var triangleCenter = new Vector3D((a.X + b.X + c.X) / 3, (a.Y + b.Y + c.Y) / 3, (a.Z + b.Z + c.Z) / 3);
+        if (orientAwayFromOrigin && Vector3D.DotProduct(normal, triangleCenter) < 0)
+        {
+            (b, c) = (c, b);
+            normal = -normal;
+        }
+        normal.Normalize();
+        var start = mesh.Positions.Count;
+        mesh.Positions.Add(a); mesh.Positions.Add(b); mesh.Positions.Add(c);
+        mesh.Normals.Add(normal); mesh.Normals.Add(normal); mesh.Normals.Add(normal);
+        mesh.TriangleIndices.Add(start); mesh.TriangleIndices.Add(start + 1); mesh.TriangleIndices.Add(start + 2);
+    }
+
+    private static bool IsRenderable(string type) => type is "Frame" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox" or "UICanvasGroup";
 
     private static IEnumerable<SceneNode> GetRenderableChildren(SceneNode parent)
     {
@@ -688,7 +1157,33 @@ public static class GuiRenderService
     {
         var width = Math.Max(1, widthOverride ?? node.SizeScale[0] * availableWidth + node.Size[0]);
         double height = Math.Max(1, node.SizeScale[1] * availableHeight + node.Size[1]);
-        return ApplyLayoutConstraints(node, width, height, availableWidth, availableHeight);
+        var constrained = ApplyLayoutConstraints(node, width, height, availableWidth, availableHeight);
+        if (node.Type != "ScrollingFrame" && node.AutomaticSize != "None")
+        {
+            var children = GetChildrenExtent(node, constrained.Width, constrained.Height);
+            var text = GetTextContentExtent(node, constrained.Width, constrained.Height);
+            width = node.AutomaticSize is "X" or "XY" ? Math.Max(constrained.Width, Math.Max(children.Width, text.Width)) : constrained.Width;
+            height = node.AutomaticSize is "Y" or "XY" ? Math.Max(constrained.Height, Math.Max(children.Height, text.Height)) : constrained.Height;
+            constrained = ApplyLayoutConstraints(node, width, height, availableWidth, availableHeight);
+        }
+        return constrained;
+    }
+
+    private static Size GetTextContentExtent(SceneNode node, double width, double height)
+    {
+        if (node.Type is not ("TextLabel" or "TextButton" or "TextBox") || string.IsNullOrEmpty(node.Text)) return new Size(0, 0);
+        var padding = GetPadding(node, width, height);
+        var automaticWidth = node.AutomaticSize is "X" or "XY";
+        var wrapsText = node.TextWrapped || node.TextScaled || node.MultiLine;
+        var text = new TextBlock
+        {
+            Text = node.Text,
+            FontSize = FontSizeFor(node, width, height),
+            TextWrapping = wrapsText ? TextWrapping.Wrap : TextWrapping.NoWrap
+        };
+        var measureWidth = wrapsText && !automaticWidth ? Math.Max(1, width - padding.Left - padding.Right) : double.PositiveInfinity;
+        text.Measure(new Size(measureWidth, double.PositiveInfinity));
+        return new Size(text.DesiredSize.Width + padding.Left + padding.Right, text.DesiredSize.Height + padding.Top + padding.Bottom);
     }
 
     private static Size ApplyLayoutConstraints(SceneNode node, double width, double height, double parentWidth, double parentHeight)
@@ -891,7 +1386,7 @@ public static class GuiRenderService
         Color.FromArgb((byte)Math.Round(color.A * (1 - Math.Clamp(transparency, 0, 1))), color.R, color.G, color.B);
 
     private static SceneNode? ActiveGradient(SceneNode node) =>
-        node.Type is "Frame" or "TextLabel" or "TextButton" or "ImageLabel" or "ImageButton"
+        node.Type is "Frame" or "TextLabel" or "TextButton" or "ImageLabel" or "ImageButton" or "UICanvasGroup"
             ? node.Children.FirstOrDefault(child => child.Type == "UIGradient" && child.Enabled)
             : null;
 
@@ -902,12 +1397,12 @@ public static class GuiRenderService
             Scale(first.G, second.G), Scale(first.B, second.B));
     }
 
-    private static ImageSource? ImageFor(SceneNode node, GameProject project)
+    private static ImageSource? ImageFor(SceneNode node, GameProject project, string? assetOverride = null)
     {
-        var source = LoadImage(project, node.Asset);
+        var source = LoadImage(project, assetOverride ?? node.Asset);
         if (source is not BitmapSource image) return source;
         var gradient = ActiveGradient(node);
-        var baseColor = ColorFrom(node.Color, Colors.White);
+        var baseColor = ColorFrom(node.ImageColor3, Colors.White);
         baseColor = WithTransparency(baseColor, node.ImageTransparency);
         if (gradient is null && baseColor == Colors.White) return source;
         var width = image.PixelWidth;
@@ -939,6 +1434,21 @@ public static class GuiRenderService
         var tinted = BitmapSource.Create(width, height, image.DpiX, image.DpiY, PixelFormats.Bgra32, null, pixels, stride);
         tinted.Freeze();
         return tinted;
+    }
+
+    private static ImageSource? ImageRectFor(SceneNode node, GameProject project, string? assetOverride = null)
+    {
+        if (node.ImageRectSize is not { Length: >= 2 } size || size[0] <= 0 || size[1] <= 0) return ImageFor(node, project, assetOverride);
+        var image = ImageFor(node, project, assetOverride);
+        if (image is not BitmapSource source || source.PixelWidth <= 0 || source.PixelHeight <= 0) return image;
+        var offset = node.ImageRectOffset is { Length: >= 2 } value ? value : [0f, 0f];
+        var x = Math.Clamp((int)MathF.Floor(Math.Max(0f, offset[0])), 0, source.PixelWidth - 1);
+        var y = Math.Clamp((int)MathF.Floor(Math.Max(0f, offset[1])), 0, source.PixelHeight - 1);
+        var width = Math.Clamp((int)MathF.Floor(size[0]), 1, source.PixelWidth - x);
+        var height = Math.Clamp((int)MathF.Floor(size[1]), 1, source.PixelHeight - y);
+        var cropped = new CroppedBitmap(source, new Int32Rect(x, y, width, height));
+        if (cropped.CanFreeze) cropped.Freeze();
+        return cropped;
     }
 
     private static Color ColorFrom(string value, Color fallback)

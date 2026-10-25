@@ -77,6 +77,7 @@ public sealed class PhysicsSimulationService
             ApplyAngularVelocityTargets(parts, orientations, deltaTime);
             ApplyOrientationTargets(orientations, deltaTime);
             ApplyAngularMotion(parts, weldedGroups, ignoredPairs, deltaTime);
+            ApplyMotorTransforms(parts, weldedGroups);
             remaining -= deltaTime;
         }
     }
@@ -120,7 +121,7 @@ public sealed class PhysicsSimulationService
             while (parents[index] != index) index = parents[index] = parents[parents[index]];
             return index;
         }
-        foreach (var weld in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type == "WeldConstraint" && node.Enabled))
+        foreach (var weld in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type is "WeldConstraint" or "Motor6D" && node.Enabled))
         {
             if (!indexes.TryGetValue(weld.Part0, out var first) || !indexes.TryGetValue(weld.Part1, out var second) || first == second) continue;
             var firstRoot = Find(first);
@@ -1829,6 +1830,62 @@ public sealed class PhysicsSimulationService
 
     private static string AssemblyKey(SceneNode[] group) =>
         string.Join("|", group.Select(part => part.Id).OrderBy(id => id, StringComparer.Ordinal));
+
+    private void ApplyMotorTransforms(SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups)
+    {
+        static Vector3 Vector(float[] value) => new(value[0], value[1], value[2]);
+        var partById = parts.ToDictionary(part => part.Id, StringComparer.Ordinal);
+        foreach (var motor in GameProjectStore.Flatten(project.Workspace.Children)
+                     .Where(node => node.Type == "Motor6D"))
+        {
+            if (!motor.Enabled) continue;
+            if (!partById.TryGetValue(motor.Part0, out var part0) || !partById.TryGetValue(motor.Part1, out var part1) || ReferenceEquals(part0, part1))
+                continue;
+            var part0OffsetRotation = RotationMath.FromDegrees(motor.Part0OffsetRotation);
+            var part1OffsetRotation = RotationMath.FromDegrees(motor.Part1OffsetRotation);
+            var transformRotation = RotationMath.FromDegrees(motor.MotorTransformRotation);
+            var transformOffset = new Vector3(motor.MotorTransformPosition[0], motor.MotorTransformPosition[1], motor.MotorTransformPosition[2]);
+            SceneNode drivenPart;
+            Vector3 targetPosition;
+            Matrix4x4 targetRotation;
+            if (part1.Anchored)
+            {
+                if (part0.Anchored
+                    || !Matrix4x4.Invert(part0OffsetRotation, out var inversePart0OffsetRotation)
+                    || !Matrix4x4.Invert(transformRotation, out var inverseTransformRotation)) continue;
+                drivenPart = part0;
+                targetRotation = inversePart0OffsetRotation * inverseTransformRotation * part1OffsetRotation * RotationMath.FromDegrees(part1.Rotation);
+                var part1JointPosition = new Vector3(part1.Position[0], part1.Position[1], part1.Position[2])
+                    + Vector3.Transform(Vector(motor.Part1OffsetPosition), RotationMath.FromDegrees(part1.Rotation));
+                var part0JointOffset = Vector3.Transform(Vector(motor.Part0OffsetPosition), targetRotation);
+                var transformWorldOffset = Vector3.Transform(transformOffset, part0OffsetRotation * targetRotation);
+                targetPosition = part1JointPosition - part0JointOffset - transformWorldOffset;
+            }
+            else
+            {
+                if (!Matrix4x4.Invert(part1OffsetRotation, out var inversePart1OffsetRotation)) continue;
+                drivenPart = part1;
+                var parentRotation = RotationMath.FromDegrees(part0.Rotation);
+                targetRotation = inversePart1OffsetRotation * transformRotation * part0OffsetRotation * parentRotation;
+                var part0JointOffset = Vector3.Transform(Vector(motor.Part0OffsetPosition), parentRotation);
+                var jointPosition = new Vector3(part0.Position[0], part0.Position[1], part0.Position[2]) + part0JointOffset;
+                jointPosition += Vector3.Transform(transformOffset, part0OffsetRotation * parentRotation);
+                var part1JointOffset = Vector3.Transform(Vector(motor.Part1OffsetPosition), targetRotation);
+                targetPosition = jointPosition - part1JointOffset;
+            }
+            var targetPositionArray = new[] { targetPosition.X, targetPosition.Y, targetPosition.Z };
+            var targetRotationArray = RotationMath.ToDegrees(targetRotation);
+            static bool Differs(float[] current, float[] desired) =>
+                current.Length < 3 || Enumerable.Range(0, 3).Any(axis => Math.Abs(current[axis] - desired[axis]) > .0001f);
+            if (!Differs(drivenPart.Position, targetPositionArray) && !Differs(drivenPart.Rotation, targetRotationArray)) continue;
+            drivenPart.Position = targetPositionArray;
+            drivenPart.Rotation = targetRotationArray;
+            moved(drivenPart);
+        }
+
+        foreach (var group in weldedGroups.Values.Distinct())
+            RememberWeldedTransforms(group, AssemblyKey(group));
+    }
 
     private void SimulateSingle(SceneNode part, SceneNode[] parts, Dictionary<string, SceneNode[]> weldedGroups,
         Dictionary<string, Vector3> appliedForces, Dictionary<string, List<VelocityTarget>> velocityTargets,

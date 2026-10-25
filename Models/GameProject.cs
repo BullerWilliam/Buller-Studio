@@ -66,8 +66,13 @@ public sealed class SceneNode
     [JsonIgnore] public int VehicleSeatAreHingesDetected { get; set; }
     public float[] Size { get; set; } = [2, 2, 2];
     public float[] SizeScale { get; set; } = [0, 0];
+    public string AutomaticSize { get; set; } = "None";
+    public bool ClipsDescendants { get; set; } = true;
+    public string BorderColor3 { get; set; } = "#000000";
+    public int BorderSizePixel { get; set; } = 1;
     public int ZIndex { get; set; } = 1;
     public int DisplayOrder { get; set; }
+    public bool ResetOnSpawn { get; set; } = true;
     public int LayoutOrder { get; set; }
     public string Color { get; set; } = "#4E9DFF";
     public string FillColor { get; set; } = "#00BFFF";
@@ -83,6 +88,7 @@ public sealed class SceneNode
     public string SurfaceColor3 { get; set; } = "#FFFFFF";
     public float SurfaceTransparency { get; set; } = 1;
     public float LineThickness { get; set; } = .05f;
+    public string ViewportCurrentCameraId { get; set; } = string.Empty;
     public string Shape { get; set; } = "Block";
     public string Face { get; set; } = "Front";
     public float StudsPerTileU { get; set; } = 2;
@@ -92,8 +98,17 @@ public sealed class SceneNode
     public string Material { get; set; } = "Plastic";
     public float Transparency { get; set; }
     public float BackgroundTransparency { get; set; }
+    public float GroupTransparency { get; set; }
     public float TextTransparency { get; set; }
     public float ImageTransparency { get; set; }
+    public float[] ImageRectOffset { get; set; } = [0, 0];
+    public float[] ImageRectSize { get; set; } = [0, 0];
+    public string ImageColor3 { get; set; } = "#FFFFFF";
+    public string ScaleType { get; set; } = "Stretch";
+    public float[] SliceCenter { get; set; } = [0, 0, 0, 0];
+    public float SliceScale { get; set; } = 1;
+    public string HoverImage { get; set; } = string.Empty;
+    public string PressedImage { get; set; } = string.Empty;
     public bool Enabled { get; set; } = true;
     public float Brightness { get; set; } = 1;
     public string Ambient { get; set; } = "#808080";
@@ -102,6 +117,8 @@ public sealed class SceneNode
     public float ColorCorrectionContrast { get; set; }
     public float ColorCorrectionSaturation { get; set; }
     public float Density { get; set; } = .3f;
+    public float CloudCover { get; set; } = .5f;
+    public float CloudDensity { get; set; } = .5f;
     public float Haze { get; set; }
     public float Glare { get; set; }
     public float Offset { get; set; }
@@ -139,6 +156,19 @@ public sealed class SceneNode
     public float SoundGroupVolume { get; set; } = 1;
     public string SoundGroupId { get; set; } = string.Empty;
     public float PitchShiftOctave { get; set; } = 1.25f;
+    public float DistortionLevel { get; set; } = .5f;
+    public float EqualizerLowGain { get; set; }
+    public float EqualizerMidGain { get; set; }
+    public float EqualizerHighGain { get; set; }
+    public float ChorusDepth { get; set; } = .15f;
+    public float ChorusMix { get; set; } = .5f;
+    public float ChorusRate { get; set; } = .5f;
+    public float CompressorAttack { get; set; } = .1f;
+    public float CompressorGainMakeup { get; set; }
+    public float CompressorRatio { get; set; } = 1;
+    public float CompressorRelease { get; set; } = .1f;
+    public float CompressorThreshold { get; set; }
+    public string CompressorSideChainId { get; set; } = string.Empty;
     public float EchoDelay { get; set; } = 1;
     public float EchoFeedback { get; set; } = .5f;
     public float EchoDryLevel { get; set; }
@@ -160,6 +190,12 @@ public sealed class SceneNode
     public float RollOffMaxDistance { get; set; } = 100;
     public string Part0 { get; set; } = string.Empty;
     public string Part1 { get; set; } = string.Empty;
+    public float[] Part0OffsetPosition { get; set; } = [0, 0, 0];
+    public float[] Part0OffsetRotation { get; set; } = [0, 0, 0];
+    public float[] Part1OffsetPosition { get; set; } = [0, 0, 0];
+    public float[] Part1OffsetRotation { get; set; } = [0, 0, 0];
+    public float[] MotorTransformPosition { get; set; } = [0, 0, 0];
+    public float[] MotorTransformRotation { get; set; } = [0, 0, 0];
     public string Attachment0 { get; set; } = string.Empty;
     public string Attachment1 { get; set; } = string.Empty;
     public float[] Force { get; set; } = [0, 0, 0];
@@ -310,6 +346,7 @@ public sealed class SceneNode
     public string PlaceholderText { get; set; } = string.Empty;
     public string TextColor { get; set; } = "#FFFFFF";
     public bool MultiLine { get; set; }
+    public bool TextWrapped { get; set; }
     public bool TextEditable { get; set; } = true;
     public bool ClearTextOnFocus { get; set; } = true;
     public string StrokeColor { get; set; } = "#FFFFFF";
@@ -338,6 +375,13 @@ public sealed class SceneNode
     public float[] CellSizeScale { get; set; } = [0, 0];
     public float[] CellPadding { get; set; } = [0, 0];
     public float[] CellPaddingScale { get; set; } = [0, 0];
+    public float[] CanvasPosition { get; set; } = [0, 0];
+    public float[] CanvasSize { get; set; } = [0, 0];
+    public float[] CanvasSizeScale { get; set; } = [0, 0];
+    public string AutomaticCanvasSize { get; set; } = "None";
+    public int ScrollBarThickness { get; set; } = 12;
+    public bool ScrollingEnabled { get; set; } = true;
+    public string ScrollingDirection { get; set; } = "XY";
     public string FillDirection { get; set; } = "Horizontal";
     public int FillDirectionMaxCells { get; set; }
     public int TableColumns { get; set; } = 2;
@@ -350,6 +394,8 @@ public sealed class SceneNode
     public string HorizontalAlignment { get; set; } = "Left";
     public string VerticalAlignment { get; set; } = "Top";
     public string SortOrder { get; set; } = "LayoutOrder";
+    public int CurrentPageIndex { get; set; } = 1;
+    public bool Circular { get; set; }
     public string FlexMode { get; set; } = "None";
     public float GrowRatio { get; set; }
     public float ShrinkRatio { get; set; }
@@ -370,10 +416,18 @@ public sealed class SceneNode
     public bool CastShadow { get; set; } = true;
     public float Gravity { get; set; } = 24;
     public bool AutoManageCharacter { get; set; } = true;
+    public string PathfindingModifierLabel { get; set; } = string.Empty;
+    public bool PathfindingPassThrough { get; set; }
     public string Character { get; set; } = string.Empty;
     public string Team { get; set; } = string.Empty;
     public string TeamColor { get; set; } = "#E53935";
     public bool AutoAssignable { get; set; } = true;
+    public string HeadColor3 { get; set; } = "#E3B98A";
+    public string TorsoColor3 { get; set; } = "#3973CF";
+    public string LeftArmColor3 { get; set; } = "#E3B98A";
+    public string RightArmColor3 { get; set; } = "#E3B98A";
+    public string LeftLegColor3 { get; set; } = "#343B58";
+    public string RightLegColor3 { get; set; } = "#343B58";
     public bool Neutral { get; set; } = true;
     public bool AllowTeamChangeOnTouch { get; set; } = true;
     public float Duration { get; set; } = 10;
@@ -393,6 +447,7 @@ public sealed class SceneNode
     public Dictionary<string, SceneAttributeValue> Attributes { get; set; } = new(StringComparer.Ordinal);
     public List<string> Tags { get; set; } = [];
     public string Asset { get; set; } = string.Empty;
+    public string Video { get; set; } = string.Empty;
     public string Texture { get; set; } = string.Empty;
     public string SurfaceAppearanceColorMap { get; set; } = string.Empty;
     public string SurfaceAppearanceNormalMap { get; set; } = string.Empty;

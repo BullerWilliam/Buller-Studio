@@ -41,9 +41,11 @@ public sealed class SceneRenderService
     private readonly Dictionary<string, (string Attachment0, string Attachment1)> trailReferences = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SceneNode> highlightSources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> renderedAssetSources = new(StringComparer.Ordinal);
+    private Dictionary<string, string> bodyColorOverrides = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (TextureModel Texture, MemoryStream Stream)> packedSurfaceMapCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Light3D> objectLights = [];
     private readonly List<(MeshGeometryModel3D Model, Vector3 Direction, float Pitch, float Yaw)> skyboxVisuals = [];
+    private readonly List<MeshGeometryModel3D> cloudVisuals = [];
     private SceneNode cameraNode;
     private GameProject? activeProject;
     private string? selectedId;
@@ -138,6 +140,7 @@ public sealed class SceneRenderService
             trailReferences.Clear();
         }
         activeProject = project;
+        bodyColorOverrides = BodyColorsService.BuildOverrides(project.Workspace);
         var currentCamera = project.Workspace.Children.First(node => node.Type == "Camera");
         if (!ReferenceEquals(cameraNode, currentCamera))
         {
@@ -193,12 +196,28 @@ public sealed class SceneRenderService
         RefreshForceFields(project);
         RefreshParticleEffects(project);
         RefreshSkybox(project.Workspace, project);
+        RefreshClouds(project);
         UpdateCamera(project);
         SetSelections(selectedIds, selectedId);
     }
 
     public void UpdateNode(SceneNode node, GameProject project)
     {
+        if (node.Type == "BodyColors")
+        {
+            var affectedPartIds = bodyColorOverrides.Keys.ToHashSet(StringComparer.Ordinal);
+            bodyColorOverrides = BodyColorsService.BuildOverrides(project.Workspace);
+            affectedPartIds.UnionWith(bodyColorOverrides.Keys);
+            var partsById = GameProjectStore.Flatten(project.Workspace.Children)
+                .Where(SceneNodeTypes.IsBasePart).ToDictionary(part => part.Id, StringComparer.Ordinal);
+            foreach (var partId in affectedPartIds)
+            {
+                if (!partsById.TryGetValue(partId, out var part) || !visuals.TryGetValue(partId, out var visual)) continue;
+                visual.Material = MakeMaterial(part);
+                if (part.Type == "MeshPart") ApplySurfaceAppearance(visual, part, project);
+            }
+            return;
+        }
         if (SceneNodeTypes.IsSurfaceAppearance(node))
         {
             if (FindPartParent(project, node) is { Type: "MeshPart" } meshPart && visuals.TryGetValue(meshPart.Id, out var meshVisual))
@@ -215,7 +234,7 @@ public sealed class SceneRenderService
             else Refresh(project);
             return;
         }
-        if (node.Type is "Lighting" or "Sky" or "Atmosphere")
+        if (node.Type is "Lighting" or "Sky" or "Atmosphere" or "Clouds")
         {
             Refresh(project);
             return;
@@ -352,7 +371,7 @@ public sealed class SceneRenderService
         var appearance = meshPart.Children.FirstOrDefault(SceneNodeTypes.IsSurfaceAppearance);
         if (appearance is null) return;
         var appearanceTint = ParseColor(appearance.SurfaceAppearanceColor);
-        var partTint = ParseColor(meshPart.Color);
+        var partTint = ParseColor(bodyColorOverrides.GetValueOrDefault(meshPart.Id, meshPart.Color));
         var correctedTint = ApplyColorCorrection(System.Windows.Media.Color.FromRgb(
             (byte)(appearanceTint.R * partTint.R / 255),
             (byte)(appearanceTint.G * partTint.G / 255),
@@ -544,6 +563,7 @@ public sealed class SceneRenderService
                 camera.LookDirection = new Vector3D(look.X, look.Y, look.Z);
                 camera.UpDirection = new Vector3D(0, 1, 0);
                 UpdateSkybox(camera.Position);
+                UpdateClouds(camera.Position);
                 if (activeProject is not null && hasParticleEffects) RefreshParticleEffects(activeProject);
                 if (activeProject is not null && hasTrailNodes) RefreshTrails(activeProject);
             }
@@ -556,6 +576,7 @@ public sealed class SceneRenderService
         camera.LookDirection = new Vector3D(direction.X, direction.Y, direction.Z);
         camera.UpDirection = new Vector3D(0, 1, 0);
         UpdateSkybox(camera.Position);
+        UpdateClouds(camera.Position);
         if (activeProject is not null && hasParticleEffects) RefreshParticleEffects(activeProject);
         if (activeProject is not null && hasTrailNodes) RefreshTrails(activeProject);
     }
@@ -1580,6 +1601,59 @@ public sealed class SceneRenderService
         }
     }
 
+    private void RefreshClouds(GameProject project)
+    {
+        foreach (var visual in cloudVisuals) viewport.Items.Remove(visual);
+        cloudVisuals.Clear();
+        if (project.Workspace.Children.FirstOrDefault(node => node.Type == "Terrain") is not { } terrain) return;
+        foreach (var clouds in terrain.Children.Where(node => node.Type == "Clouds" && node.Enabled))
+        {
+            var cover = Math.Clamp(clouds.CloudCover, 0, 1);
+            var density = Math.Clamp(clouds.CloudDensity, 0, 1);
+            if (cover <= 0) continue;
+            var count = Math.Clamp((int)MathF.Round(cover * 16), 1, 16);
+            var builder = new MeshBuilder();
+            for (var index = 0; index < count; index++)
+            {
+                var angle = index * 2.3999632f;
+                var radius = 12 + (index % 4) * 7;
+                var x = MathF.Cos(angle) * radius;
+                var z = MathF.Sin(angle) * radius;
+                var y = 38 + (index % 3) * 2.5f;
+                var puffRadius = 5.5f + (index % 3) * 1.2f;
+                builder.AddSphere(new Vector3(x, y, z), puffRadius, 12, 8);
+                builder.AddSphere(new Vector3(x + puffRadius * .8f, y + .8f, z), puffRadius * .78f, 12, 8);
+                builder.AddSphere(new Vector3(x - puffRadius * .75f, y - .2f, z + .5f), puffRadius * .7f, 12, 8);
+            }
+            System.Windows.Media.Color color;
+            try { color = (System.Windows.Media.Color)ColorConverter.ConvertFromString(clouds.Color); }
+            catch { color = Colors.White; }
+            var alpha = Math.Clamp(.16f + density * .43f, .12f, .62f);
+            var model = new MeshGeometryModel3D
+            {
+                Geometry = builder.ToMeshGeometry3D(),
+                Material = new PhongMaterial
+                {
+                    DiffuseColor = new Color4(color.R / 255f, color.G / 255f, color.B / 255f, alpha),
+                    EmissiveColor = new Color4(color.R / 255f * .18f, color.G / 255f * .18f, color.B / 255f * .18f, 1),
+                    SpecularColor = new Color4(0, 0, 0, 1)
+                },
+                IsThrowingShadow = false,
+                IsHitTestVisible = false,
+                IsTransparent = true
+            };
+            cloudVisuals.Add(model);
+            viewport.Items.Add(model);
+        }
+        UpdateClouds(viewport.Camera is HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera ? camera.Position : new Point3D());
+    }
+
+    private void UpdateClouds(Point3D cameraPosition)
+    {
+        foreach (var model in cloudVisuals)
+            model.Transform = new TranslateTransform3D(cameraPosition.X, cameraPosition.Y, cameraPosition.Z);
+    }
+
     private static readonly (string Property, Vector3 Direction, float Pitch, float Yaw)[] SkyboxFaces =
     [
         ("SkyboxFront", new Vector3(0, 0, 1), 0, 0),
@@ -1605,7 +1679,7 @@ public sealed class SceneRenderService
         System.Windows.Media.Color parsed;
         try
         {
-            parsed = (System.Windows.Media.Color)ColorConverter.ConvertFromString(node.Color);
+            parsed = (System.Windows.Media.Color)ColorConverter.ConvertFromString(bodyColorOverrides.GetValueOrDefault(node.Id, node.Color));
         }
         catch { parsed = Colors.CornflowerBlue; }
         parsed = ApplyColorCorrection(parsed);
