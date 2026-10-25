@@ -23,6 +23,7 @@ public partial class PlayerWindow : Window
     private readonly SceneNode playerGui;
     private readonly List<SceneNode> toolHotbar = [];
     private readonly HashSet<Key> contextSunkKeys = [];
+    private readonly HashSet<Key> promptKeysDown = [];
     private readonly HashSet<MouseButton> contextSunkMouseButtons = [];
     private SceneNode? activeTool;
     private sealed record EquippedPartState(float[] LocalOffset, Matrix4x4 RotationOffset, float[] Position, float[] Rotation, bool Anchored, bool CanCollide);
@@ -35,7 +36,6 @@ public partial class PlayerWindow : Window
     private Point lastPointer;
     private long lastUpdateTimestamp;
     private bool jumpRequested;
-    private bool promptKeyDown;
     private string? holdingPromptId;
     private float promptHoldElapsed;
     private bool promptTriggered;
@@ -331,7 +331,9 @@ public partial class PlayerWindow : Window
             PromptObjectText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ObjectText)
                 ? nearbyPrompt.Parent.Name : nearbyPrompt.Prompt.ObjectText;
             PromptActionText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ActionText)
-                ? "Interact" : nearbyPrompt.Prompt.ActionText;
+                ? $"{nearbyPrompt.Prompt.KeyboardKeyCode}  Interact"
+                : $"{nearbyPrompt.Prompt.KeyboardKeyCode}  {nearbyPrompt.Prompt.ActionText}";
+            var promptKeyDown = promptKeysDown.Any(key => PromptKeyMatches(GetKeyCodeName(key), nearbyPrompt.Prompt.KeyboardKeyCode));
             if (promptKeyDown && Keyboard.FocusedElement is not (TextBox or Button))
             {
                 if (holdingPromptId != nearbyPrompt.Prompt.Id)
@@ -348,9 +350,11 @@ public partial class PlayerWindow : Window
                     {
                         runtime?.InvokePromptTriggered(nearbyPrompt.Prompt.Id, localPlayer.Id);
                         promptTriggered = true;
-                        PromptActionText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ActionText) ? "Interact" : nearbyPrompt.Prompt.ActionText;
+                        PromptActionText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ActionText)
+                            ? $"{nearbyPrompt.Prompt.KeyboardKeyCode}  Interact"
+                            : $"{nearbyPrompt.Prompt.KeyboardKeyCode}  {nearbyPrompt.Prompt.ActionText}";
                     }
-                    else PromptActionText.Text = $"Hold E  {promptHoldElapsed:0.0}/{holdDuration:0.0}s";
+                    else PromptActionText.Text = $"Hold {nearbyPrompt.Prompt.KeyboardKeyCode}  {promptHoldElapsed:0.0}/{holdDuration:0.0}s";
                 }
             }
             else ResetPromptHold();
@@ -377,6 +381,7 @@ public partial class PlayerWindow : Window
                 if (media.Tag is SceneNode node && node.Playing) media.Pause();
             runtime?.ReleaseAllPressedKeys();
             contextSunkKeys.Clear();
+            promptKeysDown.Clear();
             contextSunkMouseButtons.Clear();
             jumpRequested = false;
             ResetPromptHold();
@@ -495,6 +500,12 @@ public partial class PlayerWindow : Window
             return;
         }
         if (gameProcessed) return;
+        if (character is not null && ProximityPromptService.FindNearest(project, character.Root) is { } nearbyPrompt
+            && PromptKeyMatches(GetKeyCodeName(e.Key), nearbyPrompt.Prompt.KeyboardKeyCode))
+        {
+            promptKeysDown.Add(e.Key);
+            e.Handled = true;
+        }
         var toolIndex = e.Key switch { >= Key.D1 and <= Key.D9 => e.Key - Key.D1, >= Key.NumPad1 and <= Key.NumPad9 => e.Key - Key.NumPad1, _ => -1 };
         foreach (var item in backpack.Children.Where(node => node.Type == "Tool"))
             if (!toolHotbar.Contains(item)) toolHotbar.Add(item);
@@ -526,7 +537,6 @@ public partial class PlayerWindow : Window
             return;
         }
         if (e.Key == Key.Space && !e.IsRepeat) jumpRequested = true;
-        if (e.Key == Key.E) promptKeyDown = true;
         if (e.Key is Key.W or Key.A or Key.S or Key.D or Key.Space or Key.E) e.Handled = true;
     }
 
@@ -535,15 +545,17 @@ public partial class PlayerWindow : Window
         var wasContextSunk = contextSunkKeys.Remove(e.Key);
         var contextSunk = runtime?.FireUserInput(GetKeyCodeName(e.Key), false, Keyboard.FocusedElement is TextBox or Button) == true;
         if (wasContextSunk || contextSunk) e.Handled = true;
-        if (e.Key != Key.E) return;
-        promptKeyDown = false;
-        ResetPromptHold();
+        if (promptKeysDown.Remove(e.Key))
+        {
+            e.Handled = true;
+            ResetPromptHold();
+        }
     }
 
     private static string GetKeyCodeName(Key key) => key switch
     {
         >= Key.D0 and <= Key.D9 => new[] { "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine" }[(int)key - (int)Key.D0],
-        Key.Return => "Enter",
+        Key.Return => "Return",
         Key.Back => "Backspace",
         Key.LeftCtrl => "LeftControl",
         Key.RightCtrl => "RightControl",
@@ -564,6 +576,10 @@ public partial class PlayerWindow : Window
         Key.Oem3 => "Backquote",
         _ => key.ToString()
     };
+
+    private static bool PromptKeyMatches(string pressedKeyCode, string configuredKeyCode) =>
+        string.Equals(pressedKeyCode, configuredKeyCode, StringComparison.Ordinal)
+        || pressedKeyCode == "Backspace" && configuredKeyCode == "Back";
 
     private void ResetPromptHold()
     {

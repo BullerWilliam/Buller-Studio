@@ -126,7 +126,7 @@ public sealed class SeatInteractionService
         do
         {
             expanded = false;
-            foreach (var weld in nodes.Where(node => node.Type is "WeldConstraint" or "Motor6D" && node.Enabled))
+            foreach (var weld in nodes.Where(node => node.Type is "WeldConstraint" or "Weld" or "Motor6D" && node.Enabled))
             {
                 if (rigidParts.Contains(weld.Part0) && rigidParts.Add(weld.Part1)) expanded = true;
                 if (rigidParts.Contains(weld.Part1) && rigidParts.Add(weld.Part0)) expanded = true;

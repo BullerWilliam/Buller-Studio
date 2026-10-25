@@ -504,6 +504,7 @@ public static class GameProjectStore
             node.Angle = float.IsFinite(node.Angle) ? Math.Clamp(node.Angle, 1, 175) : 45;
             node.ActionText ??= "Interact";
             node.ObjectText ??= string.Empty;
+            if (!SceneNodeTypes.KeyCodes.Contains(node.KeyboardKeyCode, StringComparer.Ordinal) || node.KeyboardKeyCode is "Unknown" or "None") node.KeyboardKeyCode = "E";
             node.MaxActivationDistance = float.IsFinite(node.MaxActivationDistance) ? Math.Clamp(node.MaxActivationDistance, 1, 100) : 10;
             node.MaxDistance = float.IsFinite(node.MaxDistance) ? Math.Clamp(node.MaxDistance, 0, 100000) : 0;
             node.PixelsPerStud = float.IsFinite(node.PixelsPerStud) ? Math.Clamp(node.PixelsPerStud, 1, 1000) : 50;
@@ -885,8 +886,21 @@ public static class GameProjectStore
             return destinationParent.Type == "Model" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == "BodyColors" && child.Id != source.Id);
         if (source.Type == "PathfindingModifier")
-            return SceneNodeTypes.IsBasePart(destinationParent) && source.Children.Count == 0
+            return !IsInsideNodeType(project.Gui, destinationParent.Id, "WorldModel")
+                && SceneNodeTypes.IsBasePart(destinationParent) && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == "PathfindingModifier" && child.Id != source.Id);
+        if (source.Type == "PathfindingLink") return source.Children.Count == 0
+            && !IsInsideNodeType(project.Gui, destinationParent.Id, "WorldModel")
+            && (destinationParent.Id == project.Workspace.Id || destinationParent.Type is "Folder" or "Model" or "Configuration");
+        if (source.Type == "WorldModel")
+            return destinationParent.Type == "ViewportFrame" && IsNodeInTree(project.Gui, destinationParent.Id)
+                && !destinationParent.Children.Any(child => child.Type == "WorldModel" && child.Id != source.Id)
+                && source.Children.All(IsViewportFrameChildCompatible);
+        if (destinationParent.Type == "WorldModel")
+            return IsNodeInTree(project.Gui, destinationParent.Id) && IsViewportFrameChildCompatible(source);
+        if (IsInsideNodeType(project.Gui, destinationParent.Id, "WorldModel"))
+            return source.Type is not ("Camera" or "WorldModel" or "PathfindingModifier" or "PathfindingLink")
+                && IsViewportWorldModelSubtreeCompatible(source, destinationParent.Type);
         if (source.Type == "Camera")
             return IsNodeInTree(project.Workspace, source.Id)
                 ? destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"))
@@ -966,6 +980,10 @@ public static class GameProjectStore
     {
         if (source.Id == destinationParent.Id || Flatten(source.Children).Any(child => child.Id == destinationParent.Id)) return false;
         if (source.Type is "Workspace" or "Players" or "PlayerGui" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "StarterPlayer" or "Gui" or "StarterGui" or "Terrain") return false;
+        if (source.Type == "WorldModel")
+            return destinationParent.Type == "ViewportFrame" && !destinationParent.Children.Any(child => child.Type == "WorldModel" && child.Id != source.Id)
+                && source.Children.All(IsViewportFrameChildCompatible);
+        if (destinationParent.Type == "WorldModel") return IsViewportFrameChildCompatible(source);
         if (source.Type == "Camera") return destinationParent.Type == "ViewportFrame" && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
         if (destinationParent.Type == "Teams") return source.Type == "Team" && source.Children.Count == 0;
         if (destinationParent.Type == "StarterPlayer") return source.Type == "Folder" && source.Name is ("StarterPlayerScripts" or "StarterCharacterScripts") && IsStarterPlayerTemplateCompatible(source);
@@ -1082,6 +1100,17 @@ public static class GameProjectStore
         return null;
     }
 
+    private static bool IsInsideNodeType(SceneNode root, string nodeId, string type)
+    {
+        var node = Flatten(root.Children).FirstOrDefault(candidate => candidate.Id == nodeId);
+        while (node is not null)
+        {
+            if (node.Type == type) return true;
+            node = FindParentNode(root, node);
+        }
+        return false;
+    }
+
     private static bool IsNodeInTree(SceneNode root, string nodeId) =>
         root.Id == nodeId || Flatten(root.Children).Any(node => node.Id == nodeId);
 
@@ -1100,7 +1129,7 @@ public static class GameProjectStore
 
     private static bool IsGuiSubtreeCompatible(SceneNode node, bool isGuiServiceChild, string? destinationType = null)
     {
-        if (destinationType == "ViewportFrame" && (SceneNodeTypes.IsBasePart(node) || node.Type is "Camera" or "Folder" or "Model"))
+        if (destinationType == "ViewportFrame" && (SceneNodeTypes.IsBasePart(node) || node.Type is "Camera" or "Folder" or "Model" or "WorldModel"))
             return IsViewportFrameChildCompatible(node);
         if (node.Type == "ScreenGui") return isGuiServiceChild && node.Children.All(child => IsGuiSubtreeCompatible(child, false, "ScreenGui"));
         if (node.Type is "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript") return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
@@ -1118,13 +1147,20 @@ public static class GameProjectStore
     private static bool IsViewportFrameChildCompatible(SceneNode node)
     {
         if (node.Type == "Camera") return node.Children.Count == 0;
-        if (node.Type is "Folder" or "Model") return node.Children.All(IsViewportFrameChildCompatible);
+        if (node.Type == "WorldModel") return node.Children.All(child => IsViewportWorldModelSubtreeCompatible(child, "Workspace"));
+        if (node.Type is "Folder" or "Model") return IsViewportWorldModelSubtreeCompatible(node, "Workspace");
         if (SceneNodeTypes.IsBasePart(node)) return IsWorkspaceSubtreeCompatible(node, "Workspace");
         return false;
     }
 
+    private static bool IsViewportWorldModelSubtreeCompatible(SceneNode node, string? parentType) =>
+        !new[] { node }.Concat(Flatten(node.Children)).Any(child => child.Type is "Camera" or "WorldModel" or "PathfindingModifier" or "PathfindingLink")
+        && IsWorkspaceSubtreeCompatible(node, parentType);
+
     private static bool IsWorkspaceSubtreeCompatible(SceneNode node, string? parentType)
     {
+        if (node.Type == "Model" && (node.Children.Count(child => child.Type == "Humanoid") > 1
+            || node.Children.Count(child => child.Type == "BodyColors") > 1)) return false;
         if (SceneNodeTypes.IsSurfaceAppearance(node)) return parentType == "MeshPart" && node.Children.Count == 0;
         if (node.Type == "MeshPart" && node.Children.Count(SceneNodeTypes.IsSurfaceAppearance) > 1) return false;
         if (node.Type is "BlurEffect" or "ColorCorrectionEffect") return parentType is "Lighting" or "Camera" && node.Children.Count == 0;
@@ -1149,6 +1185,7 @@ public static class GameProjectStore
         if (node.Type == "Humanoid") return parentType == "Model" && node.Children.Count == 0;
         if (node.Type == "BodyColors") return parentType == "Model" && node.Children.Count == 0;
         if (node.Type == "PathfindingModifier") return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
+        if (node.Type == "PathfindingLink") return (parentType is "Workspace" or "Folder" or "Model" or "Configuration") && node.Children.Count == 0;
         if (node.Type == "Attachment")
             return SceneNodeTypes.IsBasePartType(parentType)
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
@@ -1176,7 +1213,7 @@ public static class GameProjectStore
             return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Model") && node.Children.Count == 0;
         if (node.Type == "Explosion")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;
-        if (node.Type is "WeldConstraint" or "Motor6D" or "NoCollisionConstraint")
+        if (node.Type is "WeldConstraint" or "Weld" or "Motor6D" or "NoCollisionConstraint")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType)) && node.Children.Count == 0;
         if (SceneNodeTypes.IsLight(node))
             return SceneNodeTypes.IsBasePartType(parentType)

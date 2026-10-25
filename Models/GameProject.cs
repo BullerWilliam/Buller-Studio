@@ -149,6 +149,7 @@ public sealed class SceneNode
     public string ObjectText { get; set; } = string.Empty;
     public float HoldDuration { get; set; }
     public float MaxActivationDistance { get; set; } = 10;
+    public string KeyboardKeyCode { get; set; } = "E";
     public bool RequiresLineOfSight { get; set; } = true;
     public float Volume { get; set; } = .5f;
     public float PlaybackSpeed { get; set; } = 1;
@@ -418,6 +419,8 @@ public sealed class SceneNode
     public bool AutoManageCharacter { get; set; } = true;
     public string PathfindingModifierLabel { get; set; } = string.Empty;
     public bool PathfindingPassThrough { get; set; }
+    public string PathfindingLinkLabel { get; set; } = string.Empty;
+    public bool PathfindingLinkBidirectional { get; set; } = true;
     public string Character { get; set; } = string.Empty;
     public string Team { get; set; } = string.Empty;
     public string TeamColor { get; set; } = "#E53935";

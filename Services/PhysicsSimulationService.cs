@@ -121,7 +121,7 @@ public sealed class PhysicsSimulationService
             while (parents[index] != index) index = parents[index] = parents[parents[index]];
             return index;
         }
-        foreach (var weld in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type is "WeldConstraint" or "Motor6D" && node.Enabled))
+        foreach (var weld in GameProjectStore.Flatten(project.Workspace.Children).Where(node => node.Type is "WeldConstraint" or "Weld" or "Motor6D" && node.Enabled))
         {
             if (!indexes.TryGetValue(weld.Part0, out var first) || !indexes.TryGetValue(weld.Part1, out var second) || first == second) continue;
             var firstRoot = Find(first);

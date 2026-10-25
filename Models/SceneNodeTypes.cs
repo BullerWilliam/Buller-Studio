@@ -2,6 +2,13 @@ namespace BullerStudio.Models;
 
 public static class SceneNodeTypes
 {
+    public static IReadOnlyList<string> KeyCodes { get; } = [
+        "Unknown", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+        "None", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero", "Backspace", "Tab", "Clear", "Return", "Escape", "Space", "PageUp", "PageDown", "End", "Home", "Left", "Up", "Right", "Down", "Insert", "Delete",
+        "LeftShift", "RightShift", "LeftControl", "RightControl", "LeftAlt", "RightAlt", "CapsLock", "NumLock", "ScrollLock", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+        "Minus", "Equals", "LeftBracket", "RightBracket", "BackSlash", "Semicolon", "Quote", "Comma", "Period", "Slash", "Backquote", "LeftWindows", "RightWindows", "Menu", "NumPad0", "NumPad1", "NumPad2", "NumPad3", "NumPad4", "NumPad5", "NumPad6", "NumPad7", "NumPad8", "NumPad9", "Multiply", "Add", "Subtract", "Decimal", "Divide", "Back"
+    ];
+
     public static IReadOnlyList<string> Materials { get; } = [
         "Plastic", "SmoothPlastic", "Neon", "Wood", "WoodPlanks", "Marble", "Basalt", "Slate", "CrackedLava", "Concrete", "Limestone", "Granite", "Pavement", "Brick", "Pebble", "Cobblestone", "Rock", "Sandstone", "CorrodedMetal", "DiamondPlate", "Foil", "Metal", "Grass", "LeafyGrass", "Sand", "Fabric", "Snow", "Mud", "Ground", "Asphalt", "Salt", "Ice", "Glacier", "Glass", "ForceField", "Cardboard", "Carpet", "CeramicTiles", "ClayRoofTiles", "RoofShingles", "Leather", "Plaster", "Rubber"
     ];
