@@ -19,39 +19,71 @@ public sealed class PlayerCharacterService
         var name = "PlayerCharacter";
         var existingNames = GameProjectStore.Flatten(project.Workspace.Children).Select(node => node.Name).ToHashSet(StringComparer.Ordinal);
         for (var suffix = 2; existingNames.Contains(name); suffix++) name = $"PlayerCharacter{suffix}";
-
-        Model = new SceneNode { Type = "Model", Name = name };
-        Root = new SceneNode
+        var template = project.StarterPlayer.Children.FirstOrDefault(node => node.Type == "Model" && node.Name == "StarterCharacter");
+        var renewedIds = new Dictionary<string, string>(StringComparer.Ordinal);
+        var customCharacter = template is not null ? GameProjectStore.CloneSubtree(template, out renewedIds) : null;
+        RenewedIds = template is not null && customCharacter is not null ? renewedIds : new Dictionary<string, string>(StringComparer.Ordinal);
+        if (customCharacter is not null)
         {
-            Type = "Part", Name = "HumanoidRootPart", Shape = "Block", Size = [1.4f, 3.6f, 1.4f],
-            Position = FindSpawnPosition(), Anchored = false, CanCollide = true,
-            Transparency = 1, CastShadow = false, Color = "#6688CC"
-        };
-        Model.Children.Add(Root);
-        Humanoid = new SceneNode { Type = "Humanoid", Name = "Humanoid" };
-        Model.Children.Add(Humanoid);
-        Model.Children.Add(new SceneNode { Type = "BodyColors", Name = "Body Colors" });
-        body =
-        [
-            (CreateBodyPart("Torso", "Block", [1.35f, 1.7f, .8f], "#3973CF"), [0, .12f, 0]),
-            (CreateBodyPart("Head", "Ball", [1.15f, 1.15f, 1.15f], "#E3B98A"), [0, 1.32f, 0]),
-            (CreateBodyPart("LeftArm", "Block", [.42f, 1.5f, .42f], "#E3B98A"), [-1.02f, .08f, 0]),
-            (CreateBodyPart("RightArm", "Block", [.42f, 1.5f, .42f], "#E3B98A"), [1.02f, .08f, 0]),
-            (CreateBodyPart("LeftLeg", "Block", [.52f, 1.35f, .52f], "#343B58"), [-.37f, -1.05f, 0]),
-            (CreateBodyPart("RightLeg", "Block", [.52f, 1.35f, .52f], "#343B58"), [.37f, -1.05f, 0])
-        ];
-        foreach (var (part, offset) in body)
-        {
-            part.Position = [Root.Position[0] + offset[0], Root.Position[1] + offset[1], Root.Position[2] + offset[2]];
-            Model.Children.Add(part);
+            Model = customCharacter;
+            Model.Name = name;
+            Root = GameProjectStore.Flatten(Model.Children).FirstOrDefault(node => node.Name == "HumanoidRootPart" && SceneNodeTypes.IsBasePart(node))
+                ?? (SceneModelService.ContainsPrimaryPart(Model, Model.PrimaryPart)
+                    ? GameProjectStore.Flatten(Model.Children).First(node => node.Id == Model.PrimaryPart)
+                    : GameProjectStore.Flatten(Model.Children).FirstOrDefault(SceneNodeTypes.IsBasePart))
+                ?? CreateBodyPart("HumanoidRootPart", "Block", [1.4f, 3.6f, 1.4f], "#6688CC");
+            if (!GameProjectStore.Flatten(Model.Children).Any(node => node.Id == Root.Id)) Model.Children.Add(Root);
+            Root.Name = "HumanoidRootPart";
+            Root.Anchored = false;
+            Humanoid = GameProjectStore.Flatten(Model.Children).FirstOrDefault(node => node.Type == "Humanoid")
+                ?? new SceneNode { Type = "Humanoid", Name = "Humanoid" };
+            if (!GameProjectStore.Flatten(Model.Children).Any(node => node.Id == Humanoid.Id)) Model.Children.Add(Humanoid);
+            Humanoid.Health = Humanoid.MaxHealth;
+            if (!Model.Children.Any(node => node.Type == "BodyColors")) Model.Children.Add(new SceneNode { Type = "BodyColors", Name = "Body Colors" });
+            Model.PrimaryPart = Root.Id;
+            Model.HasModelPivot = true;
+            SceneModelService.MoveTo(Model, FindSpawnPosition());
+            body = GameProjectStore.Flatten(Model.Children).Where(SceneNodeTypes.IsBasePart)
+                .Select(part => (part, new float[] { 0, 0, 0 })).ToArray();
+            foreach (var motor in GameProjectStore.Flatten(Model.Children).Where(node => node.Type == "Motor6D")) motors[motor.Name] = motor;
         }
-        var torso = body[0].Node;
-        AddMotor("RootJoint", Root, torso, [0, .12f, 0], [0, 0, 0]);
-        AddMotor("Neck", torso, body[1].Node, [0, .625f, 0], [0, -.575f, 0]);
-        AddMotor("LeftShoulder", torso, body[2].Node, [-.84f, .60f, 0], [.18f, .64f, 0]);
-        AddMotor("RightShoulder", torso, body[3].Node, [.84f, .60f, 0], [-.18f, .64f, 0]);
-        AddMotor("LeftHip", torso, body[4].Node, [-.37f, -.5f, 0], [0, .67f, 0]);
-        AddMotor("RightHip", torso, body[5].Node, [.37f, -.5f, 0], [0, .67f, 0]);
+        else
+        {
+            Model = new SceneNode { Type = "Model", Name = name };
+            Root = new SceneNode
+            {
+                Type = "Part", Name = "HumanoidRootPart", Shape = "Block", Size = [1.4f, 3.6f, 1.4f],
+                Position = FindSpawnPosition(), Anchored = false, CanCollide = true,
+                Transparency = 1, CastShadow = false, Color = "#6688CC"
+            };
+            Model.Children.Add(Root);
+            Humanoid = new SceneNode { Type = "Humanoid", Name = "Humanoid" };
+            Model.Children.Add(Humanoid);
+            Model.Children.Add(new SceneNode { Type = "BodyColors", Name = "Body Colors" });
+            body =
+            [
+                (CreateBodyPart("Torso", "Block", [1.35f, 1.7f, .8f], "#3973CF"), [0, .12f, 0]),
+                (CreateBodyPart("Head", "Ball", [1.15f, 1.15f, 1.15f], "#E3B98A"), [0, 1.32f, 0]),
+                (CreateBodyPart("LeftArm", "Block", [.42f, 1.5f, .42f], "#E3B98A"), [-1.02f, .08f, 0]),
+                (CreateBodyPart("RightArm", "Block", [.42f, 1.5f, .42f], "#E3B98A"), [1.02f, .08f, 0]),
+                (CreateBodyPart("LeftLeg", "Block", [.52f, 1.35f, .52f], "#343B58"), [-.37f, -1.05f, 0]),
+                (CreateBodyPart("RightLeg", "Block", [.52f, 1.35f, .52f], "#343B58"), [.37f, -1.05f, 0])
+            ];
+            foreach (var (part, offset) in body)
+            {
+                part.Position = [Root.Position[0] + offset[0], Root.Position[1] + offset[1], Root.Position[2] + offset[2]];
+                Model.Children.Add(part);
+            }
+            var torso = body[0].Node;
+            AddMotor("RootJoint", Root, torso, [0, .12f, 0], [0, 0, 0]);
+            AddMotor("Neck", torso, body[1].Node, [0, .625f, 0], [0, -.575f, 0]);
+            AddMotor("LeftShoulder", torso, body[2].Node, [-.84f, .60f, 0], [.18f, .64f, 0]);
+            AddMotor("RightShoulder", torso, body[3].Node, [.84f, .60f, 0], [-.18f, .64f, 0]);
+            AddMotor("LeftHip", torso, body[4].Node, [-.37f, -.5f, 0], [0, .67f, 0]);
+            AddMotor("RightHip", torso, body[5].Node, [.37f, -.5f, 0], [0, .67f, 0]);
+        }
+        Humanoid.WalkSpeed = Math.Clamp(project.StarterPlayer.WalkSpeed, 0, 1000);
+        Humanoid.JumpPower = Math.Clamp(project.StarterPlayer.JumpPower, 0, 1000);
         SpawnProtection = new SceneNode { Type = "ForceField", Name = "ForceField", Enabled = SpawnLocation?.Duration > 0 };
         Model.Children.Add(SpawnProtection);
         project.Workspace.Children.Add(Model);
@@ -59,12 +91,13 @@ public sealed class PlayerCharacterService
     }
 
     public SceneNode Model { get; }
+    public IReadOnlyDictionary<string, string> RenewedIds { get; }
     public SceneNode Root { get; }
     public SceneNode Humanoid { get; }
     public SceneNode SpawnProtection { get; }
     public SceneNode? SpawnLocation { get; private set; }
     public bool IsSeated { get; set; }
-    public bool NeedsRespawn => Root.Position[1] < -60 || Humanoid.Health <= 0;
+    public bool NeedsRespawn => PhysicsSimulationService.IsPartBelowDestroyHeight(Root, project.Workspace.FallenPartsDestroyHeight) || Humanoid.Health <= 0;
 
     public void SetFacingYaw(float yaw) => facingYaw = yaw;
 

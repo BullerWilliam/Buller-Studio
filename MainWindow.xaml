@@ -284,6 +284,7 @@
               <Button Content="Group" Style="{StaticResource RibbonTool}" Click="GroupSelected_Click" ToolTip="Wrap selection in a Model (Ctrl+G)"/>
               <Button Content="Ungroup" Style="{StaticResource RibbonTool}" Width="70" MinWidth="70" Click="UngroupSelected_Click" ToolTip="Move a Model's children to its parent (Ctrl+Shift+G)"/>
               <Button Content="Anchor" Style="{StaticResource RibbonTool}" Click="AnchorSelection_Click"/>
+              <Button Content="Terrain" Style="{StaticResource RibbonTool}" Click="TerrainTools_Click" ToolTip="Create and clear terrain regions"/>
             </StackPanel>
             <TextBlock Text="Objects" FontSize="9" Foreground="#9DA0A4" HorizontalAlignment="Center"/>
           </StackPanel>

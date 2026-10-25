@@ -337,6 +337,8 @@ public sealed class SceneRenderService
             model.Visibility = node.Visible && (node.Type is not ("Decal" or "Texture") || model.Material is PhongMaterial { DiffuseMap: not null })
                 ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
         if (node.Type is not ("ImageLabel" or "Decal" or "Texture") && !(node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture))) model.Material = MakeMaterial(node);
+        if (node.Type == "Part" && node.Children.FirstOrDefault(SceneNodeTypes.IsSpecialMesh) is { } updatedSpecialMesh)
+            ApplySpecialMeshVertexColor(model, updatedSpecialMesh);
         if (node.Type == "MeshPart") ApplySurfaceAppearance(model, node, project);
         if (SceneNodeTypes.IsBasePart(node))
         {
@@ -522,7 +524,12 @@ public sealed class SceneRenderService
             cameraNode.Position[1] -= direction.Y * zoomDelta;
             cameraNode.Position[2] -= direction.Z * zoomDelta;
         }
-        else orbitDistance = Math.Clamp(orbitDistance + zoomDelta, 2, 100);
+        else
+        {
+            var minZoom = Math.Clamp(project?.StarterPlayer.CameraMinZoomDistance ?? 2, .5f, 1000);
+            var maxZoom = Math.Clamp(project?.StarterPlayer.CameraMaxZoomDistance ?? 100, minZoom, 1000);
+            orbitDistance = Math.Clamp(orbitDistance + zoomDelta, minZoom, maxZoom);
+        }
         UpdateCamera(project);
     }
 
@@ -583,6 +590,12 @@ public sealed class SceneRenderService
 
     public void UpdateCamera(GameProject? project = null)
     {
+        if (cameraNode.CameraMode != "Custom")
+        {
+            var minZoom = Math.Clamp(project?.StarterPlayer.CameraMinZoomDistance ?? 2, .5f, 1000);
+            var maxZoom = Math.Clamp(project?.StarterPlayer.CameraMaxZoomDistance ?? 100, minZoom, 1000);
+            orbitDistance = Math.Clamp(orbitDistance, minZoom, maxZoom);
+        }
         if (viewport.Camera is not HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera) return;
         camera.FieldOfView = cameraNode.FieldOfView;
         if (cameraNode.CameraMode == "Subject")
@@ -622,6 +635,13 @@ public sealed class SceneRenderService
     {
         var builder = new MeshBuilder();
         var specialMesh = node.Type == "Part" ? node.Children.FirstOrDefault(SceneNodeTypes.IsSpecialMesh) : null;
+        var specialMeshType = specialMesh is null ? null : specialMesh.Type switch
+        {
+            "BlockMesh" => "Brick",
+            "CylinderMesh" => "Cylinder",
+            "FileMesh" => "FileMesh",
+            _ => specialMesh.SpecialMeshType
+        };
         if (node.Type == "ImageLabel")
         {
             const float halfX = .5f; const float halfY = .5f;
@@ -635,14 +655,17 @@ public sealed class SceneRenderService
             try { builder = ReadObj(ResolveAsset(project, node.Asset)); }
             catch { builder.AddBox(Vector3.Zero, 1, 1, 1); }
         }
-        else if (specialMesh is not null && specialMesh.SpecialMeshType == "FileMesh" && !string.IsNullOrWhiteSpace(specialMesh.Asset) && File.Exists(ResolveAsset(project, specialMesh.Asset)))
+        else if (specialMesh is not null && specialMeshType == "FileMesh" && !string.IsNullOrWhiteSpace(specialMesh.Asset) && File.Exists(ResolveAsset(project, specialMesh.Asset)))
         {
             try { builder = ReadObj(ResolveAsset(project, specialMesh.Asset)); }
             catch { builder.AddBox(Vector3.Zero, 1, 1, 1); }
         }
-        else if (specialMesh is not null && specialMesh.SpecialMeshType is "Sphere" or "Head") builder.AddSphere(Vector3.Zero, .5, 24, 16);
-        else if (specialMesh is not null && specialMesh.SpecialMeshType == "Cylinder") builder.AddCylinder(new Vector3(0, -.5f, 0), new Vector3(0, .5f, 0), .5, 24, true, true);
-        else if (specialMesh is not null && specialMesh.SpecialMeshType == "Wedge") AddWedge(builder);
+        else if (specialMesh is not null && specialMeshType is "Sphere" or "Head") builder.AddSphere(Vector3.Zero, .5, 24, 16);
+        else if (specialMesh is not null && specialMeshType == "Cylinder") builder.AddCylinder(new Vector3(0, -.5f, 0), new Vector3(0, .5f, 0), .5, 24, true, true);
+        else if (specialMesh is not null && specialMeshType is "Wedge" or "ParallelRamp" or "RightAngleRamp") AddWedge(builder);
+        else if (specialMesh is not null && specialMeshType == "CornerWedge") AddCornerWedge(builder);
+        else if (specialMesh is not null && specialMeshType == "Prism") AddPrism(builder);
+        else if (specialMesh is not null && specialMeshType == "Pyramid") AddPyramid(builder);
         else if (node.Type == "Part" && node.Shape == "Ball") builder.AddSphere(Vector3.Zero, .5, 24, 16);
         else if (node.Type == "Part" && node.Shape == "Cylinder") builder.AddCylinder(new Vector3(0, -.5f, 0), new Vector3(0, .5f, 0), .5, 24, true, true);
         else if (node.Type == "WedgePart") AddWedge(builder);
@@ -655,12 +678,7 @@ public sealed class SceneRenderService
         var geometry = builder.ToMeshGeometry3D();
         if (node.Type == "Texture" && decalParent is not null) ApplyTextureTiling(geometry, node, decalParent);
         var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = TransformForVisual(node, project), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment" or "Explosion") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture" or "Explosion"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel" or "Explosion") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
-        if (specialMesh is not null && visual.Material is PhongMaterial meshMaterial)
-        {
-            var tint = specialMesh.SpecialMeshVertexColor;
-            var diffuse = meshMaterial.DiffuseColor;
-            meshMaterial.DiffuseColor = new Color4(diffuse.Red * tint[0], diffuse.Green * tint[1], diffuse.Blue * tint[2], diffuse.Alpha);
-        }
+        if (specialMesh is not null) ApplySpecialMeshVertexColor(visual, specialMesh);
         if (node.Type == "MeshPart") ApplySurfaceAppearance(visual, node, project);
         if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type is "Decal" or "Texture" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
@@ -678,12 +696,20 @@ public sealed class SceneRenderService
         "Decal" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
         "Texture" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency}|{node.StudsPerTileU}|{node.StudsPerTileV}|{node.OffsetStudsU}|{node.OffsetStudsV}|{string.Join(',', FindPartParent(project, node)?.Size ?? [])}",
         "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}|{string.Join('|', node.Children.Where(SceneNodeTypes.IsSurfaceAppearance).Select(surface => $"{ResolveAsset(project, surface.SurfaceAppearanceColorMap)}:{ResolveAsset(project, surface.SurfaceAppearanceNormalMap)}:{ResolveAsset(project, surface.SurfaceAppearanceRoughnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceMetalnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceEmissiveMask)}:{surface.SurfaceAppearanceColor}:{surface.SurfaceAppearanceEmissiveTint}:{surface.SurfaceAppearanceEmissiveStrength}"))}",
-        "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}|{string.Join('|', node.Children.Where(SceneNodeTypes.IsSpecialMesh).Select(mesh => $"{mesh.SpecialMeshType}:{mesh.SpecialMeshScale[0]},{mesh.SpecialMeshScale[1]},{mesh.SpecialMeshScale[2]}:{mesh.SpecialMeshOffset[0]},{mesh.SpecialMeshOffset[1]},{mesh.SpecialMeshOffset[2]}:{string.Join(',', mesh.SpecialMeshVertexColor)}:{ResolveAsset(project, mesh.Asset)}:{ResolveTexture(project, mesh.Texture)}"))}",
+        "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}|{string.Join('|', node.Children.Where(SceneNodeTypes.IsSpecialMesh).Select(mesh => $"{(mesh.Type == "BlockMesh" ? "Brick" : mesh.Type == "CylinderMesh" ? "Cylinder" : mesh.Type == "FileMesh" ? "FileMesh" : mesh.SpecialMeshType)}:{mesh.SpecialMeshScale[0]},{mesh.SpecialMeshScale[1]},{mesh.SpecialMeshScale[2]}:{mesh.SpecialMeshOffset[0]},{mesh.SpecialMeshOffset[1]},{mesh.SpecialMeshOffset[2]}:{string.Join(',', mesh.SpecialMeshVertexColor)}:{ResolveAsset(project, mesh.Asset)}:{ResolveTexture(project, mesh.Texture)}"))}",
         "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat" or "VehicleSeat" => MaterialKey(node),
         _ => string.Empty
     };
 
     private static string MaterialKey(SceneNode node) => $"{node.Material}|{node.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+
+    private static void ApplySpecialMeshVertexColor(MeshGeometryModel3D visual, SceneNode specialMesh)
+    {
+        if (visual.Material is not PhongMaterial material) return;
+        var tint = specialMesh.SpecialMeshVertexColor;
+        var diffuse = material.DiffuseColor;
+        material.DiffuseColor = new Color4(diffuse.Red * tint[0], diffuse.Green * tint[1], diffuse.Blue * tint[2], diffuse.Alpha);
+    }
 
     private static float EffectiveTransparency(SceneNode node) => Math.Clamp(Math.Max(node.Transparency, node.Material == "Glass" ? .55f : 0), 0, 1);
 
@@ -697,10 +723,17 @@ public sealed class SceneRenderService
 
     private static Transform3D AttachmentTransformFor(SceneNode attachment, GameProject project)
     {
-        var parent = FindPartParent(project, attachment);
+        var parent = FindSceneParent(project, attachment);
         if (parent is null) return Transform3D.Identity;
-        var point = TransformFor(parent, false).Transform(new Point3D(attachment.Position[0], attachment.Position[1], attachment.Position[2]));
-        return new TranslateTransform3D(point.X, point.Y, point.Z);
+        var transform = new Transform3DGroup();
+        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 0, 1), attachment.Rotation[2])));
+        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(1, 0, 0), attachment.Rotation[0])));
+        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), attachment.Rotation[1])));
+        transform.Children.Add(new TranslateTransform3D(attachment.Position[0], attachment.Position[1], attachment.Position[2]));
+        transform.Children.Add(parent.Type == "Attachment"
+            ? AttachmentTransformFor(parent, project)
+            : TransformFor(parent, false));
+        return transform;
     }
 
     private void RefreshBeams(GameProject project)
@@ -717,11 +750,9 @@ public sealed class SceneRenderService
             if (!attachments.TryGetValue(beam.Attachment0, out var first)
                 || !attachments.TryGetValue(beam.Attachment1, out var second)
                 || ReferenceEquals(first, second)) continue;
-            var firstPart = parts.FirstOrDefault(part => part.Children.Contains(first));
-            var secondPart = parts.FirstOrDefault(part => part.Children.Contains(second));
-            if (firstPart is null || secondPart is null) continue;
-            var start = TransformFor(firstPart, false).Transform(new Point3D(first.Position[0], first.Position[1], first.Position[2]));
-            var end = TransformFor(secondPart, false).Transform(new Point3D(second.Position[0], second.Position[1], second.Position[2]));
+            if (!parts.Any(part => IsDescendantOf(first, part)) || !parts.Any(part => IsDescendantOf(second, part))) continue;
+            var start = AttachmentTransformFor(first, project).Transform(new Point3D(0, 0, 0));
+            var end = AttachmentTransformFor(second, project).Transform(new Point3D(0, 0, 0));
             if ((end - start).Length < .001 || beam.Width0 <= 0 && beam.Width1 <= 0) continue;
             activeIds.Add(beam.Id);
             var state = new BeamState(start, end, beam.Width0, beam.Width1, beam.Color, beam.Transparency);
@@ -764,13 +795,29 @@ public sealed class SceneRenderService
         }
     }
 
-    private static SceneNode? FindPartParent(GameProject project, SceneNode child) =>
-        GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(parent => SceneNodeTypes.IsBasePart(parent) && parent.Children.Contains(child));
+    private static SceneNode? FindSceneParent(GameProject project, SceneNode child) =>
+        GameProjectStore.Flatten(project.Workspace.Children).FirstOrDefault(parent => parent.Children.Contains(child));
+
+    private static SceneNode? FindPartParent(GameProject project, SceneNode child)
+    {
+        for (var parent = FindSceneParent(project, child); parent is not null; parent = FindSceneParent(project, parent))
+            if (SceneNodeTypes.IsBasePart(parent)) return parent;
+        return null;
+    }
+
+    private static SceneNode? FindAttachmentParent(GameProject project, SceneNode child)
+    {
+        for (var parent = FindSceneParent(project, child); parent is not null; parent = FindSceneParent(project, parent))
+            if (parent.Type == "Attachment") return parent;
+        return null;
+    }
+
+    private static bool IsDescendantOf(SceneNode node, SceneNode ancestor)
+        => ReferenceEquals(node, ancestor) || GameProjectStore.Flatten(ancestor.Children).Any(child => child.Id == node.Id);
 
     private void AdvanceTrails(GameProject project, float elapsedSeconds)
     {
         var nodes = GameProjectStore.Flatten(project.Workspace.Children);
-        var parts = nodes.Where(SceneNodeTypes.IsBasePart).ToArray();
         var attachments = nodes.Where(node => node.Type == "Attachment").ToDictionary(node => node.Id, StringComparer.Ordinal);
         foreach (var trail in nodes.Where(node => node.Type == "Trail"))
         {
@@ -793,15 +840,15 @@ public sealed class SceneRenderService
                 TrailGeometryService.AdvanceSamples(trail, samples, null, now);
                 continue;
             }
-            var firstPart = parts.FirstOrDefault(part => part.Children.Contains(first));
-            var secondPart = parts.FirstOrDefault(part => part.Children.Contains(second));
+            var firstPart = FindPartParent(project, first);
+            var secondPart = FindPartParent(project, second);
             if (firstPart is null || secondPart is null)
             {
                 TrailGeometryService.AdvanceSamples(trail, samples, null, now);
                 continue;
             }
-            var point0 = ToVector(TransformFor(firstPart, false).Transform(new Point3D(first.Position[0], first.Position[1], first.Position[2])));
-            var point1 = ToVector(TransformFor(secondPart, false).Transform(new Point3D(second.Position[0], second.Position[1], second.Position[2])));
+            var point0 = ToVector(AttachmentTransformFor(first, project).Transform(new Point3D(0, 0, 0)));
+            var point1 = ToVector(AttachmentTransformFor(second, project).Transform(new Point3D(0, 0, 0)));
             TrailGeometryService.AdvanceSamples(trail, samples, new TrailSample(now, point0, point1), now);
         }
     }
@@ -865,7 +912,6 @@ public sealed class SceneRenderService
     private void RefreshParticleEffects(GameProject project)
     {
         var workspaceNodes = GameProjectStore.Flatten(project.Workspace.Children);
-        var parts = workspaceNodes.Where(SceneNodeTypes.IsBasePart).ToArray();
         var effects = workspaceNodes.Where(SceneNodeTypes.IsParticleEffect).ToArray();
         hasParticleEffects = effects.Length > 0;
         var activeIds = new HashSet<string>(StringComparer.Ordinal);
@@ -873,20 +919,12 @@ public sealed class SceneRenderService
         {
             if (effect.Type == "ParticleEmitter") UpdateParticleEmitterState(effect);
             else if (!effect.Enabled || effect.Type == "Smoke" && effect.Opacity <= 0) continue;
-            var part = parts.FirstOrDefault(item => item.Children.Contains(effect));
-            SceneNode? attachment = null;
-            if (part is null)
-                foreach (var candidate in parts)
-                {
-                    attachment = candidate.Children.FirstOrDefault(child => child.Type == "Attachment" && child.Children.Contains(effect));
-                    if (attachment is null) continue;
-                    part = candidate;
-                    break;
-                }
+            var part = FindPartParent(project, effect);
+            var attachment = FindAttachmentParent(project, effect);
             if (part is null) continue;
             if (effect.Type == "ParticleEmitter" && !HasVisibleParticleEmitterParticles(effect)) continue;
             activeIds.Add(effect.Id);
-            var transform = ParticleEffectTransform(part, attachment);
+            var transform = ParticleEffectTransform(part, attachment, project);
             var phase = particleEffectTimes.GetValueOrDefault(effect.Id);
             var texture = effect.Type == "ParticleEmitter" ? GetParticleTexture(project, effect.Texture) : null;
             if (!particleEffectVisuals.TryGetValue(effect.Id, out var visual))
@@ -912,7 +950,7 @@ public sealed class SceneRenderService
             visual.Outer.Transform = transform;
             if (visual.Inner is not null)
             {
-                visual.Inner.Geometry = BuildParticleEffectGeometry(effect, phase, true, part.Size);
+                visual.Inner.Geometry = BuildParticleEffectGeometry(effect, phase, true, attachment is null ? part.Size : [1, 1, 1]);
                 visual.Inner.Material = ParticleEffectMaterial(effect.SecondaryColor, .72f, true);
                 visual.Inner.Transform = transform;
             }
@@ -933,16 +971,10 @@ public sealed class SceneRenderService
         foreach (var id in particleWasEnabled.Keys.Where(id => !workspaceIds.Contains(id)).ToArray()) particleWasEnabled.Remove(id);
     }
 
-    private static Transform3D ParticleEffectTransform(SceneNode part, SceneNode? attachment)
+    private static Transform3D ParticleEffectTransform(SceneNode part, SceneNode? attachment, GameProject project)
     {
         if (attachment is null) return TransformFor(part, false);
-        var transform = new Transform3DGroup();
-        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 0, 1), attachment.Rotation[2])));
-        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(1, 0, 0), attachment.Rotation[0])));
-        transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), attachment.Rotation[1])));
-        transform.Children.Add(new TranslateTransform3D(attachment.Position[0], attachment.Position[1], attachment.Position[2]));
-        transform.Children.Add(TransformFor(part, false));
-        return transform;
+        return AttachmentTransformFor(attachment, project);
     }
 
     private (Vector3 Position, Vector3 Up)? CameraInParticleSpace(Transform3D transform)
@@ -1246,6 +1278,35 @@ public sealed class SceneRenderService
         builder.AddTriangle(d, c, e);
         builder.AddTriangle(c, b, e);
         builder.AddTriangle(b, a, e);
+    }
+
+    private static void AddPrism(MeshBuilder builder)
+    {
+        var a = new Vector3(-.5f, -.5f, -.5f);
+        var b = new Vector3(.5f, -.5f, -.5f);
+        var c = new Vector3(0, .5f, -.5f);
+        var d = new Vector3(-.5f, -.5f, .5f);
+        var e = new Vector3(.5f, -.5f, .5f);
+        var f = new Vector3(0, .5f, .5f);
+        builder.AddTriangle(a, b, c);
+        builder.AddTriangle(d, f, e);
+        builder.AddQuad(a, d, e, b);
+        builder.AddQuad(a, c, f, d);
+        builder.AddQuad(b, e, f, c);
+    }
+
+    private static void AddPyramid(MeshBuilder builder)
+    {
+        var a = new Vector3(-.5f, -.5f, -.5f);
+        var b = new Vector3(.5f, -.5f, -.5f);
+        var c = new Vector3(.5f, -.5f, .5f);
+        var d = new Vector3(-.5f, -.5f, .5f);
+        var tip = new Vector3(0, .5f, 0);
+        builder.AddQuad(a, b, c, d);
+        builder.AddTriangle(a, tip, b);
+        builder.AddTriangle(b, tip, c);
+        builder.AddTriangle(c, tip, d);
+        builder.AddTriangle(d, tip, a);
     }
 
     private static void AddSpawnLocation(MeshBuilder builder)
@@ -1748,11 +1809,14 @@ public sealed class SceneRenderService
             "Plastic" or "SmoothPlastic" => .14f,
             _ => .03f
         };
+        specular += (1 - specular) * Math.Clamp(node.Reflectance, 0, 1);
         return new PhongMaterial
         {
             DiffuseColor = new Color4(red, green, blue, parsed.A / 255f * (1 - EffectiveTransparency(node))),
             SpecularColor = new Color4(specular, specular, specular, 1),
-            SpecularShininess = node.Material is "Metal" or "CorrodedMetal" or "DiamondPlate" or "Foil" or "Glass" or "Ice" or "Glacier" ? 100 : 24,
+            SpecularShininess = node.Reflectance > 0
+                ? 24 + 128 * Math.Clamp(node.Reflectance, 0, 1)
+                : node.Material is "Metal" or "CorrodedMetal" or "DiamondPlate" or "Foil" or "Glass" or "Ice" or "Glacier" ? 100 : 24,
             EmissiveColor = node.Material == "Neon"
                 ? new Color4(red * (.5f + bloomStrength), green * (.5f + bloomStrength), blue * (.5f + bloomStrength), 1)
                 : new Color4(red * bloomStrength, green * bloomStrength, blue * bloomStrength, 1)

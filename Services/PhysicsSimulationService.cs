@@ -97,7 +97,7 @@ public sealed class PhysicsSimulationService
         }
     }
 
-    private static bool IsPartBelowDestroyHeight(SceneNode part, float height)
+    public static bool IsPartBelowDestroyHeight(SceneNode part, float height)
     {
         var halfSize = new Vector3(Math.Max(0, part.Size[0]) * .5f, Math.Max(0, part.Size[1]) * .5f, Math.Max(0, part.Size[2]) * .5f);
         var rotation = RotationMath.FromDegrees(part.Rotation);
@@ -898,7 +898,7 @@ public sealed class PhysicsSimulationService
         return forces;
     }
 
-    public static float PartMass(SceneNode part) => Math.Max(.1f,
+    public static float PartMass(SceneNode part) => part.Massless ? .1f : Math.Max(.1f,
         Math.Abs(part.Size[0] * part.Size[1] * part.Size[2]));
 
     public static Vector3 AssemblyCenterOfMass(GameProject project, SceneNode part)

@@ -3,30 +3,66 @@ using BullerStudio.Models;
 
 namespace BullerStudio.Services;
 
-public sealed record ProximityPromptTarget(SceneNode Prompt, SceneNode Parent, float Distance);
+public sealed record ProximityPromptTarget(SceneNode Prompt, SceneNode Parent, float Distance, bool IsIndicatorOnly);
 
 public static class ProximityPromptService
 {
-    public static ProximityPromptTarget? FindNearest(GameProject project, SceneNode playerRoot)
+    public static ProximityPromptTarget? FindNearest(GameProject project, SceneNode playerRoot, bool enabled = true)
     {
+        if (!enabled) return null;
         ProximityPromptTarget? closest = null;
         var workspaceNodes = GameProjectStore.Flatten(project.Workspace.Children).ToArray();
+        var playerPosition = ToVector(playerRoot.Position);
         var ignoredIds = new HashSet<string>(StringComparer.Ordinal) { playerRoot.Id };
         if (FindModelContaining(project.Workspace, playerRoot.Id) is { } character)
             foreach (var part in GameProjectStore.Flatten(character.Children).Where(SceneNodeTypes.IsBasePart)) ignoredIds.Add(part.Id);
         var occluders = workspaceNodes.Where(node => SceneNodeTypes.IsBasePart(node) && node.CanQuery && !ignoredIds.Contains(node.Id)).ToArray();
         foreach (var parent in workspaceNodes.Where(SceneNodeTypes.IsBasePart))
-        foreach (var prompt in parent.Children.Where(node => node.Type == "ProximityPrompt" && node.Enabled))
+        foreach (var (prompt, attachmentPosition) in GetPrompts(parent))
         {
-            var distance = DistanceToPartSurface(parent, playerRoot);
-            var range = Math.Clamp(prompt.MaxActivationDistance, 1, 100);
+            var distance = attachmentPosition is { } point
+                ? Vector3.Distance(playerPosition, point)
+                : DistanceToPartSurface(parent, playerRoot);
+            var activationRange = Math.Clamp(prompt.MaxActivationDistance, 1, 100);
+            var indicatorRange = Math.Clamp(prompt.MaxIndicatorDistance, 0, 1000);
+            var range = Math.Max(activationRange, indicatorRange);
             if (distance > range) continue;
-            if (prompt.RequiresLineOfSight && !HasLineOfSight(parent, playerRoot, occluders)) continue;
-            if (closest is null || distance < closest.Distance)
-                closest = new ProximityPromptTarget(prompt, parent, distance);
+            if (prompt.RequiresLineOfSight && !HasLineOfSight(parent, playerRoot, occluders, attachmentPosition)) continue;
+            var indicatorOnly = distance > activationRange;
+            if (closest is null
+                || closest.IsIndicatorOnly && !indicatorOnly
+                || closest.IsIndicatorOnly == indicatorOnly && distance < closest.Distance)
+                closest = new ProximityPromptTarget(prompt, parent, distance, indicatorOnly);
         }
         return closest;
     }
+
+    private static IEnumerable<(SceneNode Prompt, Vector3? Position)> GetPrompts(SceneNode part)
+    {
+        var partPosition = ToVector(part.Position);
+        var partRotation = RotationMath.FromDegrees(part.Rotation);
+        foreach (var child in part.Children)
+        {
+            if (child.Type == "ProximityPrompt" && child.Enabled) yield return (child, null);
+            else if (child.Type == "Attachment")
+                foreach (var prompt in GetAttachmentPrompts(child, partPosition, partRotation)) yield return prompt;
+        }
+    }
+
+    private static IEnumerable<(SceneNode Prompt, Vector3? Position)> GetAttachmentPrompts(
+        SceneNode attachment, Vector3 parentPosition, Matrix4x4 parentRotation)
+    {
+        var worldPosition = parentPosition + Vector3.Transform(ToVector(attachment.Position), parentRotation);
+        var worldRotation = RotationMath.FromDegrees(attachment.Rotation) * parentRotation;
+        foreach (var child in attachment.Children)
+        {
+            if (child.Type == "ProximityPrompt" && child.Enabled) yield return (child, worldPosition);
+            else if (child.Type == "Attachment")
+                foreach (var prompt in GetAttachmentPrompts(child, worldPosition, worldRotation)) yield return prompt;
+        }
+    }
+
+    private static Vector3 ToVector(float[] values) => new(values[0], values[1], values[2]);
 
     private static SceneNode? FindModelContaining(SceneNode node, string descendantId)
     {
@@ -38,10 +74,10 @@ public static class ProximityPromptService
         return null;
     }
 
-    private static bool HasLineOfSight(SceneNode target, SceneNode playerRoot, IReadOnlyList<SceneNode> occluders)
+    private static bool HasLineOfSight(SceneNode target, SceneNode playerRoot, IReadOnlyList<SceneNode> occluders, Vector3? targetPosition = null)
     {
         var origin = new Vector3(playerRoot.Position[0], playerRoot.Position[1], playerRoot.Position[2]);
-        var destination = new Vector3(target.Position[0], target.Position[1], target.Position[2]);
+        var destination = targetPosition ?? new Vector3(target.Position[0], target.Position[1], target.Position[2]);
         var direction = destination - origin;
         var distance = direction.Length();
         if (distance <= .001f) return true;

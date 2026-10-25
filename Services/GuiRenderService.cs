@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Media3D;
+using System.Windows.Input;
 using Vector3 = System.Numerics.Vector3;
 using BullerStudio.Models;
 
@@ -13,9 +14,9 @@ namespace BullerStudio.Services;
 
 public static class GuiRenderService
 {
-    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIPageLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"];
+    private static readonly HashSet<string> Components = ["UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIPageLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem", "UIDragDetector"];
 
-    public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, SceneNode? screenGuiRoot = null, Action<SceneNode, string>? propertyChanged = null)
+    public static Canvas Render(GameProject project, bool isInteractive, double viewportWidth, double viewportHeight, string? selectedId = null, Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, SceneNode? screenGuiRoot = null, Action<SceneNode, string>? propertyChanged = null, Action<SceneNode, string, double, double>? dragSignal = null, Action<SceneNode, string>? mouseButtonSignal = null, Action<SceneNode, string, bool>? textFocusSignal = null)
     {
         var canvas = new Canvas { Background = Brushes.Transparent, ClipToBounds = true, IsHitTestVisible = isInteractive };
         var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
@@ -23,7 +24,7 @@ public static class GuiRenderService
         foreach (var screen in (screenGuiRoot ?? project.Gui).Children.Where(node => node.Type == "ScreenGui" && node.Enabled && node.Visible).OrderBy(node => node.DisplayOrder))
         {
             var screenCanvas = new Canvas { Width = width, Height = height, Background = Brushes.Transparent };
-            AddChildren(screenCanvas, screen, project, width, height, selectedId, activated, textChanged, propertyChanged);
+            AddChildren(screenCanvas, screen, project, width, height, selectedId, activated, textChanged, propertyChanged, dragSignal, mouseButtonSignal, textFocusSignal);
             if (screen.Id == selectedId)
             {
                 var outline = new Border { Width = width, Height = height, BorderBrush = new SolidColorBrush(Color.FromRgb(74, 163, 255)), BorderThickness = new Thickness(2), IsHitTestVisible = false };
@@ -39,7 +40,7 @@ public static class GuiRenderService
 
     public static void AddBillboards(Canvas canvas, GameProject project, Vector3 cameraPosition, Vector3 lookDirection,
         Vector3 upDirection, float fieldOfView, double viewportWidth, double viewportHeight, bool isInteractive,
-        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null, Action<SceneNode, string>? propertyChanged = null)
+        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null, Action<SceneNode, string>? propertyChanged = null, Action<SceneNode, string, double, double>? dragSignal = null, Action<SceneNode, string>? mouseButtonSignal = null, Action<SceneNode, string, bool>? textFocusSignal = null)
     {
         var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
         var height = double.IsFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
@@ -58,7 +59,7 @@ public static class GuiRenderService
                 ClipToBounds = billboard.ClipsDescendants,
                 IsHitTestVisible = isInteractive
             };
-            AddChildren(element, billboard, project, billboardWidth, billboardHeight, selectedId, activated, textChanged, propertyChanged);
+            AddChildren(element, billboard, project, billboardWidth, billboardHeight, selectedId, activated, textChanged, propertyChanged, dragSignal, mouseButtonSignal, textFocusSignal);
             Panel.SetZIndex(element, billboard.AlwaysOnTop ? int.MaxValue : int.MinValue);
             canvas.Children.Add(element);
         }
@@ -74,7 +75,7 @@ public static class GuiRenderService
         {
             var billboard = (SceneNode)visual.Tag;
             var adornee = ResolveBillboardAdornee(project, billboard);
-            if (!billboard.Enabled || adornee is null || !TryProjectBillboard(adornee.Position, cameraPosition, lookDirection,
+            if (!billboard.Enabled || adornee is null || !TryProjectBillboard(ApplyBillboardOffset(adornee.Position, billboard.StudsOffset, billboard.StudsOffsetWorldSpace, lookDirection, upDirection), cameraPosition, lookDirection,
                     upDirection, fieldOfView, width, height, out var screenX, out var screenY, out var distance)
                 || billboard.MaxDistance > 0 && distance > billboard.MaxDistance
                 || !billboard.AlwaysOnTop && IsBillboardOccluded(project, adornee, cameraPosition))
@@ -90,7 +91,7 @@ public static class GuiRenderService
 
     public static void AddSurfaceGuis(Canvas canvas, GameProject project, Vector3 cameraPosition, Vector3 lookDirection,
         Vector3 upDirection, float fieldOfView, double viewportWidth, double viewportHeight, bool isInteractive,
-        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null, Action<SceneNode, string>? propertyChanged = null)
+        Action<SceneNode>? activated = null, Action<SceneNode, string>? textChanged = null, string? selectedId = null, Action<SceneNode, string>? propertyChanged = null, Action<SceneNode, string, double, double>? dragSignal = null, Action<SceneNode, string>? mouseButtonSignal = null, Action<SceneNode, string, bool>? textFocusSignal = null)
     {
         var width = double.IsFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
         var height = double.IsFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 800;
@@ -110,7 +111,7 @@ public static class GuiRenderService
                 IsHitTestVisible = isInteractive,
                 RenderTransformOrigin = new Point(.5, .5)
             };
-            AddChildren(element, surfaceGui, project, guiWidth, guiHeight, selectedId, activated, textChanged, propertyChanged);
+            AddChildren(element, surfaceGui, project, guiWidth, guiHeight, selectedId, activated, textChanged, propertyChanged, dragSignal, mouseButtonSignal, textFocusSignal);
             Panel.SetZIndex(element, surfaceGui.AlwaysOnTop ? int.MaxValue : int.MinValue + 1);
             canvas.Children.Add(element);
         }
@@ -230,6 +231,18 @@ public static class GuiRenderService
         return double.IsFinite(screenX) && double.IsFinite(screenY);
     }
 
+    private static float[] ApplyBillboardOffset(float[] origin, float[] offset, float[] worldOffset, Vector3 lookDirection, Vector3 upDirection)
+    {
+        if (origin.Length < 3 || offset.Length < 3 || worldOffset.Length < 3 || lookDirection.LengthSquared() < .000001f) return origin;
+        var look = Vector3.Normalize(lookDirection);
+        var right = Vector3.Cross(look, upDirection);
+        if (right.LengthSquared() < .000001f) return origin;
+        right = Vector3.Normalize(right);
+        var screenUp = Vector3.Normalize(Vector3.Cross(right, look));
+        var displacement = new Vector3(worldOffset[0], worldOffset[1], worldOffset[2]) + right * offset[0] + screenUp * offset[1] + look * offset[2];
+        return [origin[0] + displacement.X, origin[1] + displacement.Y, origin[2] + displacement.Z];
+    }
+
     private static bool IsBillboardOccluded(GameProject project, SceneNode adornee, Vector3 cameraPosition)
     {
         return IsWorldGuiOccluded(project, adornee, new Vector3(adornee.Position[0], adornee.Position[1], adornee.Position[2]), cameraPosition);
@@ -250,7 +263,7 @@ public static class GuiRenderService
         return false;
     }
 
-    private static void AddChildren(Canvas canvas, SceneNode parent, GameProject project, double availableWidth, double availableHeight, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged)
+    private static void AddChildren(Canvas canvas, SceneNode parent, GameProject project, double availableWidth, double availableHeight, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged, Action<SceneNode, string, double, double>? dragSignal, Action<SceneNode, string>? mouseButtonSignal, Action<SceneNode, string, bool>? textFocusSignal)
     {
         var padding = GetPadding(parent, availableWidth, availableHeight);
         var innerWidth = Math.Max(0, availableWidth - padding.Left - padding.Right);
@@ -352,7 +365,7 @@ public static class GuiRenderService
             }
             left -= Math.Clamp(node.AnchorPoint[0], 0, 1) * width * visualScale;
             top -= Math.Clamp(node.AnchorPoint[1], 0, 1) * height * visualScale;
-            var visual = CreateNode(node, project, width, height, selectedId, activated, textChanged, propertyChanged);
+            var visual = CreateNode(node, project, width, height, selectedId, activated, textChanged, propertyChanged, dragSignal, mouseButtonSignal, textFocusSignal);
             if (visual is null) continue;
             Canvas.SetLeft(visual, left);
             Canvas.SetTop(visual, top);
@@ -361,7 +374,7 @@ public static class GuiRenderService
         }
     }
 
-    private static FrameworkElement? CreateNode(SceneNode node, GameProject project, double width, double height, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged)
+    private static FrameworkElement? CreateNode(SceneNode node, GameProject project, double width, double height, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged, Action<SceneNode, string, double, double>? dragSignal, Action<SceneNode, string>? mouseButtonSignal, Action<SceneNode, string, bool>? textFocusSignal)
     {
         var rounded = node.Children.FirstOrDefault(child => child.Type == "UICorner");
         var outline = node.Children.FirstOrDefault(child => child.Enabled && child.Type is ("UIOutline" or "UIStroke"));
@@ -386,7 +399,7 @@ public static class GuiRenderService
         if (node.Type == "UICanvasGroup") root.Opacity = 1 - Math.Clamp(node.GroupTransparency, 0, 1);
         var content = new Grid();
         root.Child = content;
-        var element = CreateVisual(node, project, width, height, activated, textChanged, propertyChanged);
+        var element = CreateVisual(node, project, width, height, activated, textChanged, propertyChanged, mouseButtonSignal, textFocusSignal);
         var textShadows = node.Children.Where(child => child.Type == "UIShadow" && child.Enabled && child.ShadowMode == "Text")
             .OrderBy(child => child.ZIndex).ToArray();
         if (textShadows.Length > 0 && parentSupportsTextShadow(node))
@@ -456,7 +469,7 @@ public static class GuiRenderService
             content.Children.Add(scroll);
         }
         else content.Children.Add(childCanvas);
-        AddChildren(childCanvas, node, project, width, height, selectedId, activated, textChanged, propertyChanged);
+        AddChildren(childCanvas, node, project, width, height, selectedId, activated, textChanged, propertyChanged, dragSignal, mouseButtonSignal, textFocusSignal);
         if (node.Type == "ScrollingFrame" && node.AutomaticCanvasSize != "None")
         {
             var contentWidth = childCanvas.Children.OfType<FrameworkElement>()
@@ -478,13 +491,122 @@ public static class GuiRenderService
             content.Children.Add(new Border { BorderBrush = new SolidColorBrush(Color.FromRgb(74, 163, 255)), BorderThickness = new Thickness(2), IsHitTestVisible = false });
         var outerShadows = node.Children.Where(child => child.Type == "UIShadow" && child.Enabled && child.ShadowMode == "Shape" && !child.ShadowInset)
             .OrderBy(child => child.ZIndex).ToArray();
-        if (outerShadows.Length == 0) return root;
+        if (outerShadows.Length == 0)
+        {
+            AttachDragBehavior(root, node, propertyChanged, dragSignal);
+            return root;
+        }
         var layer = new Canvas { Tag = node, Width = width, Height = height, RenderTransform = transform };
         root.RenderTransform = null;
         foreach (var shadow in outerShadows)
             layer.Children.Add(CreateShadowVisual(node, shadow, width, height, rounded));
         layer.Children.Add(root);
+        AttachDragBehavior(layer, node, propertyChanged, dragSignal);
         return layer;
+    }
+
+    private static void AttachDragBehavior(FrameworkElement visual, SceneNode node, Action<SceneNode, string>? propertyChanged, Action<SceneNode, string, double, double>? dragSignal)
+    {
+        var detectors = node.Children.Where(child => child.Type == "UIDragDetector").ToArray();
+        if (propertyChanged is null || detectors.Length == 0) return;
+        var dragging = false;
+        SceneNode? activeDetector = null;
+        var pointerStart = new Point();
+        var leftStart = 0d;
+        var topStart = 0d;
+        var xStart = node.Position[0];
+        var yStart = node.Position[1];
+        bool BeginDrag(Point pointer, Func<bool> capture)
+        {
+            if (dragging) return false;
+            activeDetector = detectors.FirstOrDefault(detector => detector.Enabled);
+            if (activeDetector is null) return false;
+            pointerStart = pointer;
+            leftStart = Canvas.GetLeft(visual);
+            topStart = Canvas.GetTop(visual);
+            if (!double.IsFinite(leftStart)) leftStart = 0;
+            if (!double.IsFinite(topStart)) topStart = 0;
+            xStart = node.Position[0];
+            yStart = node.Position[1];
+            dragging = capture();
+            if (!dragging)
+            {
+                activeDetector = null;
+                return false;
+            }
+            dragSignal?.Invoke(activeDetector, "DragStart", pointer.X, pointer.Y);
+            return true;
+        }
+        void UpdateDrag(Point pointer, Action releaseCapture)
+        {
+            if (!dragging) return;
+            if (activeDetector is null || !activeDetector.Enabled)
+            {
+                if (activeDetector is not null) dragSignal?.Invoke(activeDetector, "DragEnd", pointer.X, pointer.Y);
+                dragging = false;
+                activeDetector = null;
+                releaseCapture();
+                return;
+            }
+            var deltaX = pointer.X - pointerStart.X;
+            var deltaY = pointer.Y - pointerStart.Y;
+            Canvas.SetLeft(visual, leftStart + deltaX);
+            Canvas.SetTop(visual, topStart + deltaY);
+            node.Position[0] = (float)(xStart + deltaX);
+            node.Position[1] = (float)(yStart + deltaY);
+            propertyChanged(node, "Position");
+            dragSignal?.Invoke(activeDetector, "DragContinue", pointer.X, pointer.Y);
+        }
+        void EndDrag(Point pointer, Action releaseCapture)
+        {
+            if (!dragging) return;
+            dragging = false;
+            if (activeDetector is not null) dragSignal?.Invoke(activeDetector, "DragEnd", pointer.X, pointer.Y);
+            activeDetector = null;
+            releaseCapture();
+        }
+        visual.MouseLeftButtonDown += (_, args) =>
+        {
+            if (dragging || ParentCanvas(visual) is not { } canvas) return;
+            if (BeginDrag(args.GetPosition(canvas), visual.CaptureMouse)) args.Handled = true;
+        };
+        visual.MouseMove += (_, args) =>
+        {
+            if (!dragging || ParentCanvas(visual) is not { } canvas) return;
+            UpdateDrag(args.GetPosition(canvas), visual.ReleaseMouseCapture);
+            args.Handled = true;
+        };
+        visual.MouseLeftButtonUp += (_, args) =>
+        {
+            if (!dragging) return;
+            var position = ParentCanvas(visual) is { } canvas ? args.GetPosition(canvas) : new Point();
+            EndDrag(position, visual.ReleaseMouseCapture);
+            args.Handled = true;
+        };
+        visual.TouchDown += (_, args) =>
+        {
+            if (dragging || ParentCanvas(visual) is not { } canvas) return;
+            if (BeginDrag(args.GetTouchPoint(canvas).Position, () => visual.CaptureTouch(args.TouchDevice))) args.Handled = true;
+        };
+        visual.TouchMove += (_, args) =>
+        {
+            if (!dragging || ParentCanvas(visual) is not { } canvas) return;
+            UpdateDrag(args.GetTouchPoint(canvas).Position, () => visual.ReleaseTouchCapture(args.TouchDevice));
+            args.Handled = true;
+        };
+        visual.TouchUp += (_, args) =>
+        {
+            if (!dragging || ParentCanvas(visual) is not { } canvas) return;
+            EndDrag(args.GetTouchPoint(canvas).Position, () => visual.ReleaseTouchCapture(args.TouchDevice));
+            args.Handled = true;
+        };
+    }
+
+    private static Canvas? ParentCanvas(DependencyObject node)
+    {
+        for (var parent = VisualTreeHelper.GetParent(node); parent is not null; parent = VisualTreeHelper.GetParent(parent))
+            if (parent is Canvas canvas) return canvas;
+        return null;
     }
 
     private static bool parentSupportsTextShadow(SceneNode node) => node.Type is "TextLabel" or "TextButton" or "TextBox";
@@ -537,7 +659,7 @@ public static class GuiRenderService
         return visual;
     }
 
-    private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, double width, double height, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged)
+    private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, double width, double height, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged, Action<SceneNode, string>? mouseButtonSignal, Action<SceneNode, string, bool>? textFocusSignal)
     {
         var background = BackgroundFor(node);
         var fontSize = FontSizeFor(node, width, height);
@@ -571,8 +693,24 @@ public static class GuiRenderService
                 placeholder.Visibility = string.IsNullOrEmpty(input.Text) && !string.IsNullOrEmpty(node.PlaceholderText) ? Visibility.Visible : Visibility.Collapsed;
                 textChanged?.Invoke(node, input.Text);
             };
-            if (textChanged is not null)
-                input.GotKeyboardFocus += (_, _) => { if (node.TextEditable && node.ClearTextOnFocus && input.Text.Length > 0) input.Clear(); };
+            var enterPressed = false;
+            input.GotKeyboardFocus += (_, _) =>
+            {
+                textFocusSignal?.Invoke(node, "Focused", false);
+                if (textChanged is not null && node.TextEditable && node.ClearTextOnFocus && input.Text.Length > 0) input.Clear();
+            };
+            input.LostKeyboardFocus += (_, _) =>
+            {
+                textFocusSignal?.Invoke(node, "FocusLost", enterPressed);
+                enterPressed = false;
+            };
+            input.PreviewKeyDown += (_, args) =>
+            {
+                if (args.Key != Key.Enter || input.AcceptsReturn) return;
+                enterPressed = true;
+                args.Handled = true;
+                Keyboard.ClearFocus();
+            };
             var textBox = new Grid { Background = background };
             textBox.Children.Add(input);
             textBox.Children.Add(placeholder);
@@ -590,7 +728,15 @@ public static class GuiRenderService
             "TextButton" => new Button { Content = node.TextScaled || node.TextWrapped ? new TextBlock { Text = node.Text, FontSize = fontSize, TextWrapping = node.TextWrapped || node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap, TextAlignment = TextAlignment.Center } : node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, Padding = new Thickness(2) },
             _ => null
         };
-        if (visual is Button button && activated is not null) button.Click += (_, _) => activated(node);
+        if (visual is Button button)
+        {
+            if (activated is not null) button.Click += (_, _) => activated(node);
+            if (mouseButtonSignal is not null)
+            {
+                button.PreviewMouseLeftButtonDown += (_, _) => mouseButtonSignal(node, "MouseButton1Down");
+                button.PreviewMouseLeftButtonUp += (_, _) => mouseButtonSignal(node, "MouseButton1Up");
+            }
+        }
         return visual;
     }
 
@@ -1358,15 +1504,45 @@ public static class GuiRenderService
 
     private static Brush GradientBrush(SceneNode gradient, Color baseColor)
     {
-        var start = Multiply(baseColor, ColorFrom(gradient.StartColor, Colors.White));
-        var end = Multiply(baseColor, ColorFrom(gradient.EndColor, Colors.Gray));
-        var angle = gradient.Rotation[2] * Math.PI / 180;
-        var dx = Math.Cos(angle) * .5;
-        var dy = Math.Sin(angle) * .5;
-        var brush = new LinearGradientBrush(start, end, new System.Windows.Point(.5 - dx, .5 - dy), new System.Windows.Point(.5 + dx, .5 + dy));
+        var colors = EffectiveGradientColors(gradient);
+        var transparencies = EffectiveGradientTransparency(gradient);
+        var angle = gradient.GradientRotation * Math.PI / 180;
+        var dx = Math.Cos(angle) * .5 / Math.Max(.001, gradient.GradientScale);
+        var dy = Math.Sin(angle) * .5 / Math.Max(.001, gradient.GradientScale);
+        var offset = gradient.GradientOffset is { Length: >= 2 } ? gradient.GradientOffset : [0f, 0f];
+        var stops = new GradientStopCollection();
+        foreach (var time in colors.Select(point => point.Time).Concat(transparencies.Select(point => point.Time)).Distinct().Order())
+        {
+            var color = Multiply(baseColor, ParticleSequenceService.SampleColor(colors, gradient.StartColor, time));
+            color = WithTransparency(color, ParticleSequenceService.SampleNumber(transparencies, 0, time, 0));
+            stops.Add(new GradientStop(color, time));
+        }
+        GradientBrush brush = gradient.GradientType is "Radial" or "Elliptical"
+            ? new RadialGradientBrush(stops)
+            {
+                Center = new System.Windows.Point(.5 + offset[0], .5 + offset[1]),
+                GradientOrigin = new System.Windows.Point(.5 + offset[0], .5 + offset[1]),
+                RadiusX = .5 / Math.Max(.001, gradient.GradientScale),
+                RadiusY = gradient.GradientType == "Elliptical" ? .35 / Math.Max(.001, gradient.GradientScale) : .5 / Math.Max(.001, gradient.GradientScale)
+            }
+            : new LinearGradientBrush(stops,
+                new System.Windows.Point(.5 - dx + offset[0], .5 - dy + offset[1]),
+                new System.Windows.Point(.5 + dx + offset[0], .5 + dy + offset[1]));
+        brush.SpreadMethod = gradient.GradientTileMode switch
+        {
+            "Repeat" => GradientSpreadMethod.Repeat,
+            "Mirror" => GradientSpreadMethod.Reflect,
+            _ => GradientSpreadMethod.Pad
+        };
         brush.Freeze();
         return brush;
     }
+
+    private static IReadOnlyList<ParticleColorKeypoint> EffectiveGradientColors(SceneNode gradient) =>
+        gradient.ColorSequence.Count >= 2 ? gradient.ColorSequence : [new(0, gradient.StartColor), new(1, gradient.EndColor)];
+
+    private static IReadOnlyList<ParticleNumberKeypoint> EffectiveGradientTransparency(SceneNode gradient) =>
+        gradient.TransparencySequence.Count >= 2 ? gradient.TransparencySequence : [new(0, gradient.Transparency), new(1, gradient.Transparency)];
 
     private static Brush BackgroundFor(SceneNode node)
     {
@@ -1412,28 +1588,55 @@ public static class GuiRenderService
         var stride = width * 4;
         var pixels = new byte[stride * height];
         bitmap.CopyPixels(pixels, stride, 0);
-        var start = gradient is null ? Colors.White : ColorFrom(gradient.StartColor, Colors.White);
-        var end = gradient is null ? Colors.White : ColorFrom(gradient.EndColor, Colors.Gray);
-        var angle = gradient is null ? 0 : gradient.Rotation[2] * Math.PI / 180;
-        var dx = Math.Cos(angle);
-        var dy = Math.Sin(angle);
+        var colors = gradient is null ? null : EffectiveGradientColors(gradient);
+        var transparencies = gradient is null ? null : EffectiveGradientTransparency(gradient);
+        var gradientOffset = gradient?.GradientOffset is { Length: >= 2 } configuredOffset ? configuredOffset : [0f, 0f];
         for (var y = 0; y < height; y++)
         for (var x = 0; x < width; x++)
         {
             var offset = y * stride + x * 4;
-            var u = (x + .5) / width - .5;
-            var v = (y + .5) / height - .5;
-            var t = Math.Clamp(u * dx + v * dy + .5, 0, 1);
+            var u = (x + .5) / width - .5 - gradientOffset[0];
+            var v = (y + .5) / height - .5 - gradientOffset[1];
+            var t = GradientParameter(gradient, u, v);
+            var gradientColor = colors is null ? Colors.White : ParticleSequenceService.SampleColor(colors, gradient!.StartColor, (float)t);
+            var gradientTransparency = transparencies is null ? 0 : ParticleSequenceService.SampleNumber(transparencies, 0, (float)t, 0);
+            gradientColor = WithTransparency(gradientColor, gradientTransparency);
             static byte Tint(byte pixel, byte baseChannel, double gradientChannel) =>
                 (byte)Math.Clamp(Math.Round(pixel * baseChannel * gradientChannel / 65025), 0, 255);
-            pixels[offset] = Tint(pixels[offset], baseColor.B, start.B + (end.B - start.B) * t);
-            pixels[offset + 1] = Tint(pixels[offset + 1], baseColor.G, start.G + (end.G - start.G) * t);
-            pixels[offset + 2] = Tint(pixels[offset + 2], baseColor.R, start.R + (end.R - start.R) * t);
-            pixels[offset + 3] = Tint(pixels[offset + 3], baseColor.A, start.A + (end.A - start.A) * t);
+            pixels[offset] = Tint(pixels[offset], baseColor.B, gradientColor.B);
+            pixels[offset + 1] = Tint(pixels[offset + 1], baseColor.G, gradientColor.G);
+            pixels[offset + 2] = Tint(pixels[offset + 2], baseColor.R, gradientColor.R);
+            pixels[offset + 3] = Tint(pixels[offset + 3], baseColor.A, gradientColor.A);
         }
         var tinted = BitmapSource.Create(width, height, image.DpiX, image.DpiY, PixelFormats.Bgra32, null, pixels, stride);
         tinted.Freeze();
         return tinted;
+    }
+
+    private static double GradientParameter(SceneNode? gradient, double u, double v)
+    {
+        if (gradient is null) return .5;
+        double parameter;
+        if (gradient.GradientType is "Radial" or "Elliptical")
+        {
+            var yScale = gradient.GradientType == "Elliptical" ? 1.4 : 1;
+            parameter = Math.Sqrt(u * u + v * v * yScale * yScale) * 2 * gradient.GradientScale;
+        }
+        else if (gradient.GradientType == "Conical")
+        {
+            parameter = (Math.Atan2(v, u) + Math.PI) / (2 * Math.PI) * gradient.GradientScale;
+        }
+        else
+        {
+            var angle = gradient.GradientRotation * Math.PI / 180;
+            parameter = (u * Math.Cos(angle) + v * Math.Sin(angle)) * gradient.GradientScale + .5;
+        }
+        return gradient.GradientTileMode switch
+        {
+            "Repeat" => parameter - Math.Floor(parameter),
+            "Mirror" => (parameter - 2 * Math.Floor(parameter / 2)) is var mirrored && mirrored > 1 ? 2 - mirrored : mirrored,
+            _ => Math.Clamp(parameter, 0, 1)
+        };
     }
 
     private static ImageSource? ImageRectFor(SceneNode node, GameProject project, string? assetOverride = null)

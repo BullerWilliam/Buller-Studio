@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Vector2 = System.Numerics.Vector2;
 using Vector3 = System.Numerics.Vector3;
 using Matrix4x4 = System.Numerics.Matrix4x4;
 using HelixToolkit.Wpf.SharpDX;
@@ -24,6 +25,10 @@ public partial class PlayerWindow : Window
     private readonly List<SceneNode> toolHotbar = [];
     private readonly HashSet<Key> contextSunkKeys = [];
     private readonly HashSet<Key> promptKeysDown = [];
+    private readonly HashSet<string> promptGamepadKeysDown = new(StringComparer.Ordinal);
+    private readonly GamepadInputService gamepadInput = new();
+    private Vector2 previousLeftStick;
+    private Vector2 previousRightStick;
     private readonly HashSet<MouseButton> contextSunkMouseButtons = [];
     private SceneNode? activeTool;
     private sealed record EquippedPartState(float[] LocalOffset, Matrix4x4 RotationOffset, float[] Position, float[] Rotation, bool Anchored, bool CanCollide);
@@ -38,6 +43,9 @@ public partial class PlayerWindow : Window
     private long lastUpdateTimestamp;
     private bool jumpRequested;
     private string? holdingPromptId;
+    private string? clickablePromptDownId;
+    private string? visiblePromptId;
+    private bool visiblePromptIndicatorOnly;
     private float promptHoldElapsed;
     private bool promptTriggered;
     private float spawnProtectionRemaining;
@@ -54,7 +62,22 @@ public partial class PlayerWindow : Window
         foreach (var (originalId, clonedId) in renewedIds)
         {
             if (project.Scripts.FirstOrDefault(script => script.Id == originalId) is not { } source
-                || !clonedNodes.TryGetValue(clonedId, out var clonedNode) || clonedNode.Type is not ("LocalScript" or "ModuleScript")) continue;
+                || !clonedNodes.TryGetValue(clonedId, out var clonedNode)
+                || clonedNode.Type is not ("LocalScript" or "ModuleScript")
+                    && !(clonedNode.Type == "Script" && clonedNode.RunContext == "Client")) continue;
+            project.Scripts.Add(new GameScript { Id = clonedId, Name = clonedNode.Name, Source = source.Source });
+        }
+    }
+
+    private void CopyCharacterScripts(PlayerCharacterService sourceCharacter)
+    {
+        var clonedNodes = new[] { sourceCharacter.Model }.Concat(GameProjectStore.Flatten(sourceCharacter.Model.Children)).ToDictionary(node => node.Id, StringComparer.Ordinal);
+        foreach (var (originalId, clonedId) in sourceCharacter.RenewedIds)
+        {
+            if (project.Scripts.FirstOrDefault(script => script.Id == originalId) is not { } source
+                || !clonedNodes.TryGetValue(clonedId, out var clonedNode)
+                || !SceneNodeTypes.IsBaseScript(clonedNode)
+                || project.Scripts.Any(script => script.Id == clonedId)) continue;
             project.Scripts.Add(new GameScript { Id = clonedId, Name = clonedNode.Name, Source = source.Source });
         }
     }
@@ -102,6 +125,7 @@ public partial class PlayerWindow : Window
         if (autoManageCharacterEnabled)
         {
             character = new PlayerCharacterService(project, localPlayer);
+            CopyCharacterScripts(character);
             localPlayer.Character = character.Model.Id;
             spawnProtectionRemaining = character.SpawnProtection.Enabled ? character.SpawnLocation?.Duration ?? 0 : 0;
             autoManagedCameraOverride = true;
@@ -171,6 +195,12 @@ public partial class PlayerWindow : Window
                 }
                 if (seats is null) return;
                 foreach (var node in seats.Sit(targetSeat, humanoid)) SyncSeatNode(node);
+            }), focusTextBox: (textBoxId, capture) => Dispatcher.Invoke(() =>
+            {
+                var input = FindGameTextBox(GameGuiCanvas, textBoxId);
+                if (input is null) return;
+                if (capture) input.Focus();
+                else if (input.IsKeyboardFocused) Keyboard.ClearFocus();
             }));
         runtime = gameRuntime;
         GameViewport.MouseDown += GameViewport_MouseDown;
@@ -184,7 +214,11 @@ public partial class PlayerWindow : Window
             runtime?.SynchronizeExternalProperty(node, "Velocity");
             renderer.UpdateNode(node, project);
             renderer.UpdateCamera(project);
-        }, rocketReachedTarget: node => runtime?.FireRocketReachedTarget(node), destroyFallenPart: node => runtime?.DestroyFromPhysics(node));
+        }, rocketReachedTarget: node => runtime?.FireRocketReachedTarget(node), destroyFallenPart: node =>
+        {
+            if (character is { } managedCharacter && GameProjectStore.Flatten(managedCharacter.Model.Children).Any(part => part.Id == node.Id)) return;
+            runtime?.DestroyFromPhysics(node);
+        });
         soundPlayback = new SoundPlaybackService(project, node =>
         {
             runtime?.SynchronizeExternalProperty(node, "Playing");
@@ -201,7 +235,10 @@ public partial class PlayerWindow : Window
         Deactivated += (_, _) =>
         {
             isDragging = false;
+            clickablePromptDownId = null;
             runtime?.ReleaseAllPressedKeys();
+            gamepadInput.Reset();
+            previousLeftStick = previousRightStick = Vector2.Zero;
             contextSunkKeys.Clear();
             contextSunkMouseButtons.Clear();
             if (Mouse.Captured == GameViewport) Mouse.Capture(null);
@@ -258,6 +295,7 @@ public partial class PlayerWindow : Window
         cameraModeBeforeAutoManage = camera.CameraMode;
         cameraSubjectBeforeAutoManage = camera.Subject;
         character = new PlayerCharacterService(project, localPlayer);
+        CopyCharacterScripts(character);
         seats = new SeatInteractionService(project, character);
         spawnProtectionRemaining = character.SpawnProtection.Enabled ? character.SpawnLocation?.Duration ?? 0 : 0;
         camera.CameraMode = "Subject";
@@ -321,11 +359,37 @@ public partial class PlayerWindow : Window
         var now = Stopwatch.GetTimestamp();
         var elapsed = Math.Clamp((float)Stopwatch.GetElapsedTime(lastUpdateTimestamp, now).TotalSeconds, .001f, .25f);
         lastUpdateTimestamp = now;
+        var gamepadChanges = IsActive ? gamepadInput.Poll() : Array.Empty<(string KeyCode, bool IsDown)>();
+        if (IsActive) runtime?.SetGamepadAvailable(gamepadInput.IsConnected);
+        foreach (var change in gamepadChanges)
+        {
+            var consumed = runtime?.FireUserInput(change.KeyCode, change.IsDown, false, inputType: "Gamepad1") == true;
+            if (!change.IsDown)
+            {
+                promptGamepadKeysDown.Remove(change.KeyCode);
+                continue;
+            }
+            if (!consumed && FindLocalPlayerInteractionRoot() is { } gamepadInteractionRoot
+                && ProximityPromptService.FindNearest(project, gamepadInteractionRoot, runtime?.ProximityPromptsEnabled ?? true) is { IsIndicatorOnly: false } gamepadPrompt
+                && PromptKeyMatches(change.KeyCode, gamepadPrompt.Prompt.GamepadKeyCode))
+                promptGamepadKeysDown.Add(change.KeyCode);
+        }
+        var leftStick = IsActive ? gamepadInput.LeftStick : Vector2.Zero;
+        var rightStick = IsActive ? gamepadInput.RightStick : Vector2.Zero;
+        var leftStickConsumed = runtime?.FireGamepadStick("Thumbstick1", leftStick.X, leftStick.Y,
+            leftStick.X - previousLeftStick.X, leftStick.Y - previousLeftStick.Y) == true;
+        var rightStickConsumed = runtime?.FireGamepadStick("Thumbstick2", rightStick.X, rightStick.Y,
+            rightStick.X - previousRightStick.X, rightStick.Y - previousRightStick.Y) == true;
+        previousLeftStick = leftStick;
+        previousRightStick = rightStick;
+        if (IsActive && Keyboard.FocusedElement is not TextBox && Keyboard.FocusedElement is not Button
+            && !rightStickConsumed && rightStick.LengthSquared() > 0)
+            renderer.SetCameraOrbit(-rightStick.X * 120f * elapsed, rightStick.Y * 100f * elapsed, 0, project);
         UpdateAutoManageCharacter();
         UpdateSpawnProtection(elapsed);
         var canMove = IsActive && Keyboard.FocusedElement is not TextBox && Keyboard.FocusedElement is not Button;
-        var forward = canMove ? (Keyboard.IsKeyDown(Key.W) && !contextSunkKeys.Contains(Key.W) ? 1 : 0) - (Keyboard.IsKeyDown(Key.S) && !contextSunkKeys.Contains(Key.S) ? 1 : 0) : 0;
-        var strafe = canMove ? (Keyboard.IsKeyDown(Key.D) && !contextSunkKeys.Contains(Key.D) ? 1 : 0) - (Keyboard.IsKeyDown(Key.A) && !contextSunkKeys.Contains(Key.A) ? 1 : 0) : 0;
+        var forward = canMove ? Math.Clamp((Keyboard.IsKeyDown(Key.W) && !contextSunkKeys.Contains(Key.W) ? 1 : 0) - (Keyboard.IsKeyDown(Key.S) && !contextSunkKeys.Contains(Key.S) ? 1 : 0) + (leftStickConsumed ? 0 : leftStick.Y), -1, 1) : 0;
+        var strafe = canMove ? Math.Clamp((Keyboard.IsKeyDown(Key.D) && !contextSunkKeys.Contains(Key.D) ? 1 : 0) - (Keyboard.IsKeyDown(Key.A) && !contextSunkKeys.Contains(Key.A) ? 1 : 0) + (leftStickConsumed ? 0 : leftStick.X), -1, 1) : 0;
         seats?.SetVehicleInput(forward, strafe);
         if (seats is not null)
             foreach (var node in seats.BeforePhysics(canMove && jumpRequested)) SyncSeatNode(node);
@@ -359,25 +423,44 @@ public partial class PlayerWindow : Window
         }
         UpdateEquippedToolGrip();
         runtime?.UpdateTouched(elapsed);
+        runtime?.UpdateAfterPhysics(elapsed);
         renderer.UpdateParticleEffects(elapsed);
         var interactionRoot = FindLocalPlayerInteractionRoot();
-        var nearbyPrompt = interactionRoot is null ? null : ProximityPromptService.FindNearest(project, interactionRoot);
-        PromptBorder.Visibility = nearbyPrompt is null ? Visibility.Collapsed : Visibility.Visible;
+        var nearbyPrompt = interactionRoot is null ? null : ProximityPromptService.FindNearest(project, interactionRoot, runtime?.ProximityPromptsEnabled ?? true);
+        var nextVisiblePromptId = nearbyPrompt?.Prompt.Id;
+        var nextIsIndicatorOnly = nearbyPrompt?.IsIndicatorOnly ?? false;
+        if (visiblePromptId != nextVisiblePromptId || visiblePromptIndicatorOnly != nextIsIndicatorOnly)
+        {
+            if (visiblePromptId is { } previousPromptId)
+                runtime?.InvokePromptEvent(previousPromptId, visiblePromptIndicatorOnly ? "IndicatorHidden" : "PromptHidden");
+            visiblePromptId = nextVisiblePromptId;
+            visiblePromptIndicatorOnly = nextIsIndicatorOnly;
+            if (visiblePromptId is { } newPromptId)
+                runtime?.InvokePromptEvent(newPromptId, visiblePromptIndicatorOnly ? "IndicatorShown" : "PromptShown", inputType: "Keyboard");
+        }
+        PromptBorder.Visibility = nearbyPrompt is null || nearbyPrompt.Prompt.PromptStyle == "Custom" ? Visibility.Collapsed : Visibility.Visible;
         if (nearbyPrompt is not null)
         {
+            PromptInputText.Text = nearbyPrompt.IsIndicatorOnly ? "…" : FormatPromptInput(nearbyPrompt.Prompt);
             PromptObjectText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ObjectText)
                 ? nearbyPrompt.Parent.Name : nearbyPrompt.Prompt.ObjectText;
-            PromptActionText.Text = string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ActionText)
+            PromptActionText.Text = nearbyPrompt.IsIndicatorOnly ? "Move closer to interact" : string.IsNullOrWhiteSpace(nearbyPrompt.Prompt.ActionText)
                 ? $"{nearbyPrompt.Prompt.KeyboardKeyCode}  Interact"
                 : $"{nearbyPrompt.Prompt.KeyboardKeyCode}  {nearbyPrompt.Prompt.ActionText}";
-            var promptKeyDown = promptKeysDown.Any(key => PromptKeyMatches(GetKeyCodeName(key), nearbyPrompt.Prompt.KeyboardKeyCode));
-            if (promptKeyDown && Keyboard.FocusedElement is not (TextBox or Button))
+            var promptKeyDown = !nearbyPrompt.IsIndicatorOnly
+                && (promptKeysDown.Any(key => PromptKeyMatches(GetKeyCodeName(key), nearbyPrompt.Prompt.KeyboardKeyCode))
+                    || promptGamepadKeysDown.Contains(nearbyPrompt.Prompt.GamepadKeyCode));
+            var promptMouseDown = !nearbyPrompt.IsIndicatorOnly && nearbyPrompt.Prompt.ClickablePrompt && clickablePromptDownId == nearbyPrompt.Prompt.Id;
+            if ((promptKeyDown || promptMouseDown) && Keyboard.FocusedElement is not (TextBox or Button))
             {
                 if (holdingPromptId != nearbyPrompt.Prompt.Id)
                 {
+                    ResetPromptHold();
                     holdingPromptId = nearbyPrompt.Prompt.Id;
                     promptHoldElapsed = 0;
                     promptTriggered = false;
+                    if (nearbyPrompt.Prompt.HoldDuration > 0)
+                        runtime?.InvokePromptEvent(nearbyPrompt.Prompt.Id, "PromptButtonHoldBegan", localPlayer.Id);
                 }
                 if (!promptTriggered)
                 {
@@ -412,6 +495,7 @@ public partial class PlayerWindow : Window
         if (!isPaused)
         {
             isPaused = true;
+            runtime?.SetSimulationPaused(true);
             updateTimer.Stop();
             soundPlayback.Pause();
             foreach (var media in FindVisualDescendants<MediaElement>(GameGuiCanvas))
@@ -433,6 +517,7 @@ public partial class PlayerWindow : Window
         soundPlayback.Resume();
         lastUpdateTimestamp = Stopwatch.GetTimestamp();
         isPaused = false;
+        runtime?.SetSimulationPaused(false);
         PauseButton.Content = "Ⅱ  Pause";
         GameTitle.Text = project.Name;
         Title = project.Name;
@@ -538,7 +623,7 @@ public partial class PlayerWindow : Window
         }
         if (gameProcessed) return;
         if (FindLocalPlayerInteractionRoot() is { } interactionRoot
-            && ProximityPromptService.FindNearest(project, interactionRoot) is { } nearbyPrompt
+            && ProximityPromptService.FindNearest(project, interactionRoot, runtime?.ProximityPromptsEnabled ?? true) is { IsIndicatorOnly: false } nearbyPrompt
             && PromptKeyMatches(GetKeyCodeName(e.Key), nearbyPrompt.Prompt.KeyboardKeyCode))
         {
             promptKeysDown.Add(e.Key);
@@ -619,8 +704,28 @@ public partial class PlayerWindow : Window
         string.Equals(pressedKeyCode, configuredKeyCode, StringComparison.Ordinal)
         || pressedKeyCode == "Backspace" && configuredKeyCode == "Back";
 
+    private static string FormatPromptInput(SceneNode prompt)
+    {
+        var gamepad = prompt.GamepadKeyCode switch
+        {
+            "ButtonA" => "A", "ButtonB" => "B", "ButtonX" => "X", "ButtonY" => "Y",
+            "ButtonL1" => "LB", "ButtonR1" => "RB", "ButtonL2" => "LT", "ButtonR2" => "RT",
+            "ButtonL3" => "LS", "ButtonR3" => "RS", "ButtonStart" => "Start", "ButtonSelect" => "Back",
+            "DPadUp" => "↑", "DPadDown" => "↓", "DPadLeft" => "←", "DPadRight" => "→",
+            _ => prompt.GamepadKeyCode
+        };
+        var input = $"{prompt.KeyboardKeyCode} / {gamepad}";
+        return prompt.ClickablePrompt ? $"{input} / Click" : input;
+    }
+
     private void ResetPromptHold()
     {
+        if (holdingPromptId is { } promptId)
+        {
+            if (FindRuntimeNode(promptId) is { Type: "ProximityPrompt", HoldDuration: > 0 })
+                runtime?.InvokePromptEvent(promptId, "PromptButtonHoldEnded", localPlayer.Id);
+            if (promptTriggered) runtime?.InvokePromptEvent(promptId, "TriggerEnded", localPlayer.Id);
+        }
         holdingPromptId = null;
         promptHoldElapsed = 0;
         promptTriggered = false;
@@ -644,6 +749,22 @@ public partial class PlayerWindow : Window
             e.Handled = true;
             return;
         }
+        if (e.ChangedButton == MouseButton.Left
+            && FindLocalPlayerInteractionRoot() is { } interactionRoot
+            && ProximityPromptService.FindNearest(project, interactionRoot, runtime?.ProximityPromptsEnabled ?? true) is { IsIndicatorOnly: false, Prompt: { ClickablePrompt: true, PromptStyle: "Default" } prompt })
+        {
+            clickablePromptDownId = prompt.Id;
+            GameViewport.Focus();
+            if (prompt.HoldDuration <= 0)
+            {
+                holdingPromptId = prompt.Id;
+                promptHoldElapsed = 0;
+                promptTriggered = true;
+                runtime?.InvokePromptTriggered(prompt.Id, localPlayer.Id);
+            }
+            e.Handled = true;
+            return;
+        }
         if (e.ChangedButton == MouseButton.Left && activeTool is { Enabled: true } tool)
         {
             if (!tool.ManualActivationOnly) runtime?.InvokeToolActivated(tool.Id);
@@ -654,6 +775,7 @@ public partial class PlayerWindow : Window
     private void GameViewport_MouseUp(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Right) return;
+        if (e.ChangedButton == MouseButton.Left) clickablePromptDownId = null;
         var point = e.GetPosition(GameViewport);
         var inputType = e.ChangedButton switch
         {
@@ -762,7 +884,10 @@ public partial class PlayerWindow : Window
             activated: node => runtime?.InvokeGuiActivated(node.Id),
             textChanged: (node, value) => runtime?.UpdateGuiTextInput(node.Id, value),
             screenGuiRoot: playerGui,
-            propertyChanged: (node, property) => runtime?.SynchronizeExternalProperty(node, property));
+            propertyChanged: (node, property) => runtime?.SynchronizeExternalProperty(node, property),
+            dragSignal: (node, eventName, x, y) => runtime?.InvokeUIDragDetectorSignal(node.Id, eventName, x, y),
+            mouseButtonSignal: (node, eventName) => runtime?.InvokeGuiMouseButton(node.Id, eventName),
+            textFocusSignal: (node, eventName, enterPressed) => runtime?.InvokeGuiTextFocus(node.Id, eventName, enterPressed));
         var children = rendered.Children.Cast<UIElement>().ToArray();
         rendered.Children.Clear();
         GameGuiCanvas.Children.Clear();
@@ -790,7 +915,10 @@ public partial class PlayerWindow : Window
             (float)camera.FieldOfView, GameGuiCanvas.ActualWidth, GameGuiCanvas.ActualHeight, true,
             activated: node => runtime?.InvokeGuiActivated(node.Id),
             textChanged: (node, value) => runtime?.UpdateGuiTextInput(node.Id, value),
-            propertyChanged: (node, property) => runtime?.SynchronizeExternalProperty(node, property));
+            propertyChanged: (node, property) => runtime?.SynchronizeExternalProperty(node, property),
+            dragSignal: (node, eventName, x, y) => runtime?.InvokeUIDragDetectorSignal(node.Id, eventName, x, y),
+            mouseButtonSignal: (node, eventName) => runtime?.InvokeGuiMouseButton(node.Id, eventName),
+            textFocusSignal: (node, eventName, enterPressed) => runtime?.InvokeGuiTextFocus(node.Id, eventName, enterPressed));
         GuiRenderService.AddSurfaceGuis(GameGuiCanvas, project,
             new Vector3((float)camera.Position.X, (float)camera.Position.Y, (float)camera.Position.Z),
             new Vector3((float)camera.LookDirection.X, (float)camera.LookDirection.Y, (float)camera.LookDirection.Z),
@@ -798,7 +926,10 @@ public partial class PlayerWindow : Window
             (float)camera.FieldOfView, GameGuiCanvas.ActualWidth, GameGuiCanvas.ActualHeight, true,
             activated: node => runtime?.InvokeGuiActivated(node.Id),
             textChanged: (node, value) => runtime?.UpdateGuiTextInput(node.Id, value),
-            propertyChanged: (node, property) => runtime?.SynchronizeExternalProperty(node, property));
+            propertyChanged: (node, property) => runtime?.SynchronizeExternalProperty(node, property),
+            dragSignal: (node, eventName, x, y) => runtime?.InvokeUIDragDetectorSignal(node.Id, eventName, x, y),
+            mouseButtonSignal: (node, eventName) => runtime?.InvokeGuiMouseButton(node.Id, eventName),
+            textFocusSignal: (node, eventName, enterPressed) => runtime?.InvokeGuiTextFocus(node.Id, eventName, enterPressed));
     }
 
     private void UpdateBillboardGuiPositions()

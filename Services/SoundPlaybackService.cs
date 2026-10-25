@@ -1,6 +1,7 @@
 using System.IO;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Numerics;
 using System.Windows.Threading;
 using BullerStudio.Models;
 using NAudio.Wave;
@@ -71,7 +72,7 @@ public sealed class SoundPlaybackService : IDisposable
                 continue;
             }
 
-            var parentPart = nodes.FirstOrDefault(parent => SceneNodeTypes.IsBasePart(parent) && parent.Children.Contains(sound));
+            var sourcePosition = GetSpatialSoundPosition(sound, nodes);
             var soundGroup = nodesById.GetValueOrDefault(sound.SoundGroupId);
             if (soundGroup?.Type != "SoundGroup") soundGroup = null;
             var soundGroupVolume = soundGroup?.SoundGroupVolume ?? 1;
@@ -83,7 +84,7 @@ public sealed class SoundPlaybackService : IDisposable
             var flangeParameters = GetFlangeParameters(sound, soundGroup);
             var tremoloParameters = GetTremoloParameters(sound, soundGroup);
             var reverbParameters = GetReverbParameters(sound, soundGroup);
-            var volume = CalculateVolume(sound, parentPart, listenerPosition, soundGroupVolume, project.SoundService.SoundServiceVolume);
+            var volume = CalculateVolumeAtPosition(sound, sourcePosition, listenerPosition, soundGroupVolume, project.SoundService.SoundServiceVolume);
             var compressorParameters = GetCompressorParameters(sound, nodes, nodesById);
             if (active.TryGetValue(sound.Id, out var playback) && string.Equals(playback.Path, path, StringComparison.OrdinalIgnoreCase))
             {
@@ -128,22 +129,81 @@ public sealed class SoundPlaybackService : IDisposable
 
     public static double CalculateVolume(SceneNode sound, SceneNode? parentPart, float[] listenerPosition, float soundGroupVolume = 1, float masterVolume = 1)
     {
+        Vector3? sourcePosition = parentPart is not null && SceneNodeTypes.IsBasePart(parentPart) && parentPart.Position.Length >= 3
+            ? new Vector3(parentPart.Position[0], parentPart.Position[1], parentPart.Position[2])
+            : null;
+        return CalculateVolumeAtPosition(sound, sourcePosition, listenerPosition, soundGroupVolume, masterVolume);
+    }
+
+    private static double CalculateVolumeAtPosition(SceneNode sound, Vector3? sourcePosition, float[] listenerPosition, float soundGroupVolume, float masterVolume)
+    {
         var soundVolume = float.IsFinite(sound.Volume) ? Math.Clamp(sound.Volume, 0, 1) : 0;
         var groupVolume = float.IsFinite(soundGroupVolume) ? Math.Clamp(soundGroupVolume, 0, 1) : 1;
         var master = float.IsFinite(masterVolume) ? Math.Clamp(masterVolume, 0, 1) : 1;
         var volume = soundVolume * groupVolume * master;
-        if (parentPart is null || listenerPosition.Length < 3) return volume;
-        var dx = parentPart.Position[0] - listenerPosition[0];
-        var dy = parentPart.Position[1] - listenerPosition[1];
-        var dz = parentPart.Position[2] - listenerPosition[2];
+        if (sourcePosition is null || listenerPosition is null || listenerPosition.Length < 3) return volume;
+        var dx = sourcePosition.Value.X - listenerPosition[0];
+        var dy = sourcePosition.Value.Y - listenerPosition[1];
+        var dz = sourcePosition.Value.Z - listenerPosition[2];
         var distance = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
         if (!float.IsFinite(distance)) return 0;
         var minimum = float.IsFinite(sound.RollOffMinDistance) ? Math.Clamp(sound.RollOffMinDistance, 0, 1000) : 10;
         var maximum = float.IsFinite(sound.RollOffMaxDistance) ? Math.Clamp(sound.RollOffMaxDistance, minimum + .01f, 10000) : 100;
         if (distance <= minimum) return volume;
         if (distance >= maximum) return 0;
-        return volume * (1 - (distance - minimum) / (maximum - minimum));
+        var linear = Math.Clamp(1 - (distance - minimum) / (maximum - minimum), 0, 1);
+        var inverse = minimum <= 0 ? 0 : Math.Clamp(minimum / distance, 0, 1);
+        var attenuation = sound.RollOffMode switch
+        {
+            "Linear" => linear,
+            "LinearSquare" => linear * linear,
+            "Inverse" => inverse,
+            "InverseTapered" => Math.Min(inverse, linear * linear),
+            _ => Math.Min(inverse, linear * linear)
+        };
+        return volume * attenuation;
     }
+
+    private static Vector3? GetSpatialSoundPosition(SceneNode sound, IReadOnlyList<SceneNode> nodes)
+    {
+        var parent = nodes.FirstOrDefault(candidate => candidate.Children.Contains(sound));
+        if (parent is null) return null;
+        if (SceneNodeTypes.IsBasePart(parent)) return ReadPosition(parent.Position);
+        if (parent.Type != "Attachment") return null;
+        return GetAttachmentWorldTransform(parent, nodes, [])?.Position;
+    }
+
+    private static (Vector3 Position, Matrix4x4 Rotation)? GetAttachmentWorldTransform(SceneNode attachment, IReadOnlyList<SceneNode> nodes, HashSet<string> visiting)
+    {
+        if (!visiting.Add(attachment.Id)) return null;
+        var parent = nodes.FirstOrDefault(candidate => candidate.Children.Contains(attachment));
+        if (parent is null) return null;
+        Vector3 parentPosition;
+        Matrix4x4 parentRotation;
+        if (SceneNodeTypes.IsBasePart(parent))
+        {
+            if (ReadPosition(parent.Position) is not { } partPosition) return null;
+            parentPosition = partPosition;
+            parentRotation = RotationMath.FromDegrees(parent.Rotation);
+        }
+        else if (parent.Type == "Attachment")
+        {
+            if (GetAttachmentWorldTransform(parent, nodes, visiting) is not { } parentTransform) return null;
+            parentPosition = parentTransform.Position;
+            parentRotation = parentTransform.Rotation;
+        }
+        else return null;
+        if (ReadPosition(attachment.Position) is not { } localPosition) return null;
+        var worldPosition = parentPosition + Vector3.Transform(localPosition, parentRotation);
+        var worldRotation = RotationMath.FromDegrees(attachment.Rotation) * parentRotation;
+        return float.IsFinite(worldPosition.X) && float.IsFinite(worldPosition.Y) && float.IsFinite(worldPosition.Z)
+            ? (worldPosition, worldRotation) : null;
+    }
+
+    private static Vector3? ReadPosition(float[] position) =>
+        position.Length >= 3 && float.IsFinite(position[0]) && float.IsFinite(position[1]) && float.IsFinite(position[2])
+            ? new Vector3(position[0], position[1], position[2])
+            : null;
 
     public void Dispose()
     {

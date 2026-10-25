@@ -13,6 +13,7 @@ public sealed class GameProject
     public SceneNode Lighting { get; set; } = new() { Id = "lighting", Type = "Lighting", Name = "Lighting", Ambient = "#808080", ClockTime = 14, Children = [new SceneNode { Id = "sky-main", Type = "Sky", Name = "Sky" }] };
     public SceneNode SoundService { get; set; } = new() { Id = "sound-service", Type = "SoundService", Name = "SoundService" };
     public SceneNode ReplicatedStorage { get; set; } = new() { Id = "replicated-storage", Type = "ReplicatedStorage", Name = "ReplicatedStorage" };
+    public SceneNode ReplicatedFirst { get; set; } = new() { Id = "replicated-first", Type = "ReplicatedFirst", Name = "ReplicatedFirst" };
     public SceneNode ServerScriptService { get; set; } = new() { Id = "server-script-service", Type = "ServerScriptService", Name = "ServerScriptService" };
     public SceneNode ServerStorage { get; set; } = new() { Id = "server-storage", Type = "ServerStorage", Name = "ServerStorage" };
     public SceneNode StarterPack { get; set; } = new() { Id = "starter-pack", Type = "StarterPack", Name = "StarterPack" };
@@ -79,12 +80,19 @@ public sealed class SceneNode
     public string FillColor { get; set; } = "#00BFFF";
     public string OutlineColor { get; set; } = "#FFFFFF";
     public string StartColor { get; set; } = "#FFFFFF";
-    public string EndColor { get; set; } = "#808080";
+    public string EndColor { get; set; } = "#FFFFFF";
+    public float GradientRotation { get; set; }
+    public float[] GradientOffset { get; set; } = [0, 0];
+    public float GradientScale { get; set; } = 1;
+    public string GradientTileMode { get; set; } = "Clamp";
+    public string GradientType { get; set; } = "Linear";
     public float FillTransparency { get; set; } = .5f;
     public float OutlineTransparency { get; set; }
     public string Adornee { get; set; } = string.Empty;
     public float MaxDistance { get; set; }
     public bool AlwaysOnTop { get; set; }
+    public float[] StudsOffset { get; set; } = [0, 0, 0];
+    public float[] StudsOffsetWorldSpace { get; set; } = [0, 0, 0];
     public float PixelsPerStud { get; set; } = 50;
     public string SurfaceColor3 { get; set; } = "#FFFFFF";
     public float SurfaceTransparency { get; set; } = 1;
@@ -115,6 +123,7 @@ public sealed class SceneNode
     public string HoverImage { get; set; } = string.Empty;
     public string PressedImage { get; set; } = string.Empty;
     public bool Enabled { get; set; } = true;
+    public string RunContext { get; set; } = "Legacy";
     public float Brightness { get; set; } = 1;
     public string Ambient { get; set; } = "#808080";
     public string AtmosphereDecay { get; set; } = "#607080";
@@ -156,7 +165,11 @@ public sealed class SceneNode
     public string ObjectText { get; set; } = string.Empty;
     public float HoldDuration { get; set; }
     public float MaxActivationDistance { get; set; } = 10;
+    public float MaxIndicatorDistance { get; set; }
     public string KeyboardKeyCode { get; set; } = "E";
+    public string GamepadKeyCode { get; set; } = "ButtonX";
+    public bool ClickablePrompt { get; set; } = true;
+    public string PromptStyle { get; set; } = "Default";
     public bool RequiresLineOfSight { get; set; } = true;
     public float Volume { get; set; } = .5f;
     public float PlaybackSpeed { get; set; } = 1;
@@ -199,6 +212,7 @@ public sealed class SceneNode
     [JsonIgnore] public float? SoundSeekTarget { get; set; }
     public float RollOffMinDistance { get; set; } = 10;
     public float RollOffMaxDistance { get; set; } = 100;
+    public string RollOffMode { get; set; } = "InverseTapered";
     public string Part0 { get; set; } = string.Empty;
     public string Part1 { get; set; } = string.Empty;
     public float[] Part0OffsetPosition { get; set; } = [0, 0, 0];
@@ -419,12 +433,14 @@ public sealed class SceneNode
     public string SkyboxTop { get; set; } = string.Empty;
     public string SkyboxBottom { get; set; } = string.Empty;
     public bool Anchored { get; set; } = true;
+    public bool Massless { get; set; }
     public bool CanCollide { get; set; } = true;
     public bool CanTouch { get; set; } = true;
     public bool CanQuery { get; set; } = true;
     public float[] Velocity { get; set; } = [0, 0, 0];
     [JsonIgnore] public float[] AssemblyAngularVelocity { get; set; } = [0, 0, 0];
     public bool CastShadow { get; set; } = true;
+    public float Reflectance { get; set; }
     public float Gravity { get; set; } = 24;
     public float FallenPartsDestroyHeight { get; set; } = -500;
     public bool AutoManageCharacter { get; set; } = true;
@@ -450,6 +466,8 @@ public sealed class SceneNode
     public float MaxHealth { get; set; } = 100;
     public float WalkSpeed { get; set; } = 7.5f;
     public float JumpPower { get; set; } = 10;
+    public float CameraMinZoomDistance { get; set; } = 2;
+    public float CameraMaxZoomDistance { get; set; } = 100;
     public bool BooleanValue { get; set; }
     public long IntegerValue { get; set; }
     public double NumberValue { get; set; }
@@ -462,6 +480,10 @@ public sealed class SceneNode
     public List<string> Tags { get; set; } = [];
     public string Asset { get; set; } = string.Empty;
     public string AnimationId { get; set; } = string.Empty;
+    public string ShirtTemplate { get; set; } = string.Empty;
+    public string PantsTemplate { get; set; } = string.Empty;
+    public string Graphic { get; set; } = string.Empty;
+    public string ClothingColor3 { get; set; } = "#FFFFFF";
     public string Video { get; set; } = string.Empty;
     public string Texture { get; set; } = string.Empty;
     public string SurfaceAppearanceColorMap { get; set; } = string.Empty;
