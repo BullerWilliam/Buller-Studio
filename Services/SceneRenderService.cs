@@ -209,9 +209,10 @@ public sealed class SceneRenderService
             }
             return;
         }
-        if (SceneNodeTypes.IsPostEffect(node))
+        if (SceneNodeTypes.IsPostEffectClass(node))
         {
-            RefreshPostEffects(project);
+            if (SceneNodeTypes.IsPostEffect(node)) RefreshPostEffects(project);
+            else Refresh(project);
             return;
         }
         if (node.Type is "Lighting" or "Sky" or "Atmosphere")
@@ -338,7 +339,7 @@ public sealed class SceneRenderService
     {
         var camera = project.Workspace.Children.FirstOrDefault(node => node.Type == "Camera");
         var blur = project.Lighting.Children.Concat(camera?.Children ?? [])
-            .Where(node => SceneNodeTypes.IsPostEffect(node) && node.Enabled)
+            .Where(node => node.Type == "BlurEffect" && node.Enabled)
             .OrderByDescending(node => node.EffectSize)
             .FirstOrDefault();
         viewport.Effect = blur is null || blur.EffectSize <= 0
@@ -352,10 +353,14 @@ public sealed class SceneRenderService
         if (appearance is null) return;
         var appearanceTint = ParseColor(appearance.SurfaceAppearanceColor);
         var partTint = ParseColor(meshPart.Color);
+        var correctedTint = ApplyColorCorrection(System.Windows.Media.Color.FromRgb(
+            (byte)(appearanceTint.R * partTint.R / 255),
+            (byte)(appearanceTint.G * partTint.G / 255),
+            (byte)(appearanceTint.B * partTint.B / 255)));
         var albedoColor = new Color4(
-            appearanceTint.R / 255f * partTint.R / 255f,
-            appearanceTint.G / 255f * partTint.G / 255f,
-            appearanceTint.B / 255f * partTint.B / 255f,
+            correctedTint.R / 255f,
+            correctedTint.G / 255f,
+            correctedTint.B / 255f,
             1 - EffectiveTransparency(meshPart));
         var material = new PBRMaterial
         {
@@ -404,12 +409,13 @@ public sealed class SceneRenderService
                 ValidateImageFile(emissiveMask);
                 var emissiveTint = ParseColor(appearance.SurfaceAppearanceEmissiveTint);
                 var emissiveStrength = Math.Clamp(appearance.SurfaceAppearanceEmissiveStrength, 0, 100);
+                var correctedEmissiveTint = ApplyColorCorrection(emissiveTint);
                 material.EmissiveMap = TextureModel.Create(emissiveMask);
                 material.RenderEmissiveMap = true;
                 material.EmissiveColor = new Color4(
-                    emissiveTint.R / 255f * emissiveStrength,
-                    emissiveTint.G / 255f * emissiveStrength,
-                    emissiveTint.B / 255f * emissiveStrength,
+                    correctedEmissiveTint.R / 255f * emissiveStrength,
+                    correctedEmissiveTint.G / 255f * emissiveStrength,
+                    correctedEmissiveTint.B / 255f * emissiveStrength,
                     1);
             }
             catch { }
@@ -1584,7 +1590,7 @@ public sealed class SceneRenderService
         ("SkyboxBottom", new Vector3(0, -1, 0), 90, 0)
     ];
 
-    private static PhongMaterial MakeMaterial(SceneNode node)
+    private PhongMaterial MakeMaterial(SceneNode node)
     {
         if (node.Type == "Explosion")
         {
@@ -1602,6 +1608,7 @@ public sealed class SceneRenderService
             parsed = (System.Windows.Media.Color)ColorConverter.ConvertFromString(node.Color);
         }
         catch { parsed = Colors.CornflowerBlue; }
+        parsed = ApplyColorCorrection(parsed);
         var red = parsed.R / 255f;
         var green = parsed.G / 255f;
         var blue = parsed.B / 255f;
@@ -1620,6 +1627,37 @@ public sealed class SceneRenderService
             SpecularShininess = node.Material is "Metal" or "CorrodedMetal" or "DiamondPlate" or "Foil" or "Glass" or "Ice" or "Glacier" ? 100 : 24,
             EmissiveColor = node.Material == "Neon" ? new Color4(red * .5f, green * .5f, blue * .5f, 1) : new Color4(0, 0, 0, 1)
         };
+    }
+
+    private System.Windows.Media.Color ApplyColorCorrection(System.Windows.Media.Color color)
+    {
+        if (activeProject is null) return color;
+        var camera = activeProject.Workspace.Children.FirstOrDefault(node => node.Type == "Camera");
+        foreach (var effect in activeProject.Lighting.Children.Concat(camera?.Children ?? [])
+                     .Where(node => node.Type == "ColorCorrectionEffect" && node.Enabled))
+        {
+            var tint = ParseColor(effect.TintColor);
+            var red = color.R / 255f;
+            var green = color.G / 255f;
+            var blue = color.B / 255f;
+            var luminance = .2126f * red + .7152f * green + .0722f * blue;
+            var saturation = 1 + Math.Clamp(effect.ColorCorrectionSaturation, -1, 1);
+            red = luminance + (red - luminance) * saturation;
+            green = luminance + (green - luminance) * saturation;
+            blue = luminance + (blue - luminance) * saturation;
+            var contrast = 1 + Math.Clamp(effect.ColorCorrectionContrast, -1, 1);
+            red = (red - .5f) * contrast + .5f + Math.Clamp(effect.Brightness, -1, 1);
+            green = (green - .5f) * contrast + .5f + Math.Clamp(effect.Brightness, -1, 1);
+            blue = (blue - .5f) * contrast + .5f + Math.Clamp(effect.Brightness, -1, 1);
+            red *= tint.R / 255f;
+            green *= tint.G / 255f;
+            blue *= tint.B / 255f;
+            color = System.Windows.Media.Color.FromArgb(color.A,
+                (byte)Math.Clamp((int)MathF.Round(red * 255), 0, 255),
+                (byte)Math.Clamp((int)MathF.Round(green * 255), 0, 255),
+                (byte)Math.Clamp((int)MathF.Round(blue * 255), 0, 255));
+        }
+        return color;
     }
 
     private static System.Windows.Media.Color ParseColor(string value)
@@ -1679,7 +1717,7 @@ public sealed class SceneRenderService
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return string.Empty; }
     }
 
-    private static void LoadImageAsset(MeshGeometryModel3D model, string path, SceneNode node)
+    private void LoadImageAsset(MeshGeometryModel3D model, string path, SceneNode node)
     {
         if (!File.Exists(path)) return;
         try
@@ -1687,7 +1725,8 @@ public sealed class SceneRenderService
             ValidateImageFile(path);
             var material = MakeMaterial(node);
             material.DiffuseMap = TextureModel.Create(path);
-            material.DiffuseColor = new Color4(1, 1, 1, 1 - EffectiveTransparency(node));
+            var tint = ApplyColorCorrection(Colors.White);
+            material.DiffuseColor = new Color4(tint.R / 255f, tint.G / 255f, tint.B / 255f, 1 - EffectiveTransparency(node));
             model.Material = material;
         }
         catch { }

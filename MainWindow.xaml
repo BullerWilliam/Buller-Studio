@@ -221,8 +221,8 @@
           <Button Content="&#xE7A7;" FontFamily="Segoe MDL2 Assets" Click="Undo_Click" Padding="7,3" Background="Transparent" BorderBrush="Transparent" ToolTip="Undo (Ctrl+Z)" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
           <Button Content="&#xE7A6;" FontFamily="Segoe MDL2 Assets" Click="Redo_Click" Padding="7,3" Background="Transparent" BorderBrush="Transparent" ToolTip="Redo (Ctrl+Shift+Z)" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
           <Border Width="1" Height="19" Background="#414346" Margin="4,0" VerticalAlignment="Center"/>
-          <Button Content="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="13" Click="Play_Click" Background="#287A3D" Padding="9,3" ToolTip="Play test" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
-          <Button Content="&#xE71A;" FontFamily="Segoe MDL2 Assets" FontSize="12" Click="StopPlayer_Click" Padding="9,3" ToolTip="Stop test" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+          <Button Content="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="13" Click="Play_Click" Background="#287A3D" Padding="9,3" ToolTip="Play test (F5)" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+          <Button Content="&#xE71A;" FontFamily="Segoe MDL2 Assets" FontSize="12" Click="StopPlayer_Click" Padding="9,3" ToolTip="Stop test (Shift+F5)" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
         </StackPanel>
         <TextBlock Grid.Column="1" Text="{Binding Title, RelativeSource={RelativeSource AncestorType=Window}}" Foreground="#D7D9DC" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="10,0" IsHitTestVisible="False"/>
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">

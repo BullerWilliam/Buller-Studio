@@ -122,8 +122,8 @@ public sealed class LuaXRuntime
     {
         "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Model", "Folder", "Tool", "Accessory", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue",
-        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Team",
-        "Sky", "Atmosphere", "BlurEffect", "SurfaceAppearance", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
+        "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "NoCollisionConstraint", "Attachment", "Beam", "Team",
+        "Sky", "Atmosphere", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem"
     };
 
@@ -631,9 +631,22 @@ public sealed class LuaXRuntime
             runtimeTypeTags.Add(parameters, new LuaXTypeTag("RaycastParams"));
             parameters.Set("FilterDescendantsInstances", DynValue.NewTable(new Table(script)));
             parameters.Set("FilterType", DynValue.NewString("Exclude"));
+            parameters.Set("RespectCanCollide", DynValue.NewBoolean(false));
             return DynValue.NewTable(parameters);
         }));
         script.Globals.Set("RaycastParams", DynValue.NewTable(raycastParams));
+        var overlapParams = new Table(script);
+        overlapParams.Set("new", DynValue.NewCallback((_, _) =>
+        {
+            var parameters = new Table(script);
+            runtimeTypeTags.Add(parameters, new LuaXTypeTag("OverlapParams"));
+            parameters.Set("FilterDescendantsInstances", DynValue.NewTable(new Table(script)));
+            parameters.Set("FilterType", DynValue.NewString("Exclude"));
+            parameters.Set("MaxParts", DynValue.NewNumber(0));
+            parameters.Set("RespectCanCollide", DynValue.NewBoolean(false));
+            return DynValue.NewTable(parameters);
+        }));
+        script.Globals.Set("OverlapParams", DynValue.NewTable(overlapParams));
         var vector3 = new Table(script);
         vector3.Set("new", DynValue.NewCallback((_, args) => VectorValue([NumberArgument(args, 0), NumberArgument(args, 1), NumberArgument(args, 2)])));
         vector3.Set("zero", VectorValue([0, 0, 0]));
@@ -1215,6 +1228,13 @@ public sealed class LuaXRuntime
         }
         if (node.Type == "SurfaceGui") instance.Set("PixelsPerStud", DynValue.NewNumber(node.PixelsPerStud));
         if (node.Type == "Lighting" || SceneNodeTypes.IsLight(node)) instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
+        if (node.Type == "ColorCorrectionEffect")
+        {
+            instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
+            instance.Set("TintColor", ColorValue(node.TintColor));
+            instance.Set("Contrast", DynValue.NewNumber(node.ColorCorrectionContrast));
+            instance.Set("Saturation", DynValue.NewNumber(node.ColorCorrectionSaturation));
+        }
         if (SceneNodeTypes.IsLight(node)) instance.Set("Range", DynValue.NewNumber(node.Range));
         if (node.Type == "Fire") instance.Set("Heat", DynValue.NewNumber(node.Heat));
         if (node.Type == "Smoke")
@@ -1240,6 +1260,33 @@ public sealed class LuaXRuntime
         if (node.Type is "Sound" or "SoundGroup" or "SoundService")
             instance.Set("Volume", DynValue.NewNumber(node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume));
         if (node.Type == "PitchShiftSoundEffect") instance.Set("Octave", DynValue.NewNumber(node.PitchShiftOctave));
+        if (node.Type == "EchoSoundEffect")
+        {
+            instance.Set("Delay", DynValue.NewNumber(node.EchoDelay));
+            instance.Set("Feedback", DynValue.NewNumber(node.EchoFeedback));
+            instance.Set("DryLevel", DynValue.NewNumber(node.EchoDryLevel));
+            instance.Set("WetLevel", DynValue.NewNumber(node.EchoWetLevel));
+        }
+        if (node.Type == "FlangeSoundEffect")
+        {
+            instance.Set("Depth", DynValue.NewNumber(node.FlangeDepth));
+            instance.Set("Mix", DynValue.NewNumber(node.FlangeMix));
+            instance.Set("Rate", DynValue.NewNumber(node.FlangeRate));
+        }
+        if (node.Type == "TremoloSoundEffect")
+        {
+            instance.Set("Depth", DynValue.NewNumber(node.TremoloDepth));
+            instance.Set("Duty", DynValue.NewNumber(node.TremoloDuty));
+            instance.Set("Frequency", DynValue.NewNumber(node.TremoloFrequency));
+        }
+        if (node.Type == "ReverbSoundEffect")
+        {
+            instance.Set("DecayTime", DynValue.NewNumber(node.ReverbDecayTime));
+            instance.Set("Density", DynValue.NewNumber(node.ReverbDensity));
+            instance.Set("Diffusion", DynValue.NewNumber(node.ReverbDiffusion));
+            instance.Set("DryLevel", DynValue.NewNumber(node.ReverbDryLevel));
+            instance.Set("WetLevel", DynValue.NewNumber(node.ReverbWetLevel));
+        }
         if (node.Type == "Sound")
         {
             instance.Set("PlaybackSpeed", DynValue.NewNumber(node.PlaybackSpeed));
@@ -1861,7 +1908,14 @@ public sealed class LuaXRuntime
         }
         InstallAttributeApi(node, instance);
         InstallTagApi(node, instance);
-        if (node.Type == "Workspace") instance.Set("Raycast", DynValue.NewCallback((_, args) => Raycast(node, args)));
+        if (node.Type == "Workspace")
+        {
+            instance.Set("Raycast", DynValue.NewCallback((_, args) => Raycast(node, args)));
+            instance.Set("Blockcast", DynValue.NewCallback((_, args) => Blockcast(node, args)));
+            instance.Set("GetPartsInPart", DynValue.NewCallback((_, args) => GetPartsInPart(node, args)));
+            instance.Set("GetPartBoundsInBox", DynValue.NewCallback((_, args) => GetPartBoundsInBox(node, args)));
+            instance.Set("GetPartBoundsInRadius", DynValue.NewCallback((_, args) => GetPartBoundsInRadius(node, args)));
+        }
         if (node.Type == "Terrain") InstallTerrainApi(node, instance);
         if (SceneNodeTypes.IsValueObject(node))
         {
@@ -2061,6 +2115,38 @@ public sealed class LuaXRuntime
             else FillTerrain(terrain, position, [radius * 2, radius * 2, radius * 2], material, radius);
             return DynValue.Nil;
         }));
+        instance.Set("FillCylinder", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(terrain, args);
+            if (args.Count <= index + 2 || !IsTypedValue(args[index], "Vector3") || !IsTypedValue(args[index + 1], "Vector3")
+                || !IsTypedValue(args[index + 2], "Vector3")) return DynValue.Nil;
+            var position = ReadVector(args[index], [float.NaN, float.NaN, float.NaN]);
+            var size = ReadVector(args[index + 1], [float.NaN, float.NaN, float.NaN]);
+            var rotation = ReadVector(args[index + 2], [float.NaN, float.NaN, float.NaN]);
+            var material = ReadTerrainMaterial(args, index + 3);
+            if (!IsValidTerrainRegion(position, size) || !IsValidTerrainRotation(rotation) || material is null) return DynValue.Nil;
+            var contains = CreateTerrainCylinderPredicate(position, size, rotation);
+            var bounds = GetTerrainRotatedBounds(position, size, rotation);
+            if (material == "Air") ClearTerrain(terrain, bounds.Position, bounds.Size, contains: contains);
+            else FillTerrain(terrain, bounds.Position, bounds.Size, material, null, contains);
+            return DynValue.Nil;
+        }));
+        instance.Set("FillWedge", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetInstanceMethodArgumentIndex(terrain, args);
+            if (args.Count <= index + 2 || !IsTypedValue(args[index], "Vector3") || !IsTypedValue(args[index + 1], "Vector3")
+                || !IsTypedValue(args[index + 2], "Vector3")) return DynValue.Nil;
+            var position = ReadVector(args[index], [float.NaN, float.NaN, float.NaN]);
+            var size = ReadVector(args[index + 1], [float.NaN, float.NaN, float.NaN]);
+            var rotation = ReadVector(args[index + 2], [float.NaN, float.NaN, float.NaN]);
+            var material = ReadTerrainMaterial(args, index + 3);
+            if (!IsValidTerrainRegion(position, size) || !IsValidTerrainRotation(rotation) || material is null) return DynValue.Nil;
+            var contains = CreateTerrainWedgePredicate(position, size, rotation);
+            var bounds = GetTerrainRotatedBounds(position, size, rotation);
+            if (material == "Air") ClearTerrain(terrain, bounds.Position, bounds.Size, contains: contains);
+            else FillTerrain(terrain, bounds.Position, bounds.Size, material, null, contains);
+            return DynValue.Nil;
+        }));
         instance.Set("ClearBlock", DynValue.NewCallback((_, args) =>
         {
             var index = GetInstanceMethodArgumentIndex(terrain, args);
@@ -2090,7 +2176,10 @@ public sealed class LuaXRuntime
     private static bool IsValidTerrainRegion(float[] position, float[] size) => IsValidTerrainPosition(position)
         && size.All(value => float.IsFinite(value) && value > 0 && value <= 1024);
 
-    private void FillTerrain(SceneNode terrain, float[] position, float[] size, string material, float? sphereRadius)
+    private static bool IsValidTerrainRotation(float[] rotation) => rotation.Length == 3
+        && rotation.All(value => float.IsFinite(value) && Math.Abs(value) <= 36000);
+
+    private void FillTerrain(SceneNode terrain, float[] position, float[] size, string material, float? sphereRadius, Func<float[], bool>? contains = null)
     {
         var minX = (int)Math.Floor((position[0] - size[0] * .5f + TerrainCellSize * .5f) / TerrainCellSize);
         var minY = (int)Math.Floor((position[1] - size[1] * .5f + TerrainCellSize * .5f) / TerrainCellSize);
@@ -2108,6 +2197,7 @@ public sealed class LuaXRuntime
         {
             var cellPosition = new[] { x * TerrainCellSize, y * TerrainCellSize, z * TerrainCellSize };
             if (sphereRadius is { } radius && !TerrainCellIntersectsSphere(position, radius, cellPosition)) continue;
+            if (contains is not null && !contains(cellPosition)) continue;
             targetCells.Add(($"TerrainCell_{x}_{y}_{z}", cellPosition));
         }
 
@@ -2161,11 +2251,59 @@ public sealed class LuaXRuntime
         return dx * dx + dy * dy + dz * dz <= radius * radius;
     }
 
-    private void ClearTerrain(SceneNode terrain, float[]? position, float[]? size, float? sphereRadius = null)
+    private static Func<float[], bool> CreateTerrainCylinderPredicate(float[] position, float[] size, float[] rotation)
+    {
+        var inverseRotation = Matrix4x4.Transpose(RotationMath.FromDegrees(rotation));
+        return cellPosition =>
+        {
+            var local = Vector3.TransformNormal(new Vector3(cellPosition[0] - position[0], cellPosition[1] - position[1], cellPosition[2] - position[2]), inverseRotation);
+            var x = local.X / (size[0] * .5f);
+            var y = local.Y / (size[1] * .5f);
+            var z = local.Z / (size[2] * .5f);
+            return Math.Abs(y) <= 1 && x * x + z * z <= 1;
+        };
+    }
+
+    private static Func<float[], bool> CreateTerrainWedgePredicate(float[] position, float[] size, float[] rotation)
+    {
+        var inverseRotation = Matrix4x4.Transpose(RotationMath.FromDegrees(rotation));
+        return cellPosition =>
+        {
+            var local = Vector3.TransformNormal(new Vector3(cellPosition[0] - position[0], cellPosition[1] - position[1], cellPosition[2] - position[2]), inverseRotation);
+            var x = local.X / size[0];
+            var y = local.Y / size[1];
+            var z = local.Z / size[2];
+            return Math.Abs(x) <= .5f && Math.Abs(z) <= .5f && y >= -.5f && y <= -x;
+        };
+    }
+
+    private static (float[] Position, float[] Size) GetTerrainRotatedBounds(float[] position, float[] size, float[] rotation)
+    {
+        var transform = RotationMath.FromDegrees(rotation);
+        var minimum = new[] { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
+        var maximum = new[] { float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity };
+        for (var x = -1; x <= 1; x += 2)
+        for (var y = -1; y <= 1; y += 2)
+        for (var z = -1; z <= 1; z += 2)
+        {
+            var corner = Vector3.TransformNormal(new Vector3(x * size[0] * .5f, y * size[1] * .5f, z * size[2] * .5f), transform);
+            for (var axis = 0; axis < 3; axis++)
+            {
+                var component = axis == 0 ? corner.X : axis == 1 ? corner.Y : corner.Z;
+                minimum[axis] = Math.Min(minimum[axis], position[axis] + component);
+                maximum[axis] = Math.Max(maximum[axis], position[axis] + component);
+            }
+        }
+        return (
+            [(minimum[0] + maximum[0]) * .5f, (minimum[1] + maximum[1]) * .5f, (minimum[2] + maximum[2]) * .5f],
+            [maximum[0] - minimum[0], maximum[1] - minimum[1], maximum[2] - minimum[2]]);
+    }
+
+    private void ClearTerrain(SceneNode terrain, float[]? position, float[]? size, float? sphereRadius = null, Func<float[], bool>? contains = null)
     {
         var region = position is null || size is null ? null : new SceneNode { Type = "Part", Position = position, Size = size };
         var cells = terrain.Children.Where(node => node.Name.StartsWith("TerrainCell_", StringComparison.Ordinal)
-                && node.Type == "Part" && (region is null || CollisionGeometry.Intersects(node, region))
+                && node.Type == "Part" && (contains is null ? region is null || CollisionGeometry.Intersects(node, region) : contains(node.Position))
                 && (sphereRadius is null || position is not null && TerrainCellIntersectsSphere(position, sphereRadius.Value, node.Position)))
             .ToArray();
         foreach (var cell in cells) DestroyInstance(cell, notifyParentChange: false, refreshParent: false);
@@ -3390,6 +3528,16 @@ public sealed class LuaXRuntime
         return value.Type == DataType.String ? FindNode(value.String) : null;
     }
 
+    private bool TryReadVector3(DynValue value, out Vector3 vector)
+    {
+        vector = Vector3.Zero;
+        if (!IsTypedValue(value, "Vector3")) return false;
+        var values = ReadVector(value, [float.NaN, float.NaN, float.NaN]);
+        if (!values.All(float.IsFinite)) return false;
+        vector = new Vector3(values[0], values[1], values[2]);
+        return true;
+    }
+
     private DynValue Raycast(SceneNode workspace, CallbackArguments args)
     {
         var index = GetInstanceMethodArgumentIndex(workspace, args);
@@ -3401,51 +3549,207 @@ public sealed class LuaXRuntime
         var direction = new Vector3(directionValues[0], directionValues[1], directionValues[2]);
         if (!float.IsFinite(direction.Length()) || direction.LengthSquared() == 0) return DynValue.Nil;
 
-        var filterType = "Exclude";
-        var filterRoots = new List<SceneNode>();
-        if (args.Count > index + 2 && args[index + 2].Type != DataType.Nil)
-        {
-            if (!IsTypedValue(args[index + 2], "RaycastParams")) return DynValue.Nil;
-            var parameters = args[index + 2].Table;
-            var requestedType = parameters.Get("FilterType").CastToString();
-            if (requestedType is not ("Exclude" or "Include")) return DynValue.Nil;
-            filterType = requestedType;
-            var descendants = parameters.Get("FilterDescendantsInstances");
-            if (descendants.Type != DataType.Table) return DynValue.Nil;
-            for (var item = 1; item <= descendants.Table.Length; item++)
-                if (ReadNodeArgument(descendants.Table.Get(item)) is { } root) filterRoots.Add(root);
-        }
-
+        var paramsValue = args.Count > index + 2 ? args[index + 2] : DynValue.Nil;
+        if (!TryReadRaycastOptions(paramsValue, out var options)) return DynValue.Nil;
         SynchronizeInstances();
-        var filteredIds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var root in filterRoots)
-        {
-            filteredIds.Add(root.Id);
-            foreach (var descendant in GameProjectStore.Flatten(root.Children)) filteredIds.Add(descendant.Id);
-        }
         SceneNode? closestPart = null;
         CollisionGeometry.RayHit? closestHit = null;
         foreach (var part in Parts)
         {
-            if (!part.CanQuery) continue;
-            var matchesFilter = filteredIds.Contains(part.Id);
-            if (filterType == "Include" ? !matchesFilter : matchesFilter) continue;
+            if (!(options.RespectCanCollide ? part.CanCollide : part.CanQuery)) continue;
+            var matchesFilter = options.FilteredIds.Contains(part.Id);
+            if (options.FilterType == "Include" ? !matchesFilter : matchesFilter) continue;
             var hit = CollisionGeometry.Raycast(part, origin, direction);
             if (hit is null || closestHit is not null && hit.Value.Distance >= closestHit.Value.Distance) continue;
             closestPart = part;
             closestHit = hit;
         }
         if (closestPart is null || closestHit is null || !instances.TryGetValue(closestPart.Id, out var hitInstance)) return DynValue.Nil;
+        return CreateRaycastResult(closestPart, hitInstance, closestHit.Value);
+    }
+
+    private DynValue Blockcast(SceneNode workspace, CallbackArguments args)
+    {
+        var index = GetInstanceMethodArgumentIndex(workspace, args);
+        if (args.Count < index + 4 || !TryReadVector3(args[index], out var position) || !TryReadVector3(args[index + 1], out var size)
+            || !TryReadVector3(args[index + 2], out var rotation) || !TryReadVector3(args[index + 3], out var direction)
+            || size.X < 0 || size.Y < 0 || size.Z < 0 || direction.LengthSquared() <= 0) return DynValue.Nil;
+        var paramsValue = args.Count > index + 4 ? args[index + 4] : DynValue.Nil;
+        if (!TryReadRaycastOptions(paramsValue, out var options)) return DynValue.Nil;
+        var castBox = new SceneNode
+        {
+            Type = "Part",
+            Shape = "Block",
+            Name = "BlockcastQuery",
+            Position = [position.X, position.Y, position.Z],
+            Size = [size.X, size.Y, size.Z],
+            Rotation = [rotation.X, rotation.Y, rotation.Z]
+        };
+
+        SynchronizeInstances();
+        SceneNode? closestPart = null;
+        CollisionGeometry.RayHit? closestHit = null;
+        foreach (var part in Parts)
+        {
+            if (!(options.RespectCanCollide ? part.CanCollide : part.CanQuery)) continue;
+            var matchesFilter = options.FilteredIds.Contains(part.Id);
+            if (options.FilterType == "Include" ? !matchesFilter : matchesFilter) continue;
+            var hit = CollisionGeometry.Boxcast(castBox, part, direction);
+            if (hit is null || closestHit is not null && hit.Value.Distance >= closestHit.Value.Distance) continue;
+            closestPart = part;
+            closestHit = hit;
+        }
+        if (closestPart is null || closestHit is null || !instances.TryGetValue(closestPart.Id, out var hitInstance)) return DynValue.Nil;
+        return CreateRaycastResult(closestPart, hitInstance, closestHit.Value);
+    }
+
+    private bool TryReadRaycastOptions(DynValue value, out RaycastQueryOptions options)
+    {
+        var filterType = "Exclude";
+        var filteredIds = new HashSet<string>(StringComparer.Ordinal);
+        var respectCanCollide = false;
+        if (value.Type != DataType.Nil)
+        {
+            if (!IsTypedValue(value, "RaycastParams")) { options = default!; return false; }
+            var parameters = value.Table;
+            filterType = parameters.Get("FilterType").CastToString() ?? string.Empty;
+            if (filterType is not ("Exclude" or "Include")) { options = default!; return false; }
+            var roots = parameters.Get("FilterDescendantsInstances");
+            if (roots.Type != DataType.Table) { options = default!; return false; }
+            for (var item = 1; item <= roots.Table.Length; item++)
+            {
+                if (ReadNodeArgument(roots.Table.Get(item)) is not { } root) continue;
+                filteredIds.Add(root.Id);
+                foreach (var descendant in GameProjectStore.Flatten(root.Children)) filteredIds.Add(descendant.Id);
+            }
+            var respect = parameters.Get("RespectCanCollide");
+            if (respect.Type == DataType.Boolean) respectCanCollide = respect.Boolean;
+            else if (respect.Type != DataType.Nil) { options = default!; return false; }
+        }
+        options = new RaycastQueryOptions(filterType, filteredIds, respectCanCollide);
+        return true;
+    }
+
+    private DynValue CreateRaycastResult(SceneNode part, Table instance, CollisionGeometry.RayHit hit)
+    {
         var result = new Table(script);
         runtimeTypeTags.Add(result, new LuaXTypeTag("RaycastResult"));
-        result.Set("Instance", DynValue.NewTable(hitInstance));
-        result.Set("Position", VectorValue([closestHit.Value.Position.X, closestHit.Value.Position.Y, closestHit.Value.Position.Z]));
-        result.Set("Normal", VectorValue([closestHit.Value.Normal.X, closestHit.Value.Normal.Y, closestHit.Value.Normal.Z]));
-        result.Set("Distance", DynValue.NewNumber(closestHit.Value.Distance));
-        result.Set("Material", DynValue.NewString(closestPart.Material));
+        result.Set("Instance", DynValue.NewTable(instance));
+        result.Set("Position", VectorValue([hit.Position.X, hit.Position.Y, hit.Position.Z]));
+        result.Set("Normal", VectorValue([hit.Normal.X, hit.Normal.Y, hit.Normal.Z]));
+        result.Set("Distance", DynValue.NewNumber(hit.Distance));
+        result.Set("Material", DynValue.NewString(part.Material));
         result.ReadOnly = true;
         return DynValue.NewTable(result);
     }
+
+    private sealed record RaycastQueryOptions(string FilterType, HashSet<string> FilteredIds, bool RespectCanCollide);
+
+    private DynValue GetPartsInPart(SceneNode workspace, CallbackArguments args)
+    {
+        var index = GetInstanceMethodArgumentIndex(workspace, args);
+        if (args.Count <= index || ReadNodeArgument(args[index]) is not { } queryPart || !IsBasePart(queryPart)) return EmptyArray();
+        var paramsValue = args.Count > index + 1 ? args[index + 1] : DynValue.Nil;
+        if (!TryReadOverlapOptions(paramsValue, out var options)) return EmptyArray();
+        return QueryParts(queryPart.Id, part => CollisionGeometry.Intersects(queryPart, part), options);
+    }
+
+    private DynValue GetPartBoundsInBox(SceneNode workspace, CallbackArguments args)
+    {
+        var index = GetInstanceMethodArgumentIndex(workspace, args);
+        if (args.Count < index + 2 || !TryReadVector3(args[index], out var position) || !TryReadVector3(args[index + 1], out var size)
+            || size.X < 0 || size.Y < 0 || size.Z < 0) return EmptyArray();
+        var rotation = new Vector3(0, 0, 0);
+        var paramsIndex = index + 2;
+        if (args.Count > index + 2)
+        {
+            if (args[index + 2].Type == DataType.Nil)
+            {
+                if (args.Count > index + 3) paramsIndex++;
+            }
+            else if (IsTypedValue(args[index + 2], "OverlapParams"))
+            {
+                // Rotation may be omitted when the third argument is OverlapParams.
+            }
+            else if (TryReadVector3(args[index + 2], out rotation)) paramsIndex++;
+            else return EmptyArray();
+        }
+        var paramsValue = args.Count > paramsIndex ? args[paramsIndex] : DynValue.Nil;
+        if (!TryReadOverlapOptions(paramsValue, out var options)) return EmptyArray();
+        var region = new SceneNode
+        {
+            Type = "Part",
+            Name = "BoundsQuery",
+            Position = [position.X, position.Y, position.Z],
+            Size = [size.X, size.Y, size.Z],
+            Rotation = [rotation.X, rotation.Y, rotation.Z]
+        };
+        return QueryParts(null, part => CollisionGeometry.BoundsIntersect(region, part), options);
+    }
+
+    private DynValue GetPartBoundsInRadius(SceneNode workspace, CallbackArguments args)
+    {
+        var index = GetInstanceMethodArgumentIndex(workspace, args);
+        if (args.Count < index + 2 || !TryReadVector3(args[index], out var position)
+            || args[index + 1].Type != DataType.Number || !double.IsFinite(args[index + 1].Number)) return EmptyArray();
+        var radius = (float)args[index + 1].Number;
+        if (radius < 0 || !float.IsFinite(radius)) return EmptyArray();
+        var paramsValue = args.Count > index + 2 ? args[index + 2] : DynValue.Nil;
+        if (!TryReadOverlapOptions(paramsValue, out var options)) return EmptyArray();
+        return QueryParts(null, part => CollisionGeometry.BoundsIntersectSphere(part, position, radius), options);
+    }
+
+    private bool TryReadOverlapOptions(DynValue value, out OverlapQueryOptions options)
+    {
+        var filterType = "Exclude";
+        var filteredIds = new HashSet<string>(StringComparer.Ordinal);
+        var maxParts = 0;
+        var respectCanCollide = false;
+        if (value.Type != DataType.Nil)
+        {
+            if (!IsTypedValue(value, "OverlapParams")) { options = default!; return false; }
+            var parameters = value.Table;
+            filterType = parameters.Get("FilterType").CastToString() ?? string.Empty;
+            if (filterType is not ("Exclude" or "Include")) { options = default!; return false; }
+            var roots = parameters.Get("FilterDescendantsInstances");
+            if (roots.Type != DataType.Table) { options = default!; return false; }
+            for (var item = 1; item <= roots.Table.Length; item++)
+            {
+                if (ReadNodeArgument(roots.Table.Get(item)) is not { } root) continue;
+                filteredIds.Add(root.Id);
+                foreach (var descendant in GameProjectStore.Flatten(root.Children)) filteredIds.Add(descendant.Id);
+            }
+            var maximum = parameters.Get("MaxParts");
+            if (maximum.Type == DataType.Number && double.IsFinite(maximum.Number)) maxParts = (int)Math.Clamp(Math.Truncate(maximum.Number), 0, int.MaxValue);
+            else if (maximum.Type != DataType.Nil) { options = default!; return false; }
+            var respect = parameters.Get("RespectCanCollide");
+            if (respect.Type == DataType.Boolean) respectCanCollide = respect.Boolean;
+            else if (respect.Type != DataType.Nil) { options = default!; return false; }
+        }
+        options = new OverlapQueryOptions(filterType, filteredIds, maxParts, respectCanCollide);
+        return true;
+    }
+
+    private DynValue QueryParts(string? excludedPartId, Func<SceneNode, bool> intersectsQuery, OverlapQueryOptions options)
+    {
+        SynchronizeInstances();
+        var result = new Table(script);
+        var count = 0;
+        foreach (var part in Parts)
+        {
+            if (part.Id == excludedPartId || !(options.RespectCanCollide ? part.CanCollide : part.CanQuery)) continue;
+            var matchesFilter = options.FilteredIds.Contains(part.Id);
+            if (options.FilterType == "Include" ? !matchesFilter : matchesFilter) continue;
+            if (!intersectsQuery(part) || !instances.TryGetValue(part.Id, out var instance)) continue;
+            result.Set(++count, DynValue.NewTable(instance));
+            if (options.MaxParts > 0 && count >= options.MaxParts) break;
+        }
+        return DynValue.NewTable(result);
+    }
+
+    private DynValue EmptyArray() => DynValue.NewTable(new Table(script));
+
+    private sealed record OverlapQueryOptions(string FilterType, HashSet<string> FilteredIds, int MaxParts, bool RespectCanCollide);
 
     private DynValue NewInstance(CallbackArguments args)
     {
@@ -3455,6 +3759,7 @@ public sealed class LuaXRuntime
         if (SceneNodeTypes.IsBasePart(node)) node.Position = [0, 1, 0];
         if (className == "Atmosphere") { node.Color = "#C6D9FF"; node.AtmosphereDecay = "#607080"; }
         if (className == "BlurEffect") node.EffectSize = 0;
+        if (className == "ColorCorrectionEffect") node.Brightness = 0;
         if (className == "SpawnLocation") { node.Size = [6, 1, 6]; node.Position = [0, .5f, 0]; node.Color = "#72BF9D"; node.Material = "Metal"; }
         if (className is "Seat" or "VehicleSeat") { node.Size = [2, 1, 2]; node.Position = [0, .5f, 0]; node.Color = "#596B89"; node.Material = "Metal"; }
         if (className == "Fire") { node.Color = "#FF6A00"; node.EffectSize = 5; }
@@ -3998,6 +4303,9 @@ public sealed class LuaXRuntime
             "griprotation" => "GripRotation",
             "size" => "Size",
             "color" => "Color",
+            "tintcolor" => "TintColor",
+            "contrast" => "Contrast",
+            "saturation" => "Saturation",
             "backgroundcolor3" => "BackgroundColor3",
             "color3" => "Color3",
             "surfacecolor3" => "SurfaceColor3",
@@ -4068,6 +4376,17 @@ public sealed class LuaXRuntime
             "volume" => "Volume",
             "playbackspeed" => "PlaybackSpeed",
             "octave" => "Octave",
+            "delay" => "Delay",
+            "feedback" => "Feedback",
+            "drylevel" => "DryLevel",
+            "wetlevel" => "WetLevel",
+            "depth" => "Depth",
+            "mix" => "Mix",
+            "rate" => "Rate",
+            "duty" => "Duty",
+            "frequency" => "Frequency",
+            "decaytime" => "DecayTime",
+            "diffusion" => "Diffusion",
             "soundgroup" => "SoundGroup",
             "looped" => "Looped",
             "playing" => "Playing",
@@ -4946,6 +5265,9 @@ public sealed class LuaXRuntime
                     if (SceneNodeTypes.IsSurfaceAppearance(node)) node.SurfaceAppearanceColor = ReadColor(value, node.SurfaceAppearanceColor);
                     else node.Color = ReadColor(value, node.Color);
                     break;
+                case "tintcolor": if (node.Type != "ColorCorrectionEffect") return DynValue.Nil; node.TintColor = ReadColor(value, node.TintColor); break;
+                case "contrast": if (node.Type != "ColorCorrectionEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.ColorCorrectionContrast = (float)Math.Clamp(value.Number, -1, 1); break;
+                case "saturation": if (node.Type != "ColorCorrectionEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.ColorCorrectionSaturation = (float)Math.Clamp(value.Number, -1, 1); break;
                 case "colormap": if (!SceneNodeTypes.IsSurfaceAppearance(node) || value.Type != DataType.String) return DynValue.Nil; node.SurfaceAppearanceColorMap = value.String; break;
                 case "normalmap": if (!SceneNodeTypes.IsSurfaceAppearance(node) || value.Type != DataType.String) return DynValue.Nil; node.SurfaceAppearanceNormalMap = value.String; break;
                 case "roughnessmap": if (!SceneNodeTypes.IsSurfaceAppearance(node) || value.Type != DataType.String) return DynValue.Nil; node.SurfaceAppearanceRoughnessMap = value.String; break;
@@ -4982,7 +5304,12 @@ public sealed class LuaXRuntime
                 case "sparklecolor": if (node.Type != "Sparkles" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.Color = ReadColor(value, node.Color); break;
                 case "secondarycolor": if (node.Type != "Fire" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.SecondaryColor = ReadColor(value, node.SecondaryColor); break;
                 case "decay": if (node.Type != "Atmosphere" || !IsTypedValue(value, "Color3")) return DynValue.Nil; node.AtmosphereDecay = ReadColor(value, node.AtmosphereDecay); break;
-                case "density": if (node.Type != "Atmosphere" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Density = (float)Math.Clamp(value.Number, 0, 1); break;
+                case "density":
+                    if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    if (node.Type == "Atmosphere") node.Density = (float)Math.Clamp(value.Number, 0, 1);
+                    else if (node.Type == "ReverbSoundEffect") node.ReverbDensity = (float)Math.Clamp(value.Number, 0, 1);
+                    else return DynValue.Nil;
+                    break;
                 case "haze": if (node.Type != "Atmosphere" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Haze = (float)Math.Clamp(value.Number, 0, 10); break;
                 case "glare": if (node.Type != "Atmosphere" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Glare = (float)Math.Clamp(value.Number, 0, 10); break;
                 case "offset":
@@ -5162,7 +5489,7 @@ public sealed class LuaXRuntime
                     if (node.Type is not ("BillboardGui" or "SurfaceGui") || value.Type != DataType.Boolean) return DynValue.Nil;
                     node.AlwaysOnTop = value.Boolean;
                     break;
-                case "brightness": if ((node.Type != "Lighting" && !SceneNodeTypes.IsLight(node)) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Brightness = (float)Math.Clamp(value.Number, 0, 8); break;
+                case "brightness": if ((node.Type is not ("Lighting" or "ColorCorrectionEffect") && !SceneNodeTypes.IsLight(node)) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Brightness = node.Type == "ColorCorrectionEffect" ? (float)Math.Clamp(value.Number, -1, 1) : (float)Math.Clamp(value.Number, 0, 8); break;
                 case "range": if (!SceneNodeTypes.IsLight(node) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Range = (float)Math.Clamp(value.Number, 1, 1000); break;
                 case "heat": if (node.Type != "Fire" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.Heat = (float)Math.Clamp(value.Number, -25, 25); break;
                 case "risevelocity": if (node.Type != "Smoke" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.RiseVelocity = (float)Math.Clamp(value.Number, -25, 25); break;
@@ -5204,6 +5531,21 @@ public sealed class LuaXRuntime
                     if (node.Type != "PitchShiftSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.PitchShiftOctave = (float)Math.Clamp(value.Number, .5, 2);
                     break;
+                case "delay": if (node.Type != "EchoSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.EchoDelay = (float)Math.Clamp(value.Number, .01, 5); break;
+                case "feedback": if (node.Type != "EchoSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.EchoFeedback = (float)Math.Clamp(value.Number, 0, 1); break;
+                case "drylevel": if (node.Type == "EchoSoundEffect" && value.Type == DataType.Number && double.IsFinite(value.Number)) node.EchoDryLevel = (float)Math.Clamp(value.Number, -80, 10); else if (node.Type == "ReverbSoundEffect" && value.Type == DataType.Number && double.IsFinite(value.Number)) node.ReverbDryLevel = (float)Math.Clamp(value.Number, -80, 10); else return DynValue.Nil; break;
+                case "wetlevel": if (node.Type == "EchoSoundEffect" && value.Type == DataType.Number && double.IsFinite(value.Number)) node.EchoWetLevel = (float)Math.Clamp(value.Number, -80, 10); else if (node.Type == "ReverbSoundEffect" && value.Type == DataType.Number && double.IsFinite(value.Number)) node.ReverbWetLevel = (float)Math.Clamp(value.Number, -80, 10); else return DynValue.Nil; break;
+                case "decaytime": if (node.Type != "ReverbSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.ReverbDecayTime = (float)Math.Clamp(value.Number, .1, 20); break;
+                case "diffusion": if (node.Type != "ReverbSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.ReverbDiffusion = (float)Math.Clamp(value.Number, 0, 1); break;
+                case "depth":
+                    if (node.Type is not ("FlangeSoundEffect" or "TremoloSoundEffect") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    if (node.Type == "FlangeSoundEffect") node.FlangeDepth = (float)Math.Clamp(value.Number, .01, 1);
+                    else node.TremoloDepth = (float)Math.Clamp(value.Number, 0, 1);
+                    break;
+                case "mix": if (node.Type != "FlangeSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.FlangeMix = (float)Math.Clamp(value.Number, 0, 1); break;
+                case "rate": if (node.Type != "FlangeSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.FlangeRate = (float)Math.Clamp(value.Number, 0, 20); break;
+                case "duty": if (node.Type != "TremoloSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.TremoloDuty = (float)Math.Clamp(value.Number, 0, 1); break;
+                case "frequency": if (node.Type != "TremoloSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.TremoloFrequency = (float)Math.Clamp(value.Number, .1, 20); break;
                 case "looped": if (node.Type != "Sound") return DynValue.Nil; node.Looped = value.CastToBool(); break;
                 case "playing": if (node.Type != "Sound") return DynValue.Nil; node.Playing = value.CastToBool(); break;
                 case "rolloffmindistance":
@@ -6278,6 +6620,9 @@ public sealed class LuaXRuntime
         "rotation" => HasRotationProperty(node) ? VectorValue(node.Type == "AlignOrientation" ? node.AlignOrientationRotation : node.Rotation) : DynValue.Nil,
         "size" => !HasSizeProperty(node) ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) || SceneNodeTypes.IsPostEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) || node.Type == "BillboardGui" ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
         "color" => ColorValue(SceneNodeTypes.IsSurfaceAppearance(node) ? node.SurfaceAppearanceColor : node.Color),
+        "tintcolor" => node.Type == "ColorCorrectionEffect" ? ColorValue(node.TintColor) : DynValue.Nil,
+        "contrast" => node.Type == "ColorCorrectionEffect" ? DynValue.NewNumber(node.ColorCorrectionContrast) : DynValue.Nil,
+        "saturation" => node.Type == "ColorCorrectionEffect" ? DynValue.NewNumber(node.ColorCorrectionSaturation) : DynValue.Nil,
         "colormap" => SceneNodeTypes.IsSurfaceAppearance(node) ? DynValue.NewString(node.SurfaceAppearanceColorMap) : DynValue.Nil,
         "normalmap" => SceneNodeTypes.IsSurfaceAppearance(node) ? DynValue.NewString(node.SurfaceAppearanceNormalMap) : DynValue.Nil,
         "roughnessmap" => SceneNodeTypes.IsSurfaceAppearance(node) ? DynValue.NewString(node.SurfaceAppearanceRoughnessMap) : DynValue.Nil,
@@ -6294,7 +6639,7 @@ public sealed class LuaXRuntime
         "sparklecolor" => node.Type == "Sparkles" ? ColorValue(node.Color) : DynValue.Nil,
         "secondarycolor" => node.Type == "Fire" ? ColorValue(node.SecondaryColor) : DynValue.Nil,
         "decay" => node.Type == "Atmosphere" ? ColorValue(node.AtmosphereDecay) : DynValue.Nil,
-        "density" => node.Type == "Atmosphere" ? DynValue.NewNumber(node.Density) : DynValue.Nil,
+        "density" => node.Type == "Atmosphere" ? DynValue.NewNumber(node.Density) : node.Type == "ReverbSoundEffect" ? DynValue.NewNumber(node.ReverbDensity) : DynValue.Nil,
         "haze" => node.Type == "Atmosphere" ? DynValue.NewNumber(node.Haze) : DynValue.Nil,
         "glare" => node.Type == "Atmosphere" ? DynValue.NewNumber(node.Glare) : DynValue.Nil,
         "fillcolor" => node.Type == "Highlight" ? ColorValue(node.FillColor) : DynValue.Nil,
@@ -6337,7 +6682,7 @@ public sealed class LuaXRuntime
         "alwaystop" => node.Type is "BillboardGui" or "SurfaceGui" ? DynValue.NewBoolean(node.AlwaysOnTop) : DynValue.Nil,
         "maxdistance" => node.Type is "BillboardGui" or "SurfaceGui" ? DynValue.NewNumber(node.MaxDistance) : DynValue.Nil,
         "pixelsperstud" => node.Type == "SurfaceGui" ? DynValue.NewNumber(node.PixelsPerStud) : DynValue.Nil,
-        "brightness" => node.Type == "Lighting" || SceneNodeTypes.IsLight(node) ? DynValue.NewNumber(node.Brightness) : DynValue.Nil,
+        "brightness" => node.Type is "Lighting" or "ColorCorrectionEffect" || SceneNodeTypes.IsLight(node) ? DynValue.NewNumber(node.Brightness) : DynValue.Nil,
         "range" => SceneNodeTypes.IsLight(node) ? DynValue.NewNumber(node.Range) : DynValue.Nil,
         "heat" => node.Type == "Fire" ? DynValue.NewNumber(node.Heat) : DynValue.Nil,
         "risevelocity" => node.Type == "Smoke" ? DynValue.NewNumber(node.RiseVelocity) : DynValue.Nil,
@@ -6355,6 +6700,17 @@ public sealed class LuaXRuntime
         "volume" => node.Type is "Sound" or "SoundGroup" or "SoundService" ? DynValue.NewNumber(node.Type == "SoundGroup" ? node.SoundGroupVolume : node.Type == "SoundService" ? node.SoundServiceVolume : node.Volume) : DynValue.Nil,
         "playbackspeed" => node.Type == "Sound" ? DynValue.NewNumber(node.PlaybackSpeed) : DynValue.Nil,
         "octave" => node.Type == "PitchShiftSoundEffect" ? DynValue.NewNumber(node.PitchShiftOctave) : DynValue.Nil,
+        "delay" => node.Type == "EchoSoundEffect" ? DynValue.NewNumber(node.EchoDelay) : DynValue.Nil,
+        "feedback" => node.Type == "EchoSoundEffect" ? DynValue.NewNumber(node.EchoFeedback) : DynValue.Nil,
+        "drylevel" => node.Type == "EchoSoundEffect" ? DynValue.NewNumber(node.EchoDryLevel) : node.Type == "ReverbSoundEffect" ? DynValue.NewNumber(node.ReverbDryLevel) : DynValue.Nil,
+        "wetlevel" => node.Type == "EchoSoundEffect" ? DynValue.NewNumber(node.EchoWetLevel) : node.Type == "ReverbSoundEffect" ? DynValue.NewNumber(node.ReverbWetLevel) : DynValue.Nil,
+        "depth" => node.Type == "FlangeSoundEffect" ? DynValue.NewNumber(node.FlangeDepth) : node.Type == "TremoloSoundEffect" ? DynValue.NewNumber(node.TremoloDepth) : DynValue.Nil,
+        "mix" => node.Type == "FlangeSoundEffect" ? DynValue.NewNumber(node.FlangeMix) : DynValue.Nil,
+        "rate" => node.Type == "FlangeSoundEffect" ? DynValue.NewNumber(node.FlangeRate) : DynValue.Nil,
+        "duty" => node.Type == "TremoloSoundEffect" ? DynValue.NewNumber(node.TremoloDuty) : DynValue.Nil,
+        "frequency" => node.Type == "TremoloSoundEffect" ? DynValue.NewNumber(node.TremoloFrequency) : DynValue.Nil,
+        "decaytime" => node.Type == "ReverbSoundEffect" ? DynValue.NewNumber(node.ReverbDecayTime) : DynValue.Nil,
+        "diffusion" => node.Type == "ReverbSoundEffect" ? DynValue.NewNumber(node.ReverbDiffusion) : DynValue.Nil,
         "soundgroup" => node.Type == "Sound" ? GetSoundGroupReferenceValue(node.SoundGroupId) : DynValue.Nil,
         "looped" => node.Type == "Sound" ? DynValue.NewBoolean(node.Looped) : DynValue.Nil,
         "playing" => node.Type == "Sound" ? DynValue.NewBoolean(node.Playing) : DynValue.Nil,
@@ -6615,8 +6971,8 @@ public sealed class LuaXRuntime
         "SlidingBallConstraint" => node.Type is "PrismaticConstraint" or "CylindricalConstraint",
         "BasePart" => IsBasePart(node),
         "Light" => SceneNodeTypes.IsLight(node),
-        "PostEffect" => SceneNodeTypes.IsPostEffect(node),
-        "SoundEffect" => node.Type == "PitchShiftSoundEffect",
+        "PostEffect" => SceneNodeTypes.IsPostEffectClass(node),
+        "SoundEffect" => node.Type is "PitchShiftSoundEffect" or "EchoSoundEffect" or "FlangeSoundEffect" or "TremoloSoundEffect" or "ReverbSoundEffect",
         "ValueBase" => SceneNodeTypes.IsValueObject(node),
         "GuiBase3d" => node.Type is "SelectionBox" or "SelectionSphere",
         "BasePlayerGui" => node.Type == "PlayerGui",
@@ -6992,6 +7348,17 @@ public sealed class LuaXRuntime
                     else StopScripts([node.Id]);
                 }
             }
+            if (node.Type == "ColorCorrectionEffect")
+            {
+                if (IsTypedValue(instance.Get("TintColor"), "Color3")) Assign(node, "TintColor", node.TintColor, ReadColor(instance.Get("TintColor"), node.TintColor), value => node.TintColor = value);
+                if (instance.Get("Brightness").Type == DataType.Number && double.IsFinite(instance.Get("Brightness").Number)) Assign(node, "Brightness", node.Brightness, (float)Math.Clamp(instance.Get("Brightness").Number, -1, 1), value => node.Brightness = value);
+                if (instance.Get("Contrast").Type == DataType.Number && double.IsFinite(instance.Get("Contrast").Number)) Assign(node, "Contrast", node.ColorCorrectionContrast, (float)Math.Clamp(instance.Get("Contrast").Number, -1, 1), value => node.ColorCorrectionContrast = value);
+                if (instance.Get("Saturation").Type == DataType.Number && double.IsFinite(instance.Get("Saturation").Number)) Assign(node, "Saturation", node.ColorCorrectionSaturation, (float)Math.Clamp(instance.Get("Saturation").Number, -1, 1), value => node.ColorCorrectionSaturation = value);
+                instance.Set("TintColor", ColorValue(node.TintColor));
+                instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
+                instance.Set("Contrast", DynValue.NewNumber(node.ColorCorrectionContrast));
+                instance.Set("Saturation", DynValue.NewNumber(node.ColorCorrectionSaturation));
+            }
             if ((node.Type == "Lighting" || SceneNodeTypes.IsLight(node)) && instance.Get("Brightness").Type == DataType.Number && double.IsFinite(instance.Get("Brightness").Number)) Assign(node, "Brightness", node.Brightness, (float)Math.Clamp(instance.Get("Brightness").Number, 0, 8), value => node.Brightness = value);
             if (node.Type == "Lighting")
             {
@@ -7098,6 +7465,61 @@ public sealed class LuaXRuntime
             if (node.Type == "PitchShiftSoundEffect" && instance.Get("Octave").Type == DataType.Number && double.IsFinite(instance.Get("Octave").Number))
             {
                 Assign(node, "Octave", node.PitchShiftOctave, (float)Math.Clamp(instance.Get("Octave").Number, .5, 2), value => node.PitchShiftOctave = value);
+            }
+            if (node.Type == "EchoSoundEffect")
+            {
+                if (instance.Get("Delay").Type == DataType.Number && double.IsFinite(instance.Get("Delay").Number)) Assign(node, "Delay", node.EchoDelay, (float)Math.Clamp(instance.Get("Delay").Number, .01, 5), value => node.EchoDelay = value);
+                if (instance.Get("Feedback").Type == DataType.Number && double.IsFinite(instance.Get("Feedback").Number)) Assign(node, "Feedback", node.EchoFeedback, (float)Math.Clamp(instance.Get("Feedback").Number, 0, 1), value => node.EchoFeedback = value);
+                if (instance.Get("DryLevel").Type == DataType.Number && double.IsFinite(instance.Get("DryLevel").Number)) Assign(node, "DryLevel", node.EchoDryLevel, (float)Math.Clamp(instance.Get("DryLevel").Number, -80, 10), value => node.EchoDryLevel = value);
+                if (instance.Get("WetLevel").Type == DataType.Number && double.IsFinite(instance.Get("WetLevel").Number)) Assign(node, "WetLevel", node.EchoWetLevel, (float)Math.Clamp(instance.Get("WetLevel").Number, -80, 10), value => node.EchoWetLevel = value);
+                instance.Set("Delay", DynValue.NewNumber(node.EchoDelay));
+                instance.Set("Feedback", DynValue.NewNumber(node.EchoFeedback));
+                instance.Set("DryLevel", DynValue.NewNumber(node.EchoDryLevel));
+                instance.Set("WetLevel", DynValue.NewNumber(node.EchoWetLevel));
+            }
+            if (node.Type == "FlangeSoundEffect")
+            {
+                if (instance.Get("Depth").Type == DataType.Number && double.IsFinite(instance.Get("Depth").Number)) Assign(node, "Depth", node.FlangeDepth, (float)Math.Clamp(instance.Get("Depth").Number, .01, 1), value => node.FlangeDepth = value);
+                if (instance.Get("Mix").Type == DataType.Number && double.IsFinite(instance.Get("Mix").Number)) Assign(node, "Mix", node.FlangeMix, (float)Math.Clamp(instance.Get("Mix").Number, 0, 1), value => node.FlangeMix = value);
+                if (instance.Get("Rate").Type == DataType.Number && double.IsFinite(instance.Get("Rate").Number)) Assign(node, "Rate", node.FlangeRate, (float)Math.Clamp(instance.Get("Rate").Number, 0, 20), value => node.FlangeRate = value);
+                instance.Set("Depth", DynValue.NewNumber(node.FlangeDepth));
+                instance.Set("Mix", DynValue.NewNumber(node.FlangeMix));
+                instance.Set("Rate", DynValue.NewNumber(node.FlangeRate));
+            }
+            if (node.Type == "TremoloSoundEffect")
+            {
+                if (instance.Get("Depth").Type == DataType.Number && double.IsFinite(instance.Get("Depth").Number)) Assign(node, "Depth", node.TremoloDepth, (float)Math.Clamp(instance.Get("Depth").Number, 0, 1), value => node.TremoloDepth = value);
+                if (instance.Get("Duty").Type == DataType.Number && double.IsFinite(instance.Get("Duty").Number)) Assign(node, "Duty", node.TremoloDuty, (float)Math.Clamp(instance.Get("Duty").Number, 0, 1), value => node.TremoloDuty = value);
+                if (instance.Get("Frequency").Type == DataType.Number && double.IsFinite(instance.Get("Frequency").Number)) Assign(node, "Frequency", node.TremoloFrequency, (float)Math.Clamp(instance.Get("Frequency").Number, .1, 20), value => node.TremoloFrequency = value);
+                instance.Set("Depth", DynValue.NewNumber(node.TremoloDepth));
+                instance.Set("Duty", DynValue.NewNumber(node.TremoloDuty));
+                instance.Set("Frequency", DynValue.NewNumber(node.TremoloFrequency));
+            }
+            if (node.Type == "ReverbSoundEffect")
+            {
+                if (instance.Get("DecayTime").Type == DataType.Number && double.IsFinite(instance.Get("DecayTime").Number)) Assign(node, "DecayTime", node.ReverbDecayTime, (float)Math.Clamp(instance.Get("DecayTime").Number, .1, 20), value => node.ReverbDecayTime = value);
+                if (instance.Get("Density").Type == DataType.Number && double.IsFinite(instance.Get("Density").Number)) Assign(node, "Density", node.ReverbDensity, (float)Math.Clamp(instance.Get("Density").Number, 0, 1), value => node.ReverbDensity = value);
+                if (instance.Get("Diffusion").Type == DataType.Number && double.IsFinite(instance.Get("Diffusion").Number)) Assign(node, "Diffusion", node.ReverbDiffusion, (float)Math.Clamp(instance.Get("Diffusion").Number, 0, 1), value => node.ReverbDiffusion = value);
+                if (instance.Get("DryLevel").Type == DataType.Number && double.IsFinite(instance.Get("DryLevel").Number)) Assign(node, "DryLevel", node.ReverbDryLevel, (float)Math.Clamp(instance.Get("DryLevel").Number, -80, 10), value => node.ReverbDryLevel = value);
+                if (instance.Get("WetLevel").Type == DataType.Number && double.IsFinite(instance.Get("WetLevel").Number)) Assign(node, "WetLevel", node.ReverbWetLevel, (float)Math.Clamp(instance.Get("WetLevel").Number, -80, 10), value => node.ReverbWetLevel = value);
+                instance.Set("DecayTime", DynValue.NewNumber(node.ReverbDecayTime));
+                instance.Set("Density", DynValue.NewNumber(node.ReverbDensity));
+                instance.Set("Diffusion", DynValue.NewNumber(node.ReverbDiffusion));
+                instance.Set("DryLevel", DynValue.NewNumber(node.ReverbDryLevel));
+                instance.Set("WetLevel", DynValue.NewNumber(node.ReverbWetLevel));
+            }
+            if (node.Type == "ReverbSoundEffect")
+            {
+                if (instance.Get("DecayTime").Type == DataType.Number && double.IsFinite(instance.Get("DecayTime").Number)) Assign(node, "DecayTime", node.ReverbDecayTime, (float)Math.Clamp(instance.Get("DecayTime").Number, .1, 20), value => node.ReverbDecayTime = value);
+                if (instance.Get("Density").Type == DataType.Number && double.IsFinite(instance.Get("Density").Number)) Assign(node, "Density", node.ReverbDensity, (float)Math.Clamp(instance.Get("Density").Number, 0, 1), value => node.ReverbDensity = value);
+                if (instance.Get("Diffusion").Type == DataType.Number && double.IsFinite(instance.Get("Diffusion").Number)) Assign(node, "Diffusion", node.ReverbDiffusion, (float)Math.Clamp(instance.Get("Diffusion").Number, 0, 1), value => node.ReverbDiffusion = value);
+                if (instance.Get("DryLevel").Type == DataType.Number && double.IsFinite(instance.Get("DryLevel").Number)) Assign(node, "DryLevel", node.ReverbDryLevel, (float)Math.Clamp(instance.Get("DryLevel").Number, -80, 10), value => node.ReverbDryLevel = value);
+                if (instance.Get("WetLevel").Type == DataType.Number && double.IsFinite(instance.Get("WetLevel").Number)) Assign(node, "WetLevel", node.ReverbWetLevel, (float)Math.Clamp(instance.Get("WetLevel").Number, -80, 10), value => node.ReverbWetLevel = value);
+                instance.Set("DecayTime", DynValue.NewNumber(node.ReverbDecayTime));
+                instance.Set("Density", DynValue.NewNumber(node.ReverbDensity));
+                instance.Set("Diffusion", DynValue.NewNumber(node.ReverbDiffusion));
+                instance.Set("DryLevel", DynValue.NewNumber(node.ReverbDryLevel));
+                instance.Set("WetLevel", DynValue.NewNumber(node.ReverbWetLevel));
             }
             if (node.Type == "BodyForce")
             {

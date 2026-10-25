@@ -98,6 +98,9 @@ public sealed class SceneNode
     public float Brightness { get; set; } = 1;
     public string Ambient { get; set; } = "#808080";
     public string AtmosphereDecay { get; set; } = "#607080";
+    public string TintColor { get; set; } = "#FFFFFF";
+    public float ColorCorrectionContrast { get; set; }
+    public float ColorCorrectionSaturation { get; set; }
     public float Density { get; set; } = .3f;
     public float Haze { get; set; }
     public float Glare { get; set; }
@@ -136,6 +139,21 @@ public sealed class SceneNode
     public float SoundGroupVolume { get; set; } = 1;
     public string SoundGroupId { get; set; } = string.Empty;
     public float PitchShiftOctave { get; set; } = 1.25f;
+    public float EchoDelay { get; set; } = 1;
+    public float EchoFeedback { get; set; } = .5f;
+    public float EchoDryLevel { get; set; }
+    public float EchoWetLevel { get; set; } = 0;
+    public float FlangeDepth { get; set; } = .45f;
+    public float FlangeMix { get; set; } = .85f;
+    public float FlangeRate { get; set; } = 5;
+    public float TremoloDepth { get; set; } = 1;
+    public float TremoloDuty { get; set; } = .5f;
+    public float TremoloFrequency { get; set; } = 5;
+    public float ReverbDecayTime { get; set; } = 1.5f;
+    public float ReverbDensity { get; set; } = 1;
+    public float ReverbDiffusion { get; set; } = 1;
+    public float ReverbDryLevel { get; set; } = -6;
+    public float ReverbWetLevel { get; set; }
     public bool Looped { get; set; }
     public bool Playing { get; set; }
     public float RollOffMinDistance { get; set; } = 10;

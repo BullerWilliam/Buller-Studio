@@ -19,8 +19,9 @@ internal static class RotationMath
         var yaw = MathF.Abs(MathF.Cos(pitch)) > .00001f
             ? MathF.Atan2(matrix.M31, matrix.M33)
             : MathF.Atan2(-matrix.M13, matrix.M11);
-        var roll = MathF.Abs(MathF.Cos(pitch)) > .00001f
-            ? MathF.Atan2(matrix.M12, matrix.M22) : 0;
+        var cosinePitch = MathF.Cos(pitch);
+        var roll = MathF.Abs(cosinePitch) > .00001f
+            ? MathF.Atan2(matrix.M12, matrix.M22 / cosinePitch) : 0;
         var factor = 180 / MathF.PI;
         return [pitch * factor, yaw * factor, roll * factor];
     }

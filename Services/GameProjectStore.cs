@@ -416,7 +416,12 @@ public static class GameProjectStore
             if (node.Type == "UIShadow") UIShadowService.Normalize(node);
             node.Adornee ??= string.Empty;
             if (node.SurfaceColor3 is null || !System.Text.RegularExpressions.Regex.IsMatch(node.SurfaceColor3, "^#[0-9A-Fa-f]{6}$")) node.SurfaceColor3 = "#FFFFFF";
-            node.Brightness = float.IsFinite(node.Brightness) ? Math.Clamp(node.Brightness, 0, 8) : 1;
+            if (node.TintColor is null || !System.Text.RegularExpressions.Regex.IsMatch(node.TintColor, "^#[0-9A-Fa-f]{6}$")) node.TintColor = "#FFFFFF";
+            node.ColorCorrectionContrast = float.IsFinite(node.ColorCorrectionContrast) ? Math.Clamp(node.ColorCorrectionContrast, -1, 1) : 0;
+            node.ColorCorrectionSaturation = float.IsFinite(node.ColorCorrectionSaturation) ? Math.Clamp(node.ColorCorrectionSaturation, -1, 1) : 0;
+            node.Brightness = float.IsFinite(node.Brightness)
+                ? node.Type == "ColorCorrectionEffect" ? Math.Clamp(node.Brightness, -1, 1) : Math.Clamp(node.Brightness, 0, 8)
+                : node.Type == "ColorCorrectionEffect" ? 0 : 1;
             node.Range = float.IsFinite(node.Range) ? Math.Clamp(node.Range, 1, 1000) : 16;
             node.SecondaryColor ??= "#FFE69A";
             node.EffectSize = float.IsFinite(node.EffectSize) ? Math.Clamp(node.EffectSize, node.Type == "Fire" ? 2 : node.Type == "BlurEffect" ? 0 : .1f, node.Type == "Fire" ? 30 : node.Type == "BlurEffect" ? 56 : 100) : node.Type == "Fire" ? 5 : 1;
@@ -454,6 +459,21 @@ public static class GameProjectStore
             node.SoundGroupVolume = float.IsFinite(node.SoundGroupVolume) ? Math.Clamp(node.SoundGroupVolume, 0, 1) : 1;
             node.SoundGroupId ??= string.Empty;
             node.PitchShiftOctave = float.IsFinite(node.PitchShiftOctave) ? Math.Clamp(node.PitchShiftOctave, .5f, 2) : 1.25f;
+            node.EchoDelay = float.IsFinite(node.EchoDelay) ? Math.Clamp(node.EchoDelay, .01f, 5) : 1;
+            node.EchoFeedback = float.IsFinite(node.EchoFeedback) ? Math.Clamp(node.EchoFeedback, 0, 1) : .5f;
+            node.EchoDryLevel = float.IsFinite(node.EchoDryLevel) ? Math.Clamp(node.EchoDryLevel, -80, 10) : 0;
+            node.EchoWetLevel = float.IsFinite(node.EchoWetLevel) ? Math.Clamp(node.EchoWetLevel, -80, 10) : 0;
+            node.FlangeDepth = float.IsFinite(node.FlangeDepth) ? Math.Clamp(node.FlangeDepth, .01f, 1) : .45f;
+            node.FlangeMix = float.IsFinite(node.FlangeMix) ? Math.Clamp(node.FlangeMix, 0, 1) : .85f;
+            node.FlangeRate = float.IsFinite(node.FlangeRate) ? Math.Clamp(node.FlangeRate, 0, 20) : 5;
+            node.TremoloDepth = float.IsFinite(node.TremoloDepth) ? Math.Clamp(node.TremoloDepth, 0, 1) : 1;
+            node.TremoloDuty = float.IsFinite(node.TremoloDuty) ? Math.Clamp(node.TremoloDuty, 0, 1) : .5f;
+            node.TremoloFrequency = float.IsFinite(node.TremoloFrequency) ? Math.Clamp(node.TremoloFrequency, .1f, 20) : 5;
+            node.ReverbDecayTime = float.IsFinite(node.ReverbDecayTime) ? Math.Clamp(node.ReverbDecayTime, .1f, 20) : 1.5f;
+            node.ReverbDensity = float.IsFinite(node.ReverbDensity) ? Math.Clamp(node.ReverbDensity, 0, 1) : 1;
+            node.ReverbDiffusion = float.IsFinite(node.ReverbDiffusion) ? Math.Clamp(node.ReverbDiffusion, 0, 1) : 1;
+            node.ReverbDryLevel = float.IsFinite(node.ReverbDryLevel) ? Math.Clamp(node.ReverbDryLevel, -80, 10) : -6;
+            node.ReverbWetLevel = float.IsFinite(node.ReverbWetLevel) ? Math.Clamp(node.ReverbWetLevel, -80, 10) : 0;
             node.RollOffMinDistance = float.IsFinite(node.RollOffMinDistance) ? Math.Clamp(node.RollOffMinDistance, 0, 1000) : 10;
             node.RollOffMaxDistance = float.IsFinite(node.RollOffMaxDistance) ? Math.Clamp(node.RollOffMaxDistance, node.RollOffMinDistance + .01f, 10000) : 100;
             node.Part0 ??= string.Empty;
@@ -787,13 +807,13 @@ public static class GameProjectStore
         if (SceneNodeTypes.IsSurfaceAppearance(source))
             return destinationParent.Type == "MeshPart" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => SceneNodeTypes.IsSurfaceAppearance(child) && child.Id != source.Id);
-        if (source.Type == "BlurEffect")
+        if (source.Type is "BlurEffect" or "ColorCorrectionEffect")
             return source.Children.Count == 0 && (destinationParent.Id == project.Lighting.Id
                 || destinationParent.Type == "Camera" && project.Workspace.Children.Any(camera => camera.Id == destinationParent.Id && camera.Type == "Camera"));
         if (destinationParent.Id == project.Lighting.Id)
             return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == source.Type && child.Id != source.Id);
-        if (source.Type is "Sky" or "Atmosphere" || IsNodeInTree(project.Lighting, destinationParent.Id)) return false;
+        if (source.Type is "Sky" or "Atmosphere" or "ColorCorrectionEffect" || IsNodeInTree(project.Lighting, destinationParent.Id)) return false;
         if (destinationParent.Id == project.SoundService.Id) return IsWorkspaceSubtreeCompatible(source, "SoundService") || source.Type == "Folder";
         if (IsNodeInTree(project.SoundService, destinationParent.Id)) return destinationParent.Type is "Folder" or "Configuration" or "Sound" or "SoundGroup" && IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
 
@@ -871,8 +891,8 @@ public static class GameProjectStore
                 && !destinationParent.Children.Any(SceneNodeTypes.IsSurfaceAppearance);
         if (destinationParent.Type == "Team") return false;
         if (destinationParent.Type == "Lighting") return source.Type is "Sky" or "Atmosphere" && source.Children.Count == 0 && destinationParent.Children.All(child => child.Type != source.Type)
-            || source.Type == "BlurEffect" && source.Children.Count == 0;
-        if (source.Type == "BlurEffect") return destinationParent.Type == "Camera" && source.Children.Count == 0;
+            || source.Type is "BlurEffect" or "ColorCorrectionEffect" && source.Children.Count == 0;
+        if (source.Type is "BlurEffect" or "ColorCorrectionEffect") return destinationParent.Type == "Camera" && source.Children.Count == 0;
         if (destinationParent.Type is "Sound" or "SoundGroup") return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
         if (source.Type is "Sky" or "Atmosphere") return false;
         if (destinationParent.Type == "PlayerGui") return source.Type == "LocalScript" && source.Children.Count == 0 || source.Type == "ScreenGui" && IsGuiSubtreeCompatible(source, true);
@@ -1008,14 +1028,14 @@ public static class GameProjectStore
     {
         if (SceneNodeTypes.IsSurfaceAppearance(node)) return parentType == "MeshPart" && node.Children.Count == 0;
         if (node.Type == "MeshPart" && node.Children.Count(SceneNodeTypes.IsSurfaceAppearance) > 1) return false;
-        if (node.Type == "BlurEffect") return parentType is "Lighting" or "Camera" && node.Children.Count == 0;
+        if (node.Type is "BlurEffect" or "ColorCorrectionEffect") return parentType is "Lighting" or "Camera" && node.Children.Count == 0;
         if (node.Type == "Terrain") return parentType == "Workspace" && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Terrain"));
         if (parentType == "Terrain") return SceneNodeTypes.IsBasePart(node)
             && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
         if (node.Type == "SoundGroup")
             return (parentType is "Workspace" or "SoundService" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
-        if (node.Type == "PitchShiftSoundEffect")
+        if (node.Type is "PitchShiftSoundEffect" or "EchoSoundEffect" or "FlangeSoundEffect" or "TremoloSoundEffect" or "ReverbSoundEffect")
             return parentType is "Sound" or "SoundGroup" && node.Children.Count == 0;
         if (node.Type is "RemoteEvent" or "UnreliableRemoteEvent" or "RemoteFunction")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType))

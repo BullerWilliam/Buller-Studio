@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Vector3 = System.Numerics.Vector3;
+using Matrix4x4 = System.Numerics.Matrix4x4;
 using HelixToolkit.Wpf.SharpDX;
 using BullerStudio.Models;
 using BullerStudio.Services;
@@ -24,7 +25,7 @@ public partial class PlayerWindow : Window
     private readonly HashSet<Key> contextSunkKeys = [];
     private readonly HashSet<MouseButton> contextSunkMouseButtons = [];
     private SceneNode? activeTool;
-    private sealed record EquippedPartState(float[] LocalOffset, float[] RotationOffset, float[] Position, float[] Rotation, bool Anchored, bool CanCollide);
+    private sealed record EquippedPartState(float[] LocalOffset, Matrix4x4 RotationOffset, float[] Position, float[] Rotation, bool Anchored, bool CanCollide);
     private readonly Dictionary<string, EquippedPartState> equippedToolParts = new(StringComparer.Ordinal);
     private readonly SeatInteractionService? seats;
     private readonly SoundPlaybackService soundPlayback;
@@ -485,16 +486,14 @@ public partial class PlayerWindow : Window
         runtime?.InvokeToolEquipped(tool.Id, true);
         if (handle is not null)
         {
-            var yaw = character?.Root.Rotation[1] * MathF.PI / 180 ?? 0;
-            var cosine = MathF.Cos(yaw);
-            var sine = MathF.Sin(yaw);
+            var handleRotation = RotationMath.FromDegrees(handle.Rotation);
+            var inverseHandleRotation = Matrix4x4.Transpose(handleRotation);
             foreach (var part in new[] { tool }.Concat(GameProjectStore.Flatten(tool.Children)).Where(SceneNodeTypes.IsBasePart))
             {
-                var dx = part.Position[0] - handle.Position[0];
-                var dz = part.Position[2] - handle.Position[2];
-                var localOffset = new[] { dx * cosine - dz * sine, part.Position[1] - handle.Position[1], dx * sine + dz * cosine };
-                var rotationOffset = new[] { part.Rotation[0] - handle.Rotation[0], part.Rotation[1] - handle.Rotation[1], part.Rotation[2] - handle.Rotation[2] };
-                equippedToolParts[part.Id] = new EquippedPartState(localOffset, rotationOffset, (float[])part.Position.Clone(), (float[])part.Rotation.Clone(), part.Anchored, part.CanCollide);
+                var worldOffset = new Vector3(part.Position[0] - handle.Position[0], part.Position[1] - handle.Position[1], part.Position[2] - handle.Position[2]);
+                var localOffset = Vector3.TransformNormal(worldOffset, inverseHandleRotation);
+                var rotationOffset = RotationMath.FromDegrees(part.Rotation) * inverseHandleRotation;
+                equippedToolParts[part.Id] = new EquippedPartState([localOffset.X, localOffset.Y, localOffset.Z], rotationOffset, (float[])part.Position.Clone(), (float[])part.Rotation.Clone(), part.Anchored, part.CanCollide);
                 part.Anchored = true;
                 part.CanCollide = false;
             }
@@ -509,28 +508,19 @@ public partial class PlayerWindow : Window
         if (character is null || activeTool is null || !character.Model.Children.Contains(activeTool)) return;
         var handle = FindToolHandle(activeTool);
         if (handle is null) return;
-        var yaw = character.Root.Rotation[1] * MathF.PI / 180;
-        var cosine = MathF.Cos(yaw);
-        var sine = MathF.Sin(yaw);
-        var localGrip = activeTool.GripPosition;
-        var handlePosition = new[]
-        {
-            character.Root.Position[0] + localGrip[0] * cosine + localGrip[2] * sine,
-            character.Root.Position[1] + localGrip[1],
-            character.Root.Position[2] - localGrip[0] * sine + localGrip[2] * cosine
-        };
-        var handleRotation = new[] { activeTool.GripRotation[0], character.Root.Rotation[1] + activeTool.GripRotation[1], activeTool.GripRotation[2] };
+        var rootRotation = RotationMath.FromDegrees(character.Root.Rotation);
+        var gripRotation = RotationMath.FromDegrees(activeTool.GripRotation) * rootRotation;
+        var localGrip = new Vector3(activeTool.GripPosition[0], activeTool.GripPosition[1], activeTool.GripPosition[2]);
+        var worldGrip = Vector3.TransformNormal(localGrip, rootRotation);
+        var handlePosition = new Vector3(character.Root.Position[0] + worldGrip.X, character.Root.Position[1] + worldGrip.Y, character.Root.Position[2] + worldGrip.Z);
         foreach (var part in new[] { activeTool }.Concat(GameProjectStore.Flatten(activeTool.Children)).Where(SceneNodeTypes.IsBasePart))
         {
             if (!equippedToolParts.TryGetValue(part.Id, out var state)) continue;
-            var offset = state.LocalOffset;
-            var position = new[]
-            {
-                handlePosition[0] + offset[0] * cosine + offset[2] * sine,
-                handlePosition[1] + offset[1],
-                handlePosition[2] - offset[0] * sine + offset[2] * cosine
-            };
-            var rotation = new[] { handleRotation[0] + state.RotationOffset[0], handleRotation[1] + state.RotationOffset[1], handleRotation[2] + state.RotationOffset[2] };
+            var localOffset = new Vector3(state.LocalOffset[0], state.LocalOffset[1], state.LocalOffset[2]);
+            var worldOffset = Vector3.TransformNormal(localOffset, gripRotation);
+            var worldPosition = handlePosition + worldOffset;
+            var position = new[] { worldPosition.X, worldPosition.Y, worldPosition.Z };
+            var rotation = RotationMath.ToDegrees(state.RotationOffset * gripRotation);
             if (part.Position.SequenceEqual(position) && part.Rotation.SequenceEqual(rotation)) continue;
             part.Position = position;
             part.Rotation = rotation;
