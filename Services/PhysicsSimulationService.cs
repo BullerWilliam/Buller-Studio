@@ -1836,7 +1836,7 @@ public sealed class PhysicsSimulationService
         static Vector3 Vector(float[] value) => new(value[0], value[1], value[2]);
         var partById = parts.ToDictionary(part => part.Id, StringComparer.Ordinal);
         foreach (var motor in GameProjectStore.Flatten(project.Workspace.Children)
-                     .Where(node => node.Type == "Motor6D"))
+                     .Where(node => node.Type is "Weld" or "Motor6D"))
         {
             if (!motor.Enabled) continue;
             if (!partById.TryGetValue(motor.Part0, out var part0) || !partById.TryGetValue(motor.Part1, out var part1) || ReferenceEquals(part0, part1))

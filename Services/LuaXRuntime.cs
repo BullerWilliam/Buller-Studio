@@ -7011,7 +7011,7 @@ public sealed class LuaXRuntime
                     break;
                 case "part0":
                 case "part1":
-                    if (node.Type is not ("WeldConstraint" or "Motor6D" or "NoCollisionConstraint")) return DynValue.Nil;
+                    if (node.Type is not ("WeldConstraint" or "Weld" or "Motor6D" or "NoCollisionConstraint")) return DynValue.Nil;
                     var endpoint = value.Type == DataType.Nil ? null : ReadNodeArgument(value);
                     if (value.Type != DataType.Nil && !IsBasePart(endpoint)) return DynValue.Nil;
                     var endpointId = endpoint?.Id ?? string.Empty;
