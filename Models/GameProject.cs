@@ -466,6 +466,10 @@ public sealed class SceneNode
     public float MaxHealth { get; set; } = 100;
     public float WalkSpeed { get; set; } = 7.5f;
     public float JumpPower { get; set; } = 10;
+    public float JumpHeight { get; set; } = 7.2f;
+    public bool Jump { get; set; }
+    public bool UseJumpPower { get; set; } = true;
+    public bool AutoRotate { get; set; } = true;
     public float CameraMinZoomDistance { get; set; } = 2;
     public float CameraMaxZoomDistance { get; set; } = 100;
     public bool BooleanValue { get; set; }
@@ -480,6 +484,12 @@ public sealed class SceneNode
     public List<string> Tags { get; set; } = [];
     public string Asset { get; set; } = string.Empty;
     public string AnimationId { get; set; } = string.Empty;
+    public float KeyframeTime { get; set; }
+    public bool KeyframeSequenceLooped { get; set; }
+    public string KeyframeSequencePriority { get; set; } = "Core";
+    public float PoseWeight { get; set; } = 1;
+    public string PoseEasingStyle { get; set; } = "Linear";
+    public string PoseEasingDirection { get; set; } = "In";
     public string ShirtTemplate { get; set; } = string.Empty;
     public string PantsTemplate { get; set; } = string.Empty;
     public string Graphic { get; set; } = string.Empty;

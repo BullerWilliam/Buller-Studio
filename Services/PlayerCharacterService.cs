@@ -84,6 +84,9 @@ public sealed class PlayerCharacterService
         }
         Humanoid.WalkSpeed = Math.Clamp(project.StarterPlayer.WalkSpeed, 0, 1000);
         Humanoid.JumpPower = Math.Clamp(project.StarterPlayer.JumpPower, 0, 1000);
+        Humanoid.JumpHeight = Math.Clamp(project.StarterPlayer.JumpHeight, 0, 1000);
+        Humanoid.UseJumpPower = project.StarterPlayer.UseJumpPower;
+        Humanoid.AutoRotate = project.StarterPlayer.AutoRotate;
         SpawnProtection = new SceneNode { Type = "ForceField", Name = "ForceField", Enabled = SpawnLocation?.Duration > 0 };
         Model.Children.Add(SpawnProtection);
         project.Workspace.Children.Add(Model);
@@ -122,9 +125,17 @@ public sealed class PlayerCharacterService
         var targetGaitStrength = walkSpeed > .001f ? length * Math.Clamp(walkSpeed / 7.5f, 0, 1) : 0;
         gaitStrength += (targetGaitStrength - gaitStrength) * Math.Clamp(elapsed * 10, 0, 1);
         if (length > .001f) gaitPhase += elapsed * Math.Clamp(walkSpeed / 7.5f, .25f, 3) * 8;
-        if (jump && physics.IsGrounded(Root)) Root.Velocity[1] = Math.Clamp(Humanoid.JumpPower, 0, 1000);
-        if (length > .001f) facingYaw = MathF.Atan2(-x, -z) * 180 / MathF.PI;
+        if ((jump || Humanoid.Jump) && physics.IsGrounded(Root))
+        {
+            Root.Velocity[1] = GetJumpVelocity(Humanoid, project.Workspace.Gravity);
+            Humanoid.Jump = false;
+        }
+        if (length > .001f && Humanoid.AutoRotate) facingYaw = MathF.Atan2(-x, -z) * 180 / MathF.PI;
     }
+
+    public static float GetJumpVelocity(SceneNode humanoid, float gravity) => humanoid.UseJumpPower
+        ? Math.Clamp(humanoid.JumpPower, 0, 1000)
+        : Math.Clamp(MathF.Sqrt(2 * Math.Clamp(float.IsFinite(gravity) ? gravity : 0, 0, 1000) * Math.Clamp(humanoid.JumpHeight, 0, 1000)), 0, 1000);
 
     public IReadOnlyList<SceneNode> UpdatePose()
     {

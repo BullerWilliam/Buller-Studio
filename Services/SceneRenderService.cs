@@ -182,7 +182,7 @@ public sealed class SceneRenderService
         viewport.IsShadowMappingEnabled = project.Settings.Shadows;
         RefreshLighting(project.Lighting);
         RefreshPostEffects(project);
-        foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type is not ("Decal" or "Texture" or "Attachment") || FindPartParent(project, node) is not null)))
+        foreach (var node in GameProjectStore.Flatten(project.Workspace.Children).Where(node => IsRenderable(node) && (node.Type is not ("Decal" or "Texture" or "Attachment" or "Bone") || FindPartParent(project, node) is not null)))
         {
             var model = CreateVisual(node, project);
             visuals[node.Id] = model;
@@ -259,6 +259,9 @@ public sealed class SceneRenderService
         if (SceneNodeTypes.IsAttachment(node))
         {
             if (showAttachmentGizmos) UpdateAttachmentVisual(node, project);
+            if (showAttachmentGizmos)
+                foreach (var childAttachment in GameProjectStore.Flatten(node.Children).Where(SceneNodeTypes.IsAttachment))
+                    UpdateAttachmentVisual(childAttachment, project);
             RefreshBeams(project);
             if (hasTrailNodes) RefreshTrails(project);
             if (hasParticleEffects) RefreshParticleEffects(project);
@@ -339,7 +342,11 @@ public sealed class SceneRenderService
         if (node.Type is not ("ImageLabel" or "Decal" or "Texture") && !(node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture))) model.Material = MakeMaterial(node);
         if (node.Type == "Part" && node.Children.FirstOrDefault(SceneNodeTypes.IsSpecialMesh) is { } updatedSpecialMesh)
             ApplySpecialMeshVertexColor(model, updatedSpecialMesh);
-        if (node.Type == "MeshPart") ApplySurfaceAppearance(model, node, project);
+        if (node.Type == "MeshPart")
+        {
+            ApplySurfaceAppearance(model, node, project);
+            ApplyMeshPartTexture(model, node, project);
+        }
         if (SceneNodeTypes.IsBasePart(node))
         {
             if (hasSelectionAdornments && AffectsSelectionAdornment(node, project)) RefreshSelectionAdornments(project);
@@ -447,6 +454,13 @@ public sealed class SceneRenderService
             catch { }
         }
         visual.Material = material;
+    }
+
+    private void ApplyMeshPartTexture(MeshGeometryModel3D visual, SceneNode meshPart, GameProject project)
+    {
+        if (string.IsNullOrWhiteSpace(meshPart.Texture)
+            || meshPart.Children.Any(SceneNodeTypes.IsSurfaceAppearance)) return;
+        LoadImageAsset(visual, ResolveTexture(project, meshPart.Texture), meshPart);
     }
 
     private TextureModel? GetPackedSurfaceMap(string roughnessPath, string metalnessPath)
@@ -650,7 +664,7 @@ public sealed class SceneRenderService
         else if (node.Type is "Decal" or "Texture") AddDecalFace(builder, node.Face);
         else if (SceneNodeTypes.IsAttachment(node)) builder.AddSphere(Vector3.Zero, node.Type == "Bone" ? .06 : .09, 12, 8);
         else if (node.Type == "Explosion") builder.AddSphere(Vector3.Zero, node.ExplosionAge < 0 ? Math.Max(.1f, node.BlastRadius) : 2 + node.ExplosionAge * 6, 24, 16);
-        else if (node.Type == "MeshPart" && !string.IsNullOrWhiteSpace(node.Asset) && File.Exists(ResolveAsset(project, node.Asset)))
+        else if (node.Type is "MeshPart" or "UnionOperation" && !string.IsNullOrWhiteSpace(node.Asset) && File.Exists(ResolveAsset(project, node.Asset)))
         {
             try { builder = ReadObj(ResolveAsset(project, node.Asset)); }
             catch { builder.AddBox(Vector3.Zero, 1, 1, 1); }
@@ -677,9 +691,13 @@ public sealed class SceneRenderService
         var decalParent = node.Type is "Decal" or "Texture" ? FindPartParent(project, node) : null;
         var geometry = builder.ToMeshGeometry3D();
         if (node.Type == "Texture" && decalParent is not null) ApplyTextureTiling(geometry, node, decalParent);
-        var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = TransformForVisual(node, project), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment" or "Explosion") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture" or "Explosion"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel" or "Explosion") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
+        var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = TransformForVisual(node, project), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment" or "Bone" or "Explosion") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture" or "Explosion"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel" or "Explosion") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
         if (specialMesh is not null) ApplySpecialMeshVertexColor(visual, specialMesh);
-        if (node.Type == "MeshPart") ApplySurfaceAppearance(visual, node, project);
+        if (node.Type == "MeshPart")
+        {
+            ApplySurfaceAppearance(visual, node, project);
+            ApplyMeshPartTexture(visual, node, project);
+        }
         if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type is "Decal" or "Texture" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type == "Part" && !string.IsNullOrWhiteSpace(node.Texture)) LoadImageAsset(visual, ResolveTexture(project, node.Texture), node);
@@ -695,7 +713,8 @@ public sealed class SceneRenderService
         "ImageLabel" => ResolveAsset(project, node.Asset),
         "Decal" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
         "Texture" => $"{node.Face}|{ResolveAsset(project, node.Asset)}|{node.Transparency}|{node.StudsPerTileU}|{node.StudsPerTileV}|{node.OffsetStudsU}|{node.OffsetStudsV}|{string.Join(',', FindPartParent(project, node)?.Size ?? [])}",
-        "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}|{string.Join('|', node.Children.Where(SceneNodeTypes.IsSurfaceAppearance).Select(surface => $"{ResolveAsset(project, surface.SurfaceAppearanceColorMap)}:{ResolveAsset(project, surface.SurfaceAppearanceNormalMap)}:{ResolveAsset(project, surface.SurfaceAppearanceRoughnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceMetalnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceEmissiveMask)}:{surface.SurfaceAppearanceColor}:{surface.SurfaceAppearanceEmissiveTint}:{surface.SurfaceAppearanceEmissiveStrength}"))}",
+        "MeshPart" => $"{ResolveAsset(project, node.Asset)}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}|{string.Join('|', node.Children.Where(SceneNodeTypes.IsSurfaceAppearance).Select(surface => $"{ResolveAsset(project, surface.SurfaceAppearanceColorMap)}:{ResolveAsset(project, surface.SurfaceAppearanceNormalMap)}:{ResolveAsset(project, surface.SurfaceAppearanceRoughnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceMetalnessMap)}:{ResolveAsset(project, surface.SurfaceAppearanceEmissiveMask)}:{surface.SurfaceAppearanceColor}:{surface.SurfaceAppearanceEmissiveTint}:{surface.SurfaceAppearanceEmissiveStrength}"))}",
+        "UnionOperation" => $"{ResolveAsset(project, node.Asset)}|{MaterialKey(node)}",
         "Part" => $"{node.Shape}|{ResolveTexture(project, node.Texture)}|{MaterialKey(node)}|{string.Join('|', node.Children.Where(SceneNodeTypes.IsSpecialMesh).Select(mesh => $"{(mesh.Type == "BlockMesh" ? "Brick" : mesh.Type == "CylinderMesh" ? "Cylinder" : mesh.Type == "FileMesh" ? "FileMesh" : mesh.SpecialMeshType)}:{mesh.SpecialMeshScale[0]},{mesh.SpecialMeshScale[1]},{mesh.SpecialMeshScale[2]}:{mesh.SpecialMeshOffset[0]},{mesh.SpecialMeshOffset[1]},{mesh.SpecialMeshOffset[2]}:{string.Join(',', mesh.SpecialMeshVertexColor)}:{ResolveAsset(project, mesh.Asset)}:{ResolveTexture(project, mesh.Texture)}"))}",
         "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat" or "VehicleSeat" => MaterialKey(node),
         _ => string.Empty

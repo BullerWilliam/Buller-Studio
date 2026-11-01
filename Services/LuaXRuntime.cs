@@ -17,11 +17,13 @@ public sealed class LuaXRuntime
     private readonly GameProject project;
     private readonly Action<SceneNode, string, DynValue>? propertyChanged;
     private readonly Action<string>? output;
-    private readonly Action<SceneNode, SceneNode>? sitOnSeat;
+    private readonly Action<SceneNode?, SceneNode>? sitOnSeat;
     private readonly Action<string, bool>? focusTextBox;
     private readonly Dictionary<string, Table> instances = new(StringComparer.Ordinal);
     private readonly string localPlayerId;
     private readonly Dictionary<string, Table> fallbackAnimatorTables = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> humanoidSitStates = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> meshPartAssetStates = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SceneNode> createdNodes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HashSet<string>> linkedChildKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> touchedCallbacks = new(StringComparer.Ordinal);
@@ -104,9 +106,9 @@ public sealed class LuaXRuntime
     private sealed record LuaXTypeTag(string Name);
     private sealed record ScriptCallback(GameScript GameScript, DynValue Function, string Name, Table? Connection = null);
     private sealed record RenderStepBinding(string Name, int Priority, long Order, GameScript Owner, DynValue Function);
-    private sealed record AnimationPose(Vector3 Position, Vector3 Rotation);
+    private sealed record AnimationPose(Vector3 Position, Vector3 Rotation, float Weight = 1, string EasingStyle = "Linear", string EasingDirection = "In");
     private sealed record AnimationKeyframe(float Time, IReadOnlyDictionary<string, AnimationPose> Poses);
-    private sealed record AnimationClip(float Length, bool Looped, IReadOnlyList<AnimationKeyframe> Keyframes);
+    private sealed record AnimationClip(float Length, bool Looped, IReadOnlyList<AnimationKeyframe> Keyframes, string Priority = "Core");
     private sealed class PromptHoldState(SceneNode prompt)
     {
         public SceneNode Prompt { get; } = prompt;
@@ -125,7 +127,7 @@ public sealed class LuaXRuntime
         public float WeightFadeStart { get; set; }
         public float WeightFadeDuration { get; set; }
         public float WeightFadeElapsed { get; set; }
-        public string Priority { get; set; } = "Core";
+        public string Priority { get; set; } = clip.Priority;
         public bool Looped { get; set; } = clip.Looped;
         public bool Playing { get; set; }
         public Dictionary<string, AnimationPose> OriginalTransforms { get; } = new(StringComparer.Ordinal);
@@ -197,14 +199,14 @@ public sealed class LuaXRuntime
     }
     private static readonly HashSet<string> CreatableClasses = new(StringComparer.Ordinal)
     {
-        "Part", "MeshPart", "UnionOperation", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Camera", "Model", "WorldModel", "Folder", "Tool", "Accessory", "Shirt", "Pants", "ShirtGraphic", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid", "AnimationController", "Animator", "BodyColors", "PathfindingModifier", "PathfindingLink", "Animation", "BlockMesh", "CylinderMesh", "FileMesh", "Bone",
+        "Part", "MeshPart", "UnionOperation", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Camera", "Model", "WorldModel", "Folder", "Tool", "Accessory", "Shirt", "Pants", "ShirtGraphic", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid", "AnimationController", "Animator", "BodyColors", "PathfindingModifier", "PathfindingLink", "Animation", "KeyframeSequence", "Keyframe", "Pose", "BlockMesh", "CylinderMesh", "FileMesh", "Bone",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue",
         "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "DistortionSoundEffect", "EqualizerSoundEffect", "ChorusSoundEffect", "CompressorSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "Weld", "Motor6D", "NoCollisionConstraint", "Attachment", "Beam", "Team",
         "Sky", "Atmosphere", "Clouds", "BloomEffect", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "SpecialMesh", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ViewportFrame", "VideoFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIPageLayout", "UICanvasGroup", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem", "UIDragDetector"
     };
 
-    public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null, bool isStudio = true, Action<SceneNode, SceneNode>? sitOnSeat = null, Action<string, bool>? focusTextBox = null)
+    public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null, bool isStudio = true, Action<SceneNode?, SceneNode>? sitOnSeat = null, Action<string, bool>? focusTextBox = null)
     {
         this.project = project;
         this.propertyChanged = propertyChanged;
@@ -1831,6 +1833,9 @@ public sealed class LuaXRuntime
         {
             instance.Set("CharacterWalkSpeed", DynValue.NewNumber(node.WalkSpeed));
             instance.Set("CharacterJumpPower", DynValue.NewNumber(node.JumpPower));
+            instance.Set("CharacterJumpHeight", DynValue.NewNumber(node.JumpHeight));
+            instance.Set("CharacterUseJumpPower", DynValue.NewBoolean(node.UseJumpPower));
+            instance.Set("CharacterAutoRotate", DynValue.NewBoolean(node.AutoRotate));
             instance.Set("CameraMinZoomDistance", DynValue.NewNumber(node.CameraMinZoomDistance));
             instance.Set("CameraMaxZoomDistance", DynValue.NewNumber(node.CameraMaxZoomDistance));
         }
@@ -1918,15 +1923,39 @@ public sealed class LuaXRuntime
         }
         if (node.Type == "Humanoid")
         {
+            humanoidSitStates[node.Id] = IsHumanoidSeated(node);
             instance.Set("Health", DynValue.NewNumber(node.Health));
             instance.Set("MaxHealth", DynValue.NewNumber(node.MaxHealth));
             instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
             instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
+            instance.Set("JumpHeight", DynValue.NewNumber(node.JumpHeight));
+            instance.Set("Jump", DynValue.NewBoolean(node.Jump));
+            instance.Set("UseJumpPower", DynValue.NewBoolean(node.UseJumpPower));
+            instance.Set("AutoRotate", DynValue.NewBoolean(node.AutoRotate));
+            instance.Set("Sit", DynValue.NewBoolean(IsHumanoidSeated(node)));
         }
         if (SceneNodeTypes.IsValueObject(node)) instance.Set("Value", GetValueObjectValue(node));
-        if (node.Type is "MeshPart" or "Decal" or "Texture" or "Sound")
+        if (node.Type is "MeshPart" or "UnionOperation" or "Decal" or "Texture" or "Sound")
             instance.Set("Asset", DynValue.NewString(node.Asset));
+        if (node.Type is "MeshPart" or "SpecialMesh" or "FileMesh")
+        {
+            instance.Set("MeshId", DynValue.NewString(node.Asset));
+            instance.Set("TextureId", DynValue.NewString(node.Texture));
+        }
+        if (node.Type == "MeshPart") meshPartAssetStates[node.Id] = node.Asset;
         if (node.Type == "Animation") instance.Set("AnimationId", DynValue.NewString(node.AnimationId));
+        if (node.Type == "Keyframe") instance.Set("Time", DynValue.NewNumber(node.KeyframeTime));
+        if (node.Type == "Pose")
+        {
+            instance.Set("Weight", DynValue.NewNumber(node.PoseWeight));
+            instance.Set("EasingStyle", DynValue.NewString(node.PoseEasingStyle));
+            instance.Set("EasingDirection", DynValue.NewString(node.PoseEasingDirection));
+        }
+        if (node.Type == "KeyframeSequence")
+        {
+            instance.Set("Loop", DynValue.NewBoolean(node.KeyframeSequenceLooped));
+            instance.Set("Priority", DynValue.NewString(node.KeyframeSequencePriority));
+        }
         if (node.Type == "Shirt") instance.Set("ShirtTemplate", DynValue.NewString(node.ShirtTemplate));
         if (node.Type == "Pants") instance.Set("PantsTemplate", DynValue.NewString(node.PantsTemplate));
         if (node.Type == "ShirtGraphic") instance.Set("Graphic", DynValue.NewString(node.Graphic));
@@ -2753,6 +2782,21 @@ public sealed class LuaXRuntime
             instance.Set("MouseClick", DynValue.NewTable(CreateClickDetectorSignal(node.Id, "MouseClick", clickDetectorCallbacks)));
             instance.Set("MouseHoverEnter", DynValue.NewTable(CreateClickDetectorSignal(node.Id, "MouseHoverEnter", clickDetectorHoverEnterCallbacks)));
             instance.Set("MouseHoverLeave", DynValue.NewTable(CreateClickDetectorSignal(node.Id, "MouseHoverLeave", clickDetectorHoverLeaveCallbacks)));
+        }
+        if (node.Type == "KeyframeSequence")
+        {
+            instance.Set("GetKeyframes", DynValue.NewCallback((_, _) => GetChildrenOfType(node, "Keyframe")));
+            instance.Set("AddKeyframe", DynValue.NewCallback((_, args) => AddAnimationChild(node, args, "Keyframe")));
+        }
+        if (node.Type == "Keyframe")
+        {
+            instance.Set("GetPoses", DynValue.NewCallback((_, _) => GetChildrenOfType(node, "Pose")));
+            instance.Set("AddPose", DynValue.NewCallback((_, args) => AddAnimationChild(node, args, "Pose")));
+        }
+        if (node.Type == "Pose")
+        {
+            instance.Set("GetSubPoses", DynValue.NewCallback((_, _) => GetChildrenOfType(node, "Pose")));
+            instance.Set("AddSubPose", DynValue.NewCallback((_, args) => AddAnimationChild(node, args, "Pose")));
         }
         if (SceneNodeTypes.IsAttachment(node))
         {
@@ -3806,7 +3850,7 @@ public sealed class LuaXRuntime
         var linkEdges = new Dictionary<PathGridCell, List<(PathGridCell Destination, string Label, float ReferenceY, string LinkId)>>();
         foreach (var link in workspaceNodes.Where(node => node.Type == "PathfindingLink"))
         {
-            if (FindNode(link.Attachment0) is not { Type: "Attachment" } attachment0 || FindNode(link.Attachment1) is not { Type: "Attachment" } attachment1) continue;
+            if (FindNode(link.Attachment0) is not { Type: "Attachment" or "Bone" } attachment0 || FindNode(link.Attachment1) is not { Type: "Attachment" or "Bone" } attachment1) continue;
             if (!workspaceNodeIds.Contains(attachment0.Id) || !workspaceNodeIds.Contains(attachment1.Id)) continue;
             var from = AttachmentWorldPosition(attachment0);
             var to = AttachmentWorldPosition(attachment1);
@@ -4868,6 +4912,31 @@ public sealed class LuaXRuntime
 
     private void UpdateHumanoidMovement(float elapsed)
     {
+        var workspaceParts = GameProjectStore.Flatten(project.Workspace.Children).Where(SceneNodeTypes.IsBasePart).ToArray();
+        foreach (var humanoid in KnownNodes().Where(node => node.Type == "Humanoid" && node.Jump && node.Health > 0))
+        {
+            if (!TryGetHumanoidRoot(humanoid, out var root) || root.Anchored || root.Velocity[1] > .01f) continue;
+            var model = FindParentNode(humanoid);
+            while (model is not null && model.Type != "Model") model = FindParentNode(model);
+            var modelPartIds = model is null
+                ? new HashSet<string>(StringComparer.Ordinal) { root.Id }
+                : GameProjectStore.Flatten(model.Children).Where(SceneNodeTypes.IsBasePart).Select(part => part.Id).ToHashSet(StringComparer.Ordinal);
+            if (!workspaceParts.Any(part => !modelPartIds.Contains(part.Id) && part.CanCollide
+                    && CollisionGeometry.SweepFraction(root, part, 1, -.08f) < 1)) continue;
+
+            root.Velocity[1] = PlayerCharacterService.GetJumpVelocity(humanoid, project.Workspace.Gravity);
+            humanoid.Jump = false;
+            if (instances.TryGetValue(humanoid.Id, out var humanoidInstance)) humanoidInstance.Set("Jump", DynValue.NewBoolean(false));
+            if (instances.TryGetValue(root.Id, out var rootInstance))
+            {
+                var velocity = VectorValue(root.Velocity);
+                rootInstance.Set("Velocity", velocity);
+                rootInstance.Set("AssemblyLinearVelocity", velocity);
+            }
+            propertyChanged?.Invoke(root, "Velocity", VectorValue(root.Velocity));
+            propertyChanged?.Invoke(humanoid, "Jump", DynValue.NewBoolean(false));
+        }
+
         foreach (var (humanoidId, target) in humanoidMoveTargets.ToArray())
         {
             if (FindNode(humanoidId) is not { Type: "Humanoid", Health: > 0 } humanoid)
@@ -4896,7 +4965,7 @@ public sealed class LuaXRuntime
 
             if (!target.JumpInitiated && verticalOffset > 1.5f && Math.Abs(root.Velocity[1]) < .5f)
             {
-                root.Velocity[1] = Math.Clamp(humanoid.JumpPower, 0, 1000);
+                root.Velocity[1] = PlayerCharacterService.GetJumpVelocity(humanoid, project.Workspace.Gravity);
                 target.JumpInitiated = true;
                 if (instances.TryGetValue(root.Id, out var rootInstance))
                 {
@@ -5521,6 +5590,7 @@ public sealed class LuaXRuntime
             instances.Remove(removed.Id);
             createdNodes.Remove(removed.Id);
             linkedChildKeys.Remove(removed.Id);
+            meshPartAssetStates.Remove(removed.Id);
             humanoidWasAlive.Remove(removed.Id);
             touchedCallbacks.Remove(removed.Id);
             touchEndedCallbacks.Remove(removed.Id);
@@ -5913,13 +5983,17 @@ public sealed class LuaXRuntime
     private bool TryLoadAnimationClip(SceneNode animation, out AnimationClip clip)
     {
         clip = new AnimationClip(0, false, []);
+        var sequence = KnownNodes().FirstOrDefault(node => node.Type == "KeyframeSequence"
+            && (string.Equals(node.Id, animation.AnimationId, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(node.Name, animation.AnimationId, StringComparison.OrdinalIgnoreCase)));
+        if (sequence is not null) return TryBuildAnimationClip(sequence, out clip);
         var key = NormalizeAssetKey(animation.AnimationId);
         var asset = project.Assets.FirstOrDefault(item =>
             string.Equals(item.Name, animation.AnimationId, StringComparison.OrdinalIgnoreCase)
             || string.Equals(NormalizeAssetKey(item.RelativePath), key, StringComparison.OrdinalIgnoreCase));
         if (asset is null)
         {
-            output?.Invoke($"Animation '{animation.Name}' needs an imported JSON keyframe asset in AnimationId.");
+            output?.Invoke($"Animation '{animation.Name}' needs a local KeyframeSequence name or an imported JSON keyframe asset in AnimationId.");
             return false;
         }
         try
@@ -5938,7 +6012,10 @@ public sealed class LuaXRuntime
                     if (string.IsNullOrWhiteSpace(poseProperty.Name) || poseProperty.Value.ValueKind != JsonValueKind.Object
                         || !poseProperty.Value.TryGetProperty("position", out var positionElement) || !TryReadAnimationVector(positionElement, out var position)
                         || !poseProperty.Value.TryGetProperty("rotation", out var rotationElement) || !TryReadAnimationVector(rotationElement, out var rotation)) return false;
-                    poses[poseProperty.Name] = new AnimationPose(position, rotation);
+                    var poseWeight = poseProperty.Value.TryGetProperty("weight", out var weightElement) && weightElement.TryGetSingle(out var weight) && float.IsFinite(weight) ? Math.Clamp(weight, 0, 1) : 1;
+                    var easingStyle = poseProperty.Value.TryGetProperty("easingStyle", out var styleElement) && styleElement.ValueKind == JsonValueKind.String && IsPoseEasingStyle(styleElement.GetString() ?? "") ? styleElement.GetString()! : "Linear";
+                    var easingDirection = poseProperty.Value.TryGetProperty("easingDirection", out var directionElement) && directionElement.ValueKind == JsonValueKind.String && IsPoseEasingDirection(directionElement.GetString() ?? "") ? directionElement.GetString()! : "In";
+                    poses[poseProperty.Name] = new AnimationPose(position, rotation, poseWeight, easingStyle, easingDirection);
                 }
                 keyframes.Add(new AnimationKeyframe(time, poses));
             }
@@ -5946,7 +6023,9 @@ public sealed class LuaXRuntime
             keyframes.Sort((first, second) => first.Time.CompareTo(second.Time));
             var declaredLength = root.TryGetProperty("length", out var lengthElement) && lengthElement.TryGetSingle(out var length) && float.IsFinite(length) ? length : keyframes[^1].Time;
             var looped = root.TryGetProperty("looped", out var loopedElement) && loopedElement.ValueKind == JsonValueKind.True;
-            clip = new AnimationClip(Math.Clamp(Math.Max(declaredLength, keyframes[^1].Time), .001f, 60), looped, keyframes);
+            var priority = root.TryGetProperty("priority", out var priorityElement) && priorityElement.ValueKind == JsonValueKind.String
+                && IsAnimationPriority(priorityElement.GetString() ?? string.Empty) ? priorityElement.GetString()! : "Core";
+            clip = new AnimationClip(Math.Clamp(Math.Max(declaredLength, keyframes[^1].Time), .001f, 60), looped, keyframes, priority);
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException or NotSupportedException)
@@ -5954,6 +6033,39 @@ public sealed class LuaXRuntime
             output?.Invoke($"Could not load animation '{animation.Name}': {exception.Message}");
             return false;
         }
+    }
+
+    private static bool TryBuildAnimationClip(SceneNode sequence, out AnimationClip clip)
+    {
+        clip = new AnimationClip(0, sequence.KeyframeSequenceLooped, [], sequence.KeyframeSequencePriority);
+        var keyframes = new List<AnimationKeyframe>();
+        foreach (var keyframe in sequence.Children.Where(node => node.Type == "Keyframe"))
+        {
+            if (!float.IsFinite(keyframe.KeyframeTime) || keyframe.KeyframeTime < 0 || keyframe.KeyframeTime > 60) return false;
+            var poses = new Dictionary<string, AnimationPose>(StringComparer.Ordinal);
+            void AddPoses(IEnumerable<SceneNode> nodes)
+            {
+                foreach (var pose in nodes.Where(node => node.Type == "Pose"))
+                {
+                    if (pose.Position.Length < 3 || pose.Rotation.Length < 3
+                        || !pose.Position.Take(3).All(float.IsFinite) || !pose.Rotation.Take(3).All(float.IsFinite)) continue;
+                    poses[pose.Name] = new AnimationPose(
+                        new Vector3(pose.Position[0], pose.Position[1], pose.Position[2]),
+                        new Vector3(pose.Rotation[0], pose.Rotation[1], pose.Rotation[2]),
+                        Math.Clamp(float.IsFinite(pose.PoseWeight) ? pose.PoseWeight : 1, 0, 1),
+                        IsPoseEasingStyle(pose.PoseEasingStyle) ? pose.PoseEasingStyle : "Linear",
+                        IsPoseEasingDirection(pose.PoseEasingDirection) ? pose.PoseEasingDirection : "In");
+                    AddPoses(pose.Children);
+                }
+            }
+            AddPoses(keyframe.Children);
+            keyframes.Add(new AnimationKeyframe(keyframe.KeyframeTime, poses));
+        }
+        if (keyframes.Count == 0) return false;
+        keyframes.Sort((first, second) => first.Time.CompareTo(second.Time));
+        var priority = IsAnimationPriority(sequence.KeyframeSequencePriority) ? sequence.KeyframeSequencePriority : "Core";
+        clip = new AnimationClip(Math.Clamp(Math.Max(.001f, keyframes[^1].Time), .001f, 60), sequence.KeyframeSequenceLooped, keyframes, priority);
+        return true;
     }
 
     private static bool TryReadAnimationVector(JsonElement element, out Vector3 value)
@@ -5987,17 +6099,27 @@ public sealed class LuaXRuntime
         state.Playing = false;
         var modelId = FindAnimationModel(state.Controller)?.Id;
         foreach (var (jointId, pose) in state.OriginalTransforms)
-            if (FindNode(jointId) is { Type: "Motor6D" } joint)
+            if (FindNode(jointId) is { Type: "Motor6D" or "Bone" } joint)
             {
                 if (modelId is not null && animationTracks.Any(other => other.Playing && !ReferenceEquals(other, state)
                     && FindAnimationModel(other.Controller)?.Id == modelId
                     && other.Clip.Keyframes.Any(frame => frame.Poses.ContainsKey(joint.Name)))) continue;
-                joint.MotorTransformPosition = [pose.Position.X, pose.Position.Y, pose.Position.Z];
-                joint.MotorTransformRotation = [pose.Rotation.X, pose.Rotation.Y, pose.Rotation.Z];
-                if (instances.TryGetValue(jointId, out var jointInstance))
+                if (joint.Type == "Motor6D")
                 {
-                    jointInstance.Set("TransformPosition", VectorValue(joint.MotorTransformPosition));
-                    jointInstance.Set("TransformRotation", VectorValue(joint.MotorTransformRotation));
+                    joint.MotorTransformPosition = [pose.Position.X, pose.Position.Y, pose.Position.Z];
+                    joint.MotorTransformRotation = [pose.Rotation.X, pose.Rotation.Y, pose.Rotation.Z];
+                    if (instances.TryGetValue(jointId, out var jointInstance))
+                    {
+                        jointInstance.Set("TransformPosition", VectorValue(joint.MotorTransformPosition));
+                        jointInstance.Set("TransformRotation", VectorValue(joint.MotorTransformRotation));
+                    }
+                }
+                else
+                {
+                    var position = new[] { pose.Position.X, pose.Position.Y, pose.Position.Z };
+                    var rotation = new[] { pose.Rotation.X, pose.Rotation.Y, pose.Rotation.Z };
+                    if (!joint.Position.SequenceEqual(position)) { joint.Position = position; NotifyPropertyChanged(joint, "Position", VectorValue(position)); }
+                    if (!joint.Rotation.SequenceEqual(rotation)) { joint.Rotation = rotation; NotifyPropertyChanged(joint, "Rotation", VectorValue(rotation)); }
                 }
             }
         state.OriginalTransforms.Clear();
@@ -6033,10 +6155,12 @@ public sealed class LuaXRuntime
         {
             var tracks = group.ToArray();
             var model = FindAnimationModel(tracks[0].Controller)!;
-            foreach (var joint in GameProjectStore.Flatten(model.Children).Where(node => node.Type == "Motor6D"))
+            foreach (var joint in GameProjectStore.Flatten(model.Children).Where(node => node.Type is "Motor6D" or "Bone"))
             {
                 var baseline = tracks.Select(track => track.OriginalTransforms.GetValueOrDefault(joint.Id)).FirstOrDefault(pose => pose is not null)
-                    ?? new AnimationPose(new Vector3(joint.MotorTransformPosition[0], joint.MotorTransformPosition[1], joint.MotorTransformPosition[2]), new Vector3(joint.MotorTransformRotation[0], joint.MotorTransformRotation[1], joint.MotorTransformRotation[2]));
+                    ?? (joint.Type == "Motor6D"
+                        ? new AnimationPose(new Vector3(joint.MotorTransformPosition[0], joint.MotorTransformPosition[1], joint.MotorTransformPosition[2]), new Vector3(joint.MotorTransformRotation[0], joint.MotorTransformRotation[1], joint.MotorTransformRotation[2]))
+                        : new AnimationPose(new Vector3(joint.Position[0], joint.Position[1], joint.Position[2]), new Vector3(joint.Rotation[0], joint.Rotation[1], joint.Rotation[2])));
                 foreach (var track in tracks) track.OriginalTransforms.TryAdd(joint.Id, baseline);
                 var samples = tracks.Select(track => (Track: track, Pose: SampleAnimationPose(track, joint.Name)))
                     .Where(sample => sample.Pose is not null).ToArray();
@@ -6046,14 +6170,14 @@ public sealed class LuaXRuntime
                 foreach (var priorityGroup in samples.GroupBy(sample => AnimationPriorityRank(sample.Track.Priority)).OrderByDescending(priorityGroup => priorityGroup.Key))
                 {
                     var layer = priorityGroup.ToArray();
-                    var weightSum = layer.Sum(sample => sample.Track.WeightCurrent);
+                    var weightSum = layer.Sum(sample => sample.Track.WeightCurrent * sample.Pose!.Weight);
                     if (weightSum <= 0 || remaining <= 0) continue;
                     var layerWeight = Math.Min(remaining, weightSum);
                     var weightedPosition = Vector3.Zero;
                     var weightedRotationOffset = Vector3.Zero;
                     foreach (var sample in layer)
                     {
-                        var weight = sample.Track.WeightCurrent / weightSum;
+                        var weight = sample.Track.WeightCurrent * sample.Pose!.Weight / weightSum;
                         weightedPosition += sample.Pose!.Position * weight;
                         weightedRotationOffset += new Vector3(ShortestAngleDelta(baseline.Rotation.X, sample.Pose.Rotation.X), ShortestAngleDelta(baseline.Rotation.Y, sample.Pose.Rotation.Y), ShortestAngleDelta(baseline.Rotation.Z, sample.Pose.Rotation.Z)) * weight;
                     }
@@ -6061,12 +6185,22 @@ public sealed class LuaXRuntime
                     rotation += weightedRotationOffset * layerWeight;
                     remaining -= layerWeight;
                 }
-                joint.MotorTransformPosition = [position.X, position.Y, position.Z];
-                joint.MotorTransformRotation = [rotation.X, rotation.Y, rotation.Z];
-                if (instances.TryGetValue(joint.Id, out var jointInstance))
+                if (joint.Type == "Motor6D")
                 {
-                    jointInstance.Set("TransformPosition", VectorValue(joint.MotorTransformPosition));
-                    jointInstance.Set("TransformRotation", VectorValue(joint.MotorTransformRotation));
+                    joint.MotorTransformPosition = [position.X, position.Y, position.Z];
+                    joint.MotorTransformRotation = [rotation.X, rotation.Y, rotation.Z];
+                    if (instances.TryGetValue(joint.Id, out var jointInstance))
+                    {
+                        jointInstance.Set("TransformPosition", VectorValue(joint.MotorTransformPosition));
+                        jointInstance.Set("TransformRotation", VectorValue(joint.MotorTransformRotation));
+                    }
+                }
+                else
+                {
+                    var nextPosition = new[] { position.X, position.Y, position.Z };
+                    var nextRotation = new[] { rotation.X, rotation.Y, rotation.Z };
+                    if (!joint.Position.SequenceEqual(nextPosition)) { joint.Position = nextPosition; NotifyPropertyChanged(joint, "Position", VectorValue(nextPosition)); }
+                    if (!joint.Rotation.SequenceEqual(nextRotation)) { joint.Rotation = nextRotation; NotifyPropertyChanged(joint, "Rotation", VectorValue(nextRotation)); }
                 }
             }
         }
@@ -6081,7 +6215,38 @@ public sealed class LuaXRuntime
         if (pose is null) return null;
         var nextPose = after.Poses.GetValueOrDefault(jointName) ?? pose;
         var alpha = after.Time <= before.Time ? 0 : Math.Clamp((state.TimePosition - before.Time) / (after.Time - before.Time), 0, 1);
-        return new AnimationPose(Vector3.Lerp(pose.Position, nextPose.Position, alpha), LerpDegrees(pose.Rotation, nextPose.Rotation, alpha));
+        alpha = ApplyPoseEasing(alpha, pose.EasingStyle, pose.EasingDirection);
+        return new AnimationPose(Vector3.Lerp(pose.Position, nextPose.Position, alpha), LerpDegrees(pose.Rotation, nextPose.Rotation, alpha), pose.Weight + (nextPose.Weight - pose.Weight) * alpha, pose.EasingStyle, pose.EasingDirection);
+    }
+
+    private static bool IsPoseEasingStyle(string value) => value is "Linear" or "Sine" or "Back" or "Bounce" or "Quad" or "Quart" or "Quint" or "Elastic" or "Exponential" or "Circular" or "Cubic";
+    private static bool IsPoseEasingDirection(string value) => value is "In" or "Out" or "InOut";
+    private static float ApplyPoseEasing(float t, string style, string direction)
+    {
+        t = Math.Clamp(t, 0, 1);
+        float In(float x) => style switch
+        {
+            "Sine" => 1 - MathF.Cos(x * MathF.PI / 2),
+            "Quad" => x * x,
+            "Cubic" => x * x * x,
+            "Quart" => x * x * x * x,
+            "Quint" => x * x * x * x * x,
+            "Exponential" => x == 0 ? 0 : MathF.Pow(2, 10 * x - 10),
+            "Circular" => 1 - MathF.Sqrt(1 - x * x),
+            "Back" => 2.70158f * x * x * x - 1.70158f * x * x,
+            "Bounce" => 1 - BounceOut(1 - x),
+            "Elastic" => x is 0 or 1 ? x : -MathF.Pow(2, 10 * x - 10) * MathF.Sin((x * 10 - 10.75f) * (2 * MathF.PI / 3)),
+            _ => x
+        };
+        static float BounceOut(float x)
+        {
+            const float n = 7.5625f, d = 2.75f;
+            if (x < 1 / d) return n * x * x;
+            if (x < 2 / d) { x -= 1.5f / d; return n * x * x + .75f; }
+            if (x < 2.5f / d) { x -= 2.25f / d; return n * x * x + .9375f; }
+            x -= 2.625f / d; return n * x * x + .984375f;
+        }
+        return direction switch { "Out" => 1 - In(1 - t), "InOut" => t < .5f ? In(t * 2) / 2 : 1 - In((1 - t) * 2) / 2, _ => In(t) };
     }
 
     private static bool IsAnimationPriority(string priority) => priority is "Core" or "Idle" or "Movement" or "Action" or "Action2" or "Action3" or "Action4";
@@ -6363,6 +6528,18 @@ public sealed class LuaXRuntime
 
     private void WriteInstanceProperty(SceneNode node, Table instance, string normalizedProperty)
     {
+        if (node.Type == "MeshPart" && normalizedProperty is ("asset" or "meshid"))
+        {
+            instance.Set("Asset", DynValue.NewString(node.Asset));
+            instance.Set("MeshId", DynValue.NewString(node.Asset));
+            meshPartAssetStates[node.Id] = node.Asset;
+            return;
+        }
+        if (node.Type == "MeshPart" && normalizedProperty is ("texture" or "textureid"))
+        {
+            instance.Set("TextureId", DynValue.NewString(node.Texture));
+            return;
+        }
         if (node.Type == "Sparkles" && normalizedProperty is "color" or "sparklecolor")
         {
             instance.Set("Color", ColorValue(node.Color));
@@ -6525,6 +6702,12 @@ public sealed class LuaXRuntime
             "diffusion" => "Diffusion",
             "soundgroup" => "SoundGroup",
             "sidechain" => "SideChain",
+            "time" => "Time",
+            "weight" => "Weight",
+            "easingstyle" => "EasingStyle",
+            "easingdirection" => "EasingDirection",
+            "loop" => "Loop",
+            "priority" => "Priority",
             "looped" => "Looped",
             "playing" => "Playing",
             "rolloffmindistance" => "RollOffMinDistance",
@@ -6584,8 +6767,16 @@ public sealed class LuaXRuntime
             "maxhealth" => "MaxHealth",
             "walkspeed" => "WalkSpeed",
             "jumppower" => "JumpPower",
+            "jumpheight" => "JumpHeight",
+            "jump" => "Jump",
+            "usejumppower" => "UseJumpPower",
+            "autorotate" => "AutoRotate",
+            "sit" => "Sit",
             "characterwalkspeed" => "CharacterWalkSpeed",
             "characterjumppower" => "CharacterJumpPower",
+            "characterjumpheight" => "CharacterJumpHeight",
+            "characterusejumppower" => "CharacterUseJumpPower",
+            "characterautorotate" => "CharacterAutoRotate",
             "cameraminzoomdistance" => "CameraMinZoomDistance",
             "cameramaxzoomdistance" => "CameraMaxZoomDistance",
             "value" => "Value",
@@ -7972,6 +8163,15 @@ public sealed class LuaXRuntime
                 case "duty": if (node.Type != "TremoloSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.TremoloDuty = (float)Math.Clamp(value.Number, 0, 1); break;
                 case "frequency": if (node.Type != "TremoloSoundEffect" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.TremoloFrequency = (float)Math.Clamp(value.Number, .1, 20); break;
                 case "looped": if (node.Type is not ("Sound" or "VideoFrame")) return DynValue.Nil; node.Looped = value.CastToBool(); break;
+                case "loop": if (node.Type != "KeyframeSequence" || value.Type != DataType.Boolean) return DynValue.Nil; node.KeyframeSequenceLooped = value.Boolean; break;
+                case "priority":
+                    if (node.Type != "KeyframeSequence" || value.Type != DataType.String || value.String is not ("Core" or "Idle" or "Movement" or "Action" or "Action2" or "Action3" or "Action4")) return DynValue.Nil;
+                    node.KeyframeSequencePriority = value.String;
+                    break;
+                case "time": if (node.Type != "Keyframe" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.KeyframeTime = (float)Math.Clamp(value.Number, 0, 60); break;
+                case "weight": if (node.Type != "Pose" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil; node.PoseWeight = (float)Math.Clamp(value.Number, 0, 1); break;
+                case "easingstyle": if (node.Type != "Pose" || value.Type != DataType.String || !IsPoseEasingStyle(value.String)) return DynValue.Nil; node.PoseEasingStyle = value.String; break;
+                case "easingdirection": if (node.Type != "Pose" || value.Type != DataType.String || !IsPoseEasingDirection(value.String)) return DynValue.Nil; node.PoseEasingDirection = value.String; break;
                 case "playing":
                     if (node.Type is not ("Sound" or "VideoFrame")) return DynValue.Nil;
                     var wasSoundActive = node.Type == "Sound" && node.Playing;
@@ -8008,7 +8208,7 @@ public sealed class LuaXRuntime
                     node.Texture = value.CastToString() ?? string.Empty;
                     break;
                 case "textureid":
-                    if (node.Type is not ("SpecialMesh" or "FileMesh") || value.Type != DataType.String) return DynValue.Nil;
+                    if (node.Type is not ("MeshPart" or "SpecialMesh" or "FileMesh") || value.Type != DataType.String) return DynValue.Nil;
                     node.Texture = value.String;
                     break;
                 case "text":
@@ -8154,6 +8354,14 @@ public sealed class LuaXRuntime
                     if (node.Type != "Humanoid" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.JumpPower = (float)Math.Clamp(value.Number, 0, 1000);
                     break;
+                case "jumpheight":
+                    if (node.Type != "Humanoid" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.JumpHeight = (float)Math.Clamp(value.Number, 0, 1000);
+                    break;
+                case "jump": if (node.Type != "Humanoid" || value.Type != DataType.Boolean) return DynValue.Nil; node.Jump = value.Boolean; break;
+                case "usejumppower": if (node.Type != "Humanoid" || value.Type != DataType.Boolean) return DynValue.Nil; node.UseJumpPower = value.Boolean; break;
+                case "autorotate": if (node.Type != "Humanoid" || value.Type != DataType.Boolean) return DynValue.Nil; node.AutoRotate = value.Boolean; break;
+                case "sit": if (node.Type != "Humanoid" || value.Type != DataType.Boolean) return DynValue.Nil; SetHumanoidSitState(node, value.Boolean); break;
                 case "characterwalkspeed":
                     if (node.Type != "StarterPlayer" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.WalkSpeed = (float)Math.Clamp(value.Number, 0, 1000);
@@ -8162,6 +8370,21 @@ public sealed class LuaXRuntime
                 case "characterjumppower":
                     if (node.Type != "StarterPlayer" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.JumpPower = (float)Math.Clamp(value.Number, 0, 1000);
+                    ApplyStarterPlayerMovementSettings();
+                    break;
+                case "characterjumpheight":
+                    if (node.Type != "StarterPlayer" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.JumpHeight = (float)Math.Clamp(value.Number, 0, 1000);
+                    ApplyStarterPlayerMovementSettings();
+                    break;
+                case "characterusejumppower":
+                    if (node.Type != "StarterPlayer" || value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.UseJumpPower = value.Boolean;
+                    ApplyStarterPlayerMovementSettings();
+                    break;
+                case "characterautorotate":
+                    if (node.Type != "StarterPlayer" || value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.AutoRotate = value.Boolean;
                     ApplyStarterPlayerMovementSettings();
                     break;
                 case "cameraminzoomdistance":
@@ -8176,7 +8399,7 @@ public sealed class LuaXRuntime
                     break;
                 case "asset":
                 case "meshid":
-                    if (node.Type is not ("MeshPart" or "Decal" or "Texture" or "Sound" or "SpecialMesh" or "FileMesh")) return DynValue.Nil;
+                    if (node.Type is not ("MeshPart" or "UnionOperation" or "Decal" or "Texture" or "Sound" or "SpecialMesh" or "FileMesh")) return DynValue.Nil;
                     node.Asset = value.CastToString() ?? string.Empty;
                     break;
                 case "animationid": if (node.Type != "Animation") return DynValue.Nil; node.AnimationId = value.CastToString() ?? string.Empty; break;
@@ -8612,7 +8835,7 @@ public sealed class LuaXRuntime
     }
 
     private DynValue GetAttachmentReferenceValue(string id) =>
-        !string.IsNullOrEmpty(id) && FindNode(id) is { Type: "Attachment" } attachment && instances.TryGetValue(attachment.Id, out var instance)
+        !string.IsNullOrEmpty(id) && FindNode(id) is { Type: "Attachment" or "Bone" } attachment && instances.TryGetValue(attachment.Id, out var instance)
             ? DynValue.NewTable(instance) : DynValue.Nil;
 
     private DynValue GetSoundGroupReferenceValue(string id) =>
@@ -8640,6 +8863,42 @@ public sealed class LuaXRuntime
         && FindNode(seat.Occupant) is { Type: "Humanoid" } humanoid
         && instances.TryGetValue(humanoid.Id, out var instance)
             ? DynValue.NewTable(instance) : DynValue.Nil;
+
+    private bool IsHumanoidSeated(SceneNode humanoid) =>
+        humanoid.Type == "Humanoid" && KnownNodes().Any(node => (node.Type is "Seat" or "VehicleSeat") && node.Occupant == humanoid.Id);
+
+    private void SetHumanoidSitState(SceneNode humanoid, bool sit)
+    {
+        if (humanoid.Type != "Humanoid" || sit == IsHumanoidSeated(humanoid)) return;
+        var wasSeated = IsHumanoidSeated(humanoid);
+        if (!sit)
+        {
+            sitOnSeat?.Invoke(null, humanoid);
+        }
+        else
+        {
+            var model = FindParentNode(humanoid);
+            while (model is not null && model.Type != "Model") model = FindParentNode(model);
+            var parts = model is not null
+                ? GameProjectStore.Flatten(model.Children).Where(IsBasePart).ToArray()
+                : [];
+            var root = parts.FirstOrDefault(part => part.Name == "HumanoidRootPart") ?? parts.FirstOrDefault();
+            if (root is not null)
+            {
+                var rootPosition = new Vector3(root.Position[0], root.Position[1], root.Position[2]);
+                var seat = KnownNodes().Where(node => (node.Type is "Seat" or "VehicleSeat")
+                        && node.CanCollide && !node.VehicleSeatDisabled
+                        && (string.IsNullOrEmpty(node.Occupant) || node.Occupant == humanoid.Id))
+                    .OrderBy(node => Vector3.DistanceSquared(rootPosition, new Vector3(node.Position[0], node.Position[1], node.Position[2])))
+                    .FirstOrDefault();
+                if (seat is not null) sitOnSeat?.Invoke(seat, humanoid);
+            }
+        }
+        var isSeated = IsHumanoidSeated(humanoid);
+        humanoidSitStates[humanoid.Id] = isSeated;
+        if (instances.TryGetValue(humanoid.Id, out var instance)) instance.Set("Sit", DynValue.NewBoolean(isSeated));
+        if (wasSeated != isSeated) NotifyPropertyChanged(humanoid, "Sit", DynValue.NewBoolean(isSeated));
+    }
 
     private bool TrySetLinearVelocityProperty(SceneNode node, string property, DynValue value)
     {
@@ -8789,6 +9048,24 @@ public sealed class LuaXRuntime
                 humanoid.JumpPower = project.StarterPlayer.JumpPower;
                 if (instances.TryGetValue(humanoid.Id, out var jumpPowerHumanoidInstance)) jumpPowerHumanoidInstance.Set("JumpPower", DynValue.NewNumber(humanoid.JumpPower));
                 NotifyPropertyChanged(humanoid, "JumpPower", DynValue.NewNumber(humanoid.JumpPower));
+            }
+            if (humanoid.JumpHeight != project.StarterPlayer.JumpHeight)
+            {
+                humanoid.JumpHeight = project.StarterPlayer.JumpHeight;
+                if (instances.TryGetValue(humanoid.Id, out var jumpHeightHumanoidInstance)) jumpHeightHumanoidInstance.Set("JumpHeight", DynValue.NewNumber(humanoid.JumpHeight));
+                NotifyPropertyChanged(humanoid, "JumpHeight", DynValue.NewNumber(humanoid.JumpHeight));
+            }
+            if (humanoid.UseJumpPower != project.StarterPlayer.UseJumpPower)
+            {
+                humanoid.UseJumpPower = project.StarterPlayer.UseJumpPower;
+                if (instances.TryGetValue(humanoid.Id, out var useJumpPowerHumanoidInstance)) useJumpPowerHumanoidInstance.Set("UseJumpPower", DynValue.NewBoolean(humanoid.UseJumpPower));
+                NotifyPropertyChanged(humanoid, "UseJumpPower", DynValue.NewBoolean(humanoid.UseJumpPower));
+            }
+            if (humanoid.AutoRotate != project.StarterPlayer.AutoRotate)
+            {
+                humanoid.AutoRotate = project.StarterPlayer.AutoRotate;
+                if (instances.TryGetValue(humanoid.Id, out var autoRotateHumanoidInstance)) autoRotateHumanoidInstance.Set("AutoRotate", DynValue.NewBoolean(humanoid.AutoRotate));
+                NotifyPropertyChanged(humanoid, "AutoRotate", DynValue.NewBoolean(humanoid.AutoRotate));
             }
         }
     }
@@ -9044,7 +9321,7 @@ public sealed class LuaXRuntime
             var inclination = node.CylindricalInclinationAngle * (MathF.PI / 180);
             var localAxis = new Vector3(MathF.Cos(inclination), MathF.Sin(inclination), 0);
             var worldAxis = localAxis;
-            if (FindNode(node.Attachment0) is { Type: "Attachment" } attachment && FindParentNode(attachment) is { } part)
+            if (FindNode(node.Attachment0) is { Type: "Attachment" or "Bone" } attachment && FindParentNode(attachment) is { } part)
             {
                 var frame = RotationMath.FromDegrees(attachment.Rotation) * RotationMath.FromDegrees(part.Rotation);
                 worldAxis = Vector3.Normalize(Vector3.TransformNormal(localAxis, frame));
@@ -9362,12 +9639,18 @@ public sealed class LuaXRuntime
         "diffusion" => node.Type == "ReverbSoundEffect" ? DynValue.NewNumber(node.ReverbDiffusion) : DynValue.Nil,
         "soundgroup" => node.Type == "Sound" ? GetSoundGroupReferenceValue(node.SoundGroupId) : DynValue.Nil,
         "looped" => node.Type is "Sound" or "VideoFrame" ? DynValue.NewBoolean(node.Looped) : DynValue.Nil,
+        "loop" => node.Type == "KeyframeSequence" ? DynValue.NewBoolean(node.KeyframeSequenceLooped) : DynValue.Nil,
+        "priority" => node.Type == "KeyframeSequence" ? DynValue.NewString(node.KeyframeSequencePriority) : DynValue.Nil,
+        "time" => node.Type == "Keyframe" ? DynValue.NewNumber(node.KeyframeTime) : DynValue.Nil,
+        "weight" => node.Type == "Pose" ? DynValue.NewNumber(node.PoseWeight) : DynValue.Nil,
+        "easingstyle" => node.Type == "Pose" ? DynValue.NewString(node.PoseEasingStyle) : DynValue.Nil,
+        "easingdirection" => node.Type == "Pose" ? DynValue.NewString(node.PoseEasingDirection) : DynValue.Nil,
         "playing" => node.Type is "Sound" or "VideoFrame" ? DynValue.NewBoolean(node.Playing && (node.Type != "Sound" || !node.SoundPaused)) : DynValue.Nil,
         "rolloffmindistance" => node.Type == "Sound" ? DynValue.NewNumber(node.RollOffMinDistance) : DynValue.Nil,
         "rolloffmaxdistance" => node.Type == "Sound" ? DynValue.NewNumber(node.RollOffMaxDistance) : DynValue.Nil,
         "rolloffmode" => node.Type == "Sound" ? DynValue.NewString(node.RollOffMode) : DynValue.Nil,
         "texture" => node.Type is "Part" or "ParticleEmitter" or "Trail" or "Decal" or "Texture" ? DynValue.NewString(node.Texture) : DynValue.Nil,
-        "textureid" => node.Type is "SpecialMesh" or "FileMesh" ? DynValue.NewString(node.Texture) : DynValue.Nil,
+        "textureid" => node.Type is "MeshPart" or "SpecialMesh" or "FileMesh" ? DynValue.NewString(node.Texture) : DynValue.Nil,
         "meshtype" => node.Type == "SpecialMesh" ? DynValue.NewString(node.SpecialMeshType) : DynValue.Nil,
         "vertexcolor" => SceneNodeTypes.IsSpecialMesh(node) ? VectorValue(node.SpecialMeshVertexColor) : DynValue.Nil,
         "text" => node.Type is "TextLabel" or "TextButton" or "TextBox" ? DynValue.NewString(node.Text) : DynValue.Nil,
@@ -9417,13 +9700,21 @@ public sealed class LuaXRuntime
         "maxhealth" => node.Type == "Humanoid" ? DynValue.NewNumber(node.MaxHealth) : DynValue.Nil,
         "walkspeed" => node.Type == "Humanoid" ? DynValue.NewNumber(node.WalkSpeed) : DynValue.Nil,
         "jumppower" => node.Type == "Humanoid" ? DynValue.NewNumber(node.JumpPower) : DynValue.Nil,
+        "jumpheight" => node.Type == "Humanoid" ? DynValue.NewNumber(node.JumpHeight) : DynValue.Nil,
+        "jump" => node.Type == "Humanoid" ? DynValue.NewBoolean(node.Jump) : DynValue.Nil,
+        "usejumppower" => node.Type == "Humanoid" ? DynValue.NewBoolean(node.UseJumpPower) : DynValue.Nil,
+        "autorotate" => node.Type == "Humanoid" ? DynValue.NewBoolean(node.AutoRotate) : DynValue.Nil,
+        "sit" => node.Type == "Humanoid" ? DynValue.NewBoolean(IsHumanoidSeated(node)) : DynValue.Nil,
         "characterwalkspeed" => node.Type == "StarterPlayer" ? DynValue.NewNumber(node.WalkSpeed) : DynValue.Nil,
         "characterjumppower" => node.Type == "StarterPlayer" ? DynValue.NewNumber(node.JumpPower) : DynValue.Nil,
+        "characterjumpheight" => node.Type == "StarterPlayer" ? DynValue.NewNumber(node.JumpHeight) : DynValue.Nil,
+        "characterusejumppower" => node.Type == "StarterPlayer" ? DynValue.NewBoolean(node.UseJumpPower) : DynValue.Nil,
+        "characterautorotate" => node.Type == "StarterPlayer" ? DynValue.NewBoolean(node.AutoRotate) : DynValue.Nil,
         "cameraminzoomdistance" => node.Type == "StarterPlayer" ? DynValue.NewNumber(node.CameraMinZoomDistance) : DynValue.Nil,
         "cameramaxzoomdistance" => node.Type == "StarterPlayer" ? DynValue.NewNumber(node.CameraMaxZoomDistance) : DynValue.Nil,
         "value" => SceneNodeTypes.IsValueObject(node) ? GetValueObjectValue(node) : DynValue.Nil,
-        "asset" => node.Type is "MeshPart" or "Decal" or "Texture" or "Sound" or "SpecialMesh" or "FileMesh" ? DynValue.NewString(node.Asset) : DynValue.Nil,
-        "meshid" => node.Type is "SpecialMesh" or "FileMesh" ? DynValue.NewString(node.Asset) : DynValue.Nil,
+        "asset" => node.Type is "MeshPart" or "UnionOperation" or "Decal" or "Texture" or "Sound" or "SpecialMesh" or "FileMesh" ? DynValue.NewString(node.Asset) : DynValue.Nil,
+        "meshid" => node.Type is "MeshPart" or "SpecialMesh" or "FileMesh" ? DynValue.NewString(node.Asset) : DynValue.Nil,
         "animationid" => node.Type == "Animation" ? DynValue.NewString(node.AnimationId) : DynValue.Nil,
         "shirttemplate" => node.Type == "Shirt" ? DynValue.NewString(node.ShirtTemplate) : DynValue.Nil,
         "pantstemplate" => node.Type == "Pants" ? DynValue.NewString(node.PantsTemplate) : DynValue.Nil,
@@ -9700,6 +9991,22 @@ public sealed class LuaXRuntime
         return DynValue.NewTable(children);
     }
 
+    private DynValue GetChildrenOfType(SceneNode node, string type)
+    {
+        var children = new Table(script);
+        var index = 1;
+        foreach (var child in node.Children.Where(child => child.Type == type))
+            if (instances.TryGetValue(child.Id, out var instance)) children.Set(index++, DynValue.NewTable(instance));
+        return DynValue.NewTable(children);
+    }
+
+    private DynValue AddAnimationChild(SceneNode parent, CallbackArguments args, string type)
+    {
+        var index = args.Count > 0 && args[0].Type == DataType.Table && instances.TryGetValue(parent.Id, out var receiver) && ReferenceEquals(args[0].Table, receiver) ? 1 : 0;
+        if (args.Count <= index || ReadNodeArgument(args[index]) is not { } child || child.Type != type || !TrySetParent(child, DynValue.NewTable(instances[parent.Id]))) return DynValue.Nil;
+        return DynValue.Nil;
+    }
+
     private static bool IsA(SceneNode node, string className) => className switch
     {
         "Instance" => true,
@@ -9744,10 +10051,10 @@ public sealed class LuaXRuntime
     private static bool IsBasePart(SceneNode? node) => SceneNodeTypes.IsBasePart(node);
 
     private bool HasPositionProperty(SceneNode node) =>
-        IsBasePart(node) || SceneNodeTypes.IsAttachment(node) || node.Type is "Model" or "Camera" || IsGuiObject(node);
+        IsBasePart(node) || SceneNodeTypes.IsAttachment(node) || node.Type is "Model" or "Camera" or "Pose" || IsGuiObject(node);
 
     private bool HasRotationProperty(SceneNode node) =>
-        IsBasePart(node) || SceneNodeTypes.IsAttachment(node) || node.Type is "Model" or "Camera" or "AlignOrientation" || IsGuiObject(node);
+        IsBasePart(node) || SceneNodeTypes.IsAttachment(node) || node.Type is "Model" or "Camera" or "Pose" or "AlignOrientation" || IsGuiObject(node);
 
     private bool TryGetAttachmentWorldTransform(SceneNode attachment, out Vector3 position, out float[] rotation)
     {
@@ -10104,6 +10411,37 @@ public sealed class LuaXRuntime
         foreach (var node in KnownNodes())
         {
             if (!instances.TryGetValue(node.Id, out var instance)) continue;
+            if (node.Type is "UnionOperation" or "Decal" or "Texture" or "Sound")
+            {
+                if (instance.Get("Asset").Type == DataType.String)
+                    Assign(node, "Asset", node.Asset, instance.Get("Asset").String, value => node.Asset = value);
+                instance.Set("Asset", DynValue.NewString(node.Asset));
+            }
+            if (node.Type == "MeshPart")
+            {
+                var previousAsset = meshPartAssetStates.GetValueOrDefault(node.Id, node.Asset);
+                var assetAlias = instance.Get("Asset");
+                var meshIdAlias = instance.Get("MeshId");
+                var assetChanged = assetAlias.Type == DataType.String && !string.Equals(assetAlias.String, previousAsset, StringComparison.Ordinal);
+                var meshIdChanged = meshIdAlias.Type == DataType.String && !string.Equals(meshIdAlias.String, previousAsset, StringComparison.Ordinal);
+                var requestedMeshId = meshIdChanged ? meshIdAlias.String : assetChanged ? assetAlias.String : node.Asset;
+                Assign(node, "MeshId", node.Asset, requestedMeshId, value => node.Asset = value);
+                instance.Set("Asset", DynValue.NewString(node.Asset));
+                instance.Set("MeshId", DynValue.NewString(node.Asset));
+                meshPartAssetStates[node.Id] = node.Asset;
+                if (instance.Get("TextureId").Type == DataType.String)
+                    Assign(node, "TextureId", node.Texture, instance.Get("TextureId").String, value => node.Texture = value);
+                instance.Set("TextureId", DynValue.NewString(node.Texture));
+            }
+            else if (node.Type is "SpecialMesh" or "FileMesh")
+            {
+                if (instance.Get("MeshId").Type == DataType.String)
+                    Assign(node, "MeshId", node.Asset, instance.Get("MeshId").String, value => node.Asset = value);
+                if (instance.Get("TextureId").Type == DataType.String)
+                    Assign(node, "TextureId", node.Texture, instance.Get("TextureId").String, value => node.Texture = value);
+                instance.Set("MeshId", DynValue.NewString(node.Asset));
+                instance.Set("TextureId", DynValue.NewString(node.Texture));
+            }
             if (SceneNodeTypes.IsValueObject(node))
             {
                 if (TrySetValueObjectValue(node, instance.Get("Value"), out var valueChanged) && valueChanged)
@@ -10581,6 +10919,27 @@ public sealed class LuaXRuntime
                 if (node.Type == "SurfaceGui" && instance.Get("PixelsPerStud").Type == DataType.Number && double.IsFinite(instance.Get("PixelsPerStud").Number))
                     Assign(node, "PixelsPerStud", node.PixelsPerStud, (float)Math.Clamp(instance.Get("PixelsPerStud").Number, 1, 1000), value => node.PixelsPerStud = value);
             }
+            if (node.Type == "Keyframe" && instance.Get("Time").Type == DataType.Number && double.IsFinite(instance.Get("Time").Number))
+                Assign(node, "Time", node.KeyframeTime, (float)Math.Clamp(instance.Get("Time").Number, 0, 60), value => node.KeyframeTime = value);
+            if (node.Type == "Keyframe") instance.Set("Time", DynValue.NewNumber(node.KeyframeTime));
+            if (node.Type == "Pose")
+            {
+                if (instance.Get("Weight").Type == DataType.Number && double.IsFinite(instance.Get("Weight").Number)) Assign(node, "Weight", node.PoseWeight, (float)Math.Clamp(instance.Get("Weight").Number, 0, 1), value => node.PoseWeight = value);
+                if (instance.Get("EasingStyle").Type == DataType.String && IsPoseEasingStyle(instance.Get("EasingStyle").String)) Assign(node, "EasingStyle", node.PoseEasingStyle, instance.Get("EasingStyle").String, value => node.PoseEasingStyle = value);
+                if (instance.Get("EasingDirection").Type == DataType.String && IsPoseEasingDirection(instance.Get("EasingDirection").String)) Assign(node, "EasingDirection", node.PoseEasingDirection, instance.Get("EasingDirection").String, value => node.PoseEasingDirection = value);
+                instance.Set("Weight", DynValue.NewNumber(node.PoseWeight));
+                instance.Set("EasingStyle", DynValue.NewString(node.PoseEasingStyle));
+                instance.Set("EasingDirection", DynValue.NewString(node.PoseEasingDirection));
+            }
+            if (node.Type == "KeyframeSequence")
+            {
+                if (instance.Get("Loop").Type == DataType.Boolean)
+                    Assign(node, "Loop", node.KeyframeSequenceLooped, instance.Get("Loop").Boolean, value => node.KeyframeSequenceLooped = value);
+                if (instance.Get("Priority").Type == DataType.String && IsAnimationPriority(instance.Get("Priority").String))
+                    Assign(node, "Priority", node.KeyframeSequencePriority, instance.Get("Priority").String, value => node.KeyframeSequencePriority = value);
+                instance.Set("Loop", DynValue.NewBoolean(node.KeyframeSequenceLooped));
+                instance.Set("Priority", DynValue.NewString(node.KeyframeSequencePriority));
+            }
             if (node.Type == "BillboardGui" && instance.Get("StudsOffset").Type == DataType.Table && IsTypedValue(instance.Get("StudsOffset"), "Vector3"))
                 Assign(node, "StudsOffset", node.StudsOffset, LimitVector(ReadVector(instance.Get("StudsOffset"), node.StudsOffset), -1000000, 1000000), value => node.StudsOffset = value);
             if (node.Type == "BillboardGui" && instance.Get("StudsOffsetWorldSpace").Type == DataType.Table && IsTypedValue(instance.Get("StudsOffsetWorldSpace"), "Vector3"))
@@ -10911,14 +11270,14 @@ public sealed class LuaXRuntime
             {
                 var attachment0Value = instance.Get("Attachment0");
                 var requestedAttachment0 = ReadNodeArgument(attachment0Value);
-                if (requestedAttachment0 is { Type: "Attachment" } && (node.Type is "VectorForce" or "LinearVelocity" || requestedAttachment0.Id != node.Attachment1))
+                if (requestedAttachment0 is { Type: "Attachment" or "Bone" } && (node.Type is "VectorForce" or "LinearVelocity" || requestedAttachment0.Id != node.Attachment1))
                     Assign(node, "Attachment0", node.Attachment0, requestedAttachment0.Id, value => node.Attachment0 = value);
                 else if (attachment0Value.Type == DataType.Nil) Assign(node, "Attachment0", node.Attachment0, string.Empty, value => node.Attachment0 = value);
                 if (node.Type == "VectorForce")
                 {
                     var referenceValue = instance.Get("Attachment1");
                     var referenceAttachment = ReadNodeArgument(referenceValue);
-                    if (referenceAttachment is { Type: "Attachment" })
+                    if (referenceAttachment is { Type: "Attachment" or "Bone" })
                         Assign(node, "Attachment1", node.Attachment1, referenceAttachment.Id, value => node.Attachment1 = value);
                     else if (referenceValue.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -10937,7 +11296,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -10961,7 +11320,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -10978,7 +11337,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11002,7 +11361,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11027,7 +11386,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11051,7 +11410,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11073,7 +11432,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11093,7 +11452,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11118,7 +11477,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11149,7 +11508,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11211,7 +11570,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11263,7 +11622,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11286,7 +11645,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11309,7 +11668,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil)
                         Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
@@ -11326,7 +11685,7 @@ public sealed class LuaXRuntime
                 {
                     var attachment1Value = instance.Get("Attachment1");
                     var requestedAttachment1 = ReadNodeArgument(attachment1Value);
-                    if (requestedAttachment1 is { Type: "Attachment" } && requestedAttachment1.Id != node.Attachment0)
+                    if (requestedAttachment1 is { Type: "Attachment" or "Bone" } && requestedAttachment1.Id != node.Attachment0)
                         Assign(node, "Attachment1", node.Attachment1, requestedAttachment1.Id, value => node.Attachment1 = value);
                     else if (attachment1Value.Type == DataType.Nil) Assign(node, "Attachment1", node.Attachment1, string.Empty, value => node.Attachment1 = value);
                     if (instance.Get("Width0").Type == DataType.Number && double.IsFinite(instance.Get("Width0").Number))
@@ -11719,17 +12078,42 @@ public sealed class LuaXRuntime
                     Assign(node, "WalkSpeed", node.WalkSpeed, (float)Math.Clamp(instance.Get("WalkSpeed").Number, 0, 1000), value => node.WalkSpeed = value);
                 if (instance.Get("JumpPower").Type == DataType.Number && double.IsFinite(instance.Get("JumpPower").Number))
                     Assign(node, "JumpPower", node.JumpPower, (float)Math.Clamp(instance.Get("JumpPower").Number, 0, 1000), value => node.JumpPower = value);
+                if (instance.Get("JumpHeight").Type == DataType.Number && double.IsFinite(instance.Get("JumpHeight").Number))
+                    Assign(node, "JumpHeight", node.JumpHeight, (float)Math.Clamp(instance.Get("JumpHeight").Number, 0, 1000), value => node.JumpHeight = value);
+                if (instance.Get("Jump").Type == DataType.Boolean)
+                    Assign(node, "Jump", node.Jump, instance.Get("Jump").Boolean, value => node.Jump = value);
+                if (instance.Get("UseJumpPower").Type == DataType.Boolean)
+                    Assign(node, "UseJumpPower", node.UseJumpPower, instance.Get("UseJumpPower").Boolean, value => node.UseJumpPower = value);
+                if (instance.Get("AutoRotate").Type == DataType.Boolean)
+                    Assign(node, "AutoRotate", node.AutoRotate, instance.Get("AutoRotate").Boolean, value => node.AutoRotate = value);
+                var syncedSitState = humanoidSitStates.GetValueOrDefault(node.Id, IsHumanoidSeated(node));
+                if (instance.Get("Sit").Type == DataType.Boolean && instance.Get("Sit").Boolean != syncedSitState)
+                    SetHumanoidSitState(node, instance.Get("Sit").Boolean);
                 instance.Set("MaxHealth", DynValue.NewNumber(node.MaxHealth));
                 instance.Set("Health", DynValue.NewNumber(node.Health));
                 instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
                 instance.Set("JumpPower", DynValue.NewNumber(node.JumpPower));
+                instance.Set("JumpHeight", DynValue.NewNumber(node.JumpHeight));
+                instance.Set("Jump", DynValue.NewBoolean(node.Jump));
+                instance.Set("UseJumpPower", DynValue.NewBoolean(node.UseJumpPower));
+                instance.Set("AutoRotate", DynValue.NewBoolean(node.AutoRotate));
+                var actualSitState = IsHumanoidSeated(node);
+                humanoidSitStates[node.Id] = actualSitState;
+                instance.Set("Sit", DynValue.NewBoolean(actualSitState));
             }
             if (node.Type == "StarterPlayer")
             {
+                var priorMovement = (node.WalkSpeed, node.JumpPower, node.JumpHeight, node.UseJumpPower, node.AutoRotate);
                 if (instance.Get("CharacterWalkSpeed").Type == DataType.Number && double.IsFinite(instance.Get("CharacterWalkSpeed").Number))
                     Assign(node, "CharacterWalkSpeed", node.WalkSpeed, (float)Math.Clamp(instance.Get("CharacterWalkSpeed").Number, 0, 1000), value => node.WalkSpeed = value);
                 if (instance.Get("CharacterJumpPower").Type == DataType.Number && double.IsFinite(instance.Get("CharacterJumpPower").Number))
                     Assign(node, "CharacterJumpPower", node.JumpPower, (float)Math.Clamp(instance.Get("CharacterJumpPower").Number, 0, 1000), value => node.JumpPower = value);
+                if (instance.Get("CharacterJumpHeight").Type == DataType.Number && double.IsFinite(instance.Get("CharacterJumpHeight").Number))
+                    Assign(node, "CharacterJumpHeight", node.JumpHeight, (float)Math.Clamp(instance.Get("CharacterJumpHeight").Number, 0, 1000), value => node.JumpHeight = value);
+                if (instance.Get("CharacterUseJumpPower").Type == DataType.Boolean)
+                    Assign(node, "CharacterUseJumpPower", node.UseJumpPower, instance.Get("CharacterUseJumpPower").Boolean, value => node.UseJumpPower = value);
+                if (instance.Get("CharacterAutoRotate").Type == DataType.Boolean)
+                    Assign(node, "CharacterAutoRotate", node.AutoRotate, instance.Get("CharacterAutoRotate").Boolean, value => node.AutoRotate = value);
                 if (instance.Get("CameraMinZoomDistance").Type == DataType.Number && double.IsFinite(instance.Get("CameraMinZoomDistance").Number))
                     Assign(node, "CameraMinZoomDistance", node.CameraMinZoomDistance, (float)Math.Clamp(instance.Get("CameraMinZoomDistance").Number, .5, 1000), value => node.CameraMinZoomDistance = value);
                 if (instance.Get("CameraMaxZoomDistance").Type == DataType.Number && double.IsFinite(instance.Get("CameraMaxZoomDistance").Number))
@@ -11738,9 +12122,12 @@ public sealed class LuaXRuntime
                     Assign(node, "CameraMaxZoomDistance", node.CameraMaxZoomDistance, node.CameraMinZoomDistance, value => node.CameraMaxZoomDistance = value);
                 instance.Set("CharacterWalkSpeed", DynValue.NewNumber(node.WalkSpeed));
                 instance.Set("CharacterJumpPower", DynValue.NewNumber(node.JumpPower));
+                instance.Set("CharacterJumpHeight", DynValue.NewNumber(node.JumpHeight));
+                instance.Set("CharacterUseJumpPower", DynValue.NewBoolean(node.UseJumpPower));
+                instance.Set("CharacterAutoRotate", DynValue.NewBoolean(node.AutoRotate));
                 instance.Set("CameraMinZoomDistance", DynValue.NewNumber(node.CameraMinZoomDistance));
                 instance.Set("CameraMaxZoomDistance", DynValue.NewNumber(node.CameraMaxZoomDistance));
-                ApplyStarterPlayerMovementSettings();
+                if (priorMovement != (node.WalkSpeed, node.JumpPower, node.JumpHeight, node.UseJumpPower, node.AutoRotate)) ApplyStarterPlayerMovementSettings();
             }
             if (node.Type is not ("Workspace" or "Players" or "Teams" or "Lighting" or "SoundService" or "ReplicatedStorage" or "ReplicatedFirst" or "ServerScriptService" or "ServerStorage" or "Terrain" or "Gui" or "StarterGui") && instance.Get("Name").CastToString() is { } name)
                 Assign(node, "Name", node.Name, name, value => SetNodeName(node, value));

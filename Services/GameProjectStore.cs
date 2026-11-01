@@ -589,8 +589,14 @@ public static class GameProjectStore
             node.Health = float.IsFinite(node.Health) ? Math.Clamp(node.Health, 0, node.MaxHealth) : node.MaxHealth;
             node.WalkSpeed = float.IsFinite(node.WalkSpeed) ? Math.Clamp(node.WalkSpeed, 0, 1000) : 7.5f;
             node.JumpPower = float.IsFinite(node.JumpPower) ? Math.Clamp(node.JumpPower, 0, 1000) : 10;
+            node.JumpHeight = float.IsFinite(node.JumpHeight) ? Math.Clamp(node.JumpHeight, 0, 1000) : 7.2f;
             node.CameraMinZoomDistance = float.IsFinite(node.CameraMinZoomDistance) ? Math.Clamp(node.CameraMinZoomDistance, .5f, 1000) : 2;
             node.CameraMaxZoomDistance = float.IsFinite(node.CameraMaxZoomDistance) ? Math.Clamp(node.CameraMaxZoomDistance, node.CameraMinZoomDistance, 1000) : Math.Max(100, node.CameraMinZoomDistance);
+            node.KeyframeTime = float.IsFinite(node.KeyframeTime) ? Math.Clamp(node.KeyframeTime, 0, 60) : 0;
+            node.KeyframeSequencePriority = node.KeyframeSequencePriority is ("Core" or "Idle" or "Movement" or "Action" or "Action2" or "Action3" or "Action4") ? node.KeyframeSequencePriority : "Core";
+            node.PoseWeight = float.IsFinite(node.PoseWeight) ? Math.Clamp(node.PoseWeight, 0, 1) : 1;
+            node.PoseEasingStyle = IsPoseEasingStyle(node.PoseEasingStyle) ? node.PoseEasingStyle : "Linear";
+            node.PoseEasingDirection = node.PoseEasingDirection is "In" or "Out" or "InOut" ? node.PoseEasingDirection : "In";
             node.IntegerValue = Math.Clamp(node.IntegerValue, -9007199254740991L, 9007199254740991L);
             node.NumberValue = double.IsFinite(node.NumberValue) ? node.NumberValue : 0;
             node.StringValueText ??= string.Empty;
@@ -826,6 +832,8 @@ public static class GameProjectStore
         project.Workspace.Position = [0, 0, 0];
     }
 
+    private static bool IsPoseEasingStyle(string? value) => value is "Linear" or "Sine" or "Back" or "Bounce" or "Quad" or "Quart" or "Quint" or "Elastic" or "Exponential" or "Circular" or "Cubic";
+
     private static float[] EnsurePair(float[]? values)
     {
         var result = new float[2];
@@ -951,6 +959,15 @@ public static class GameProjectStore
                 ? destinationParent.Id == project.Workspace.Id && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"))
                 : destinationParent.Type == "ViewportFrame" && IsNodeInTree(project.Gui, destinationParent.Id)
                     && source.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Camera"));
+        if (source.Type == "KeyframeSequence")
+            return (destinationParent.Type is "Workspace" or "Folder" or "Configuration" or "Model" or "ReplicatedStorage" or "ReplicatedFirst" or "ServerStorage" or "ServerScriptService" or "StarterPack" or "StarterPlayer")
+                && source.Children.All(child => child.Type == "Keyframe" && IsWorkspaceSubtreeCompatible(child, source.Type));
+        if (source.Type == "Keyframe")
+            return destinationParent.Type == "KeyframeSequence"
+                && source.Children.All(child => child.Type == "Pose" && IsWorkspaceSubtreeCompatible(child, source.Type));
+        if (source.Type == "Pose")
+            return destinationParent.Type is "Keyframe" or "Pose"
+                && source.Children.All(child => child.Type == "Pose" && IsWorkspaceSubtreeCompatible(child, source.Type));
         if (source.Type == "Animation")
             return (destinationParent.Type is "Workspace" or "Folder" or "Configuration" or "Model" or "Humanoid" or "Tool" or "ReplicatedStorage" or "ReplicatedFirst" or "ServerStorage" or "ServerScriptService" or "StarterPack" or "StarterPlayer" or "StarterGui" or "Backpack" or "PlayerScripts" or "PlayerGui" || SceneNodeTypes.IsBasePart(destinationParent))
                 && source.Children.Count == 0;
@@ -1032,12 +1049,12 @@ public static class GameProjectStore
             || IsNodeInTree(project.ServerStorage, destinationParent.Id)
             || IsNodeInTree(project.StarterPack, destinationParent.Id))
         {
-            if (destinationParent.Type is not ("ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "SoundService" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Accessory" or "Attachment")
+            if (destinationParent.Type is not ("ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" or "SoundService" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Accessory" or "Attachment" or "Bone" or "KeyframeSequence" or "Keyframe" or "Pose")
                 && !SceneNodeTypes.IsBasePart(destinationParent) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
             return IsWorkspaceSubtreeCompatible(source, destinationParent.Type is "ReplicatedStorage" or "ServerScriptService" or "ServerStorage" or "StarterPack" ? "Workspace" : destinationParent.Type);
         }
 
-        if (destinationParent.Type is not ("Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Accessory" or "Attachment" or "Sound" or "SoundGroup") && !SceneNodeTypes.IsBasePart(destinationParent) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
+        if (destinationParent.Type is not ("Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Accessory" or "Attachment" or "Bone" or "Sound" or "SoundGroup" or "KeyframeSequence" or "Keyframe" or "Pose") && !SceneNodeTypes.IsBasePart(destinationParent) && !SceneNodeTypes.IsValueObject(destinationParent)) return false;
         return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
     }
 
@@ -1060,6 +1077,8 @@ public static class GameProjectStore
             && IsWorkspaceSubtreeCompatible(source, "Backpack");
         if (destinationParent.Type == "Terrain") return SceneNodeTypes.IsBasePart(source)
             && IsWorkspaceSubtreeCompatible(source, "Terrain");
+        if (source.Type is "KeyframeSequence" or "Keyframe" or "Pose")
+            return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
         if (source.Type == "Animation")
             return (destinationParent.Type is "Workspace" or "Folder" or "Configuration" or "Model" or "Humanoid" or "Tool" or "ReplicatedStorage" or "ServerStorage" or "ServerScriptService" or "StarterPack" or "StarterPlayer" or "StarterGui" or "Backpack" or "PlayerScripts" or "PlayerGui" || SceneNodeTypes.IsBasePart(destinationParent))
                 && source.Children.Count == 0;
@@ -1086,7 +1105,7 @@ public static class GameProjectStore
         if (source.Type == "Humanoid")
             return destinationParent.Type == "Model" && source.Children.Count == 0
                 && !destinationParent.Children.Any(child => child.Type == "Humanoid" && child.Id != source.Id);
-        if (destinationParent.Type is "Model" or "Accessory" or "Attachment" || SceneNodeTypes.IsBasePart(destinationParent))
+        if (destinationParent.Type is "Model" or "Accessory" or "Attachment" or "Bone" || SceneNodeTypes.IsBasePart(destinationParent))
             return IsWorkspaceSubtreeCompatible(source, destinationParent.Type);
         if (destinationParent.Type is "BillboardGui" or "SurfaceGui") return IsGuiSubtreeCompatible(source, false, destinationParent.Type);
         if (destinationParent.Type is "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript")
@@ -1246,6 +1265,13 @@ public static class GameProjectStore
         if (node.Type == "Model" && (node.Children.Count(child => child.Type == "Humanoid") > 1
             || node.Children.Count(child => child.Type == "AnimationController") > 1
             || node.Children.Count(child => child.Type == "BodyColors") > 1)) return false;
+        if (node.Type == "KeyframeSequence")
+            return parentType is "Workspace" or "Folder" or "Configuration" or "Model" or "ReplicatedStorage" or "ReplicatedFirst" or "ServerStorage" or "ServerScriptService" or "StarterPack" or "StarterPlayer"
+                && node.Children.All(child => child.Type == "Keyframe" && IsWorkspaceSubtreeCompatible(child, node.Type));
+        if (node.Type == "Keyframe")
+            return parentType == "KeyframeSequence" && node.Children.All(child => child.Type == "Pose" && IsWorkspaceSubtreeCompatible(child, node.Type));
+        if (node.Type == "Pose")
+            return (parentType is "Keyframe" or "Pose") && node.Children.All(child => child.Type == "Pose" && IsWorkspaceSubtreeCompatible(child, node.Type));
         if (SceneNodeTypes.IsSurfaceAppearance(node)) return parentType == "MeshPart" && node.Children.Count == 0;
         if (SceneNodeTypes.IsSpecialMesh(node)) return parentType == "Part" && node.Children.Count == 0;
         if (node.Type == "MeshPart" && node.Children.Count(SceneNodeTypes.IsSurfaceAppearance) > 1) return false;
@@ -1279,13 +1305,13 @@ public static class GameProjectStore
         if (node.Type == "PathfindingLink") return (parentType is "Workspace" or "Folder" or "Model" or "Configuration") && node.Children.Count == 0;
         if (node.Type == "Bone")
             return (parentType == "MeshPart" || parentType == "Bone")
-                && node.Children.All(child => child.Type == "Bone" && IsWorkspaceSubtreeCompatible(child, node.Type));
+                && node.Children.All(child => child.Type is "Bone" or "Attachment" && IsWorkspaceSubtreeCompatible(child, node.Type));
         if (node.Type == "Attachment")
-            return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Attachment")
+            return (SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsAttachmentType(parentType))
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));
         if (node.Type is "BodyForce" or "BodyThrust" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity" or "RocketPropulsion") return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type is "Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint")
-            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType))
+            return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsAttachmentType(parentType) || SceneNodeTypes.IsBasePartType(parentType))
                 && node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node))
             return (parentType is "Workspace" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType))
@@ -1293,11 +1319,11 @@ public static class GameProjectStore
         if (node.Type is "Decal" or "Texture")
             return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (SceneNodeTypes.IsParticleEffect(node))
-            return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Attachment") && node.Children.Count == 0;
+            return (SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsAttachmentType(parentType)) && node.Children.Count == 0;
         if (node.Type is "ProximityPrompt" or "ClickDetector")
-            return (SceneNodeTypes.IsBasePartType(parentType) || node.Type == "ProximityPrompt" && parentType == "Attachment") && node.Children.Count == 0;
+            return (SceneNodeTypes.IsBasePartType(parentType) || node.Type == "ProximityPrompt" && SceneNodeTypes.IsAttachmentType(parentType)) && node.Children.Count == 0;
         if (node.Type == "Sound")
-            return (parentType is "Workspace" or "SoundService" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" or "Attachment" || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType))
+            return (parentType is "Workspace" or "SoundService" or "Folder" or "Configuration" or "BindableEvent" or "BindableFunction" or "ModuleScript" or "Model" or "Tool" || SceneNodeTypes.IsAttachmentType(parentType) || SceneNodeTypes.IsBasePartType(parentType) || SceneNodeTypes.IsValueObjectType(parentType))
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, node.Type));
         if (node.Type is "SelectionBox" or "SelectionSphere")
             return (parentType is "Workspace" or "Folder" or "Configuration" or "Model" || SceneNodeTypes.IsBasePartType(parentType)) && node.Children.Count == 0;

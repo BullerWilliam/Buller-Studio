@@ -603,6 +603,9 @@ public partial class MainWindow : Window
             propertyTarget = AddPropertySection("Character");
             AddTextField("CharacterWalkSpeed", selected.WalkSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("CharacterJumpPower", selected.JumpPower.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("CharacterJumpHeight", selected.JumpHeight.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("CharacterUseJumpPower", selected.UseJumpPower);
+            AddCheckField("CharacterAutoRotate", selected.AutoRotate);
             propertyTarget = AddPropertySection("Camera");
             AddTextField("CameraMinZoomDistance", selected.CameraMinZoomDistance.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("CameraMaxZoomDistance", selected.CameraMaxZoomDistance.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -814,6 +817,12 @@ public partial class MainWindow : Window
             if (selected.Type == "MeshPart")
             {
                 propertyTarget = dataSection;
+                AddTextField("MeshId", selected.Asset);
+                AddTextField("TextureId", selected.Texture);
+            }
+            else if (selected.Type == "UnionOperation")
+            {
+                propertyTarget = dataSection;
                 AddTextField("Asset", selected.Asset);
             }
             if (SceneNodeTypes.IsSpecialMesh(selected))
@@ -920,7 +929,28 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("Animation");
             AddTextField("AnimationId", selected.AnimationId);
-            AddLabel("Path or name of an imported JSON keyframe animation asset.", "AnimationId");
+            AddLabel("Use a local KeyframeSequence name or imported JSON keyframe animation asset.", "AnimationId");
+        }
+        if (selected.Type == "KeyframeSequence")
+        {
+            propertyTarget = AddPropertySection("KeyframeSequence");
+            AddCheckField("Loop", selected.KeyframeSequenceLooped);
+            AddComboField("Priority", ["Core", "Idle", "Movement", "Action", "Action2", "Action3", "Action4"], selected.KeyframeSequencePriority);
+        }
+        if (selected.Type == "Keyframe")
+        {
+            propertyTarget = AddPropertySection("Keyframe");
+            AddTextField("Time", selected.KeyframeTime.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (selected.Type == "Pose")
+        {
+            propertyTarget = AddPropertySection("Pose");
+            AddTextField("Position", VectorText(selected.Position));
+            AddTextField("Rotation", VectorText(selected.Rotation));
+            AddTextField("Weight", selected.PoseWeight.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddComboField("EasingStyle", ["Linear", "Sine", "Back", "Bounce", "Quad", "Quart", "Quint", "Elastic", "Exponential", "Circular", "Cubic"], selected.PoseEasingStyle);
+            AddComboField("EasingDirection", ["In", "Out", "InOut"], selected.PoseEasingDirection);
+            AddLabel("Position and rotation are local to the parent pose.", "Position");
         }
         if (selected.Type is "Shirt" or "Pants" or "ShirtGraphic")
         {
@@ -1147,17 +1177,17 @@ public partial class MainWindow : Window
         }
         if (SceneNodeTypes.IsAttachment(selected))
         {
-            propertyTarget = AddPropertySection("Attachment");
+            propertyTarget = AddPropertySection(selected.Type);
             AddTextField("Position", VectorText(selected.Position));
             AddTextField("Rotation", VectorText(selected.Rotation));
-            AddLabel("Position is relative to the parent part.", "Position");
+            AddLabel(selected.Type == "Bone" ? "Position and rotation are local to the parent bone or mesh part." : "Position is relative to the parent part.", "Position");
         }
         if (selected.Type == "Beam")
         {
             propertyTarget = AddPropertySection("Beam");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } attachment0 ? attachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } attachment1 ? attachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } attachment0 ? attachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } attachment1 ? attachment1 : null);
             AddTextField("Width0", selected.Width0.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Width1", selected.Width1.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Color", selected.Color);
@@ -1168,8 +1198,8 @@ public partial class MainWindow : Window
             propertyTarget = AddPropertySection("Trail");
             AddCheckField("Enabled", selected.Enabled);
             AddCheckField("FaceCamera", selected.FaceCamera);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } trailAttachment0 ? trailAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } trailAttachment1 ? trailAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } trailAttachment0 ? trailAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } trailAttachment1 ? trailAttachment1 : null);
             AddTextField("Lifetime", selected.TrailLifetime.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("MinLength", selected.TrailMinLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("MaxLength", selected.TrailMaxLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1185,8 +1215,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("VectorForce");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } forceAttachment ? forceAttachment : null);
-            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } forceReferenceAttachment ? forceReferenceAttachment : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } forceAttachment ? forceAttachment : null);
+            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } forceReferenceAttachment ? forceReferenceAttachment : null);
             AddTextField("Force", VectorText(selected.Force));
             AddComboField("RelativeTo", ["World", "Attachment0", "Attachment1"], selected.RelativeTo);
             AddCheckField("ApplyAtCenterOfMass", selected.ApplyAtCenterOfMass);
@@ -1196,8 +1226,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("LineForce");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } lineForceAttachment0 ? lineForceAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } lineForceAttachment1 ? lineForceAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } lineForceAttachment0 ? lineForceAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } lineForceAttachment1 ? lineForceAttachment1 : null);
             AddTextField("Magnitude", selected.LineForceMagnitude.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddCheckField("InverseSquareLaw", selected.LineForceInverseSquareLaw);
             AddTextField("MaxForce", selected.LineForceMaxForce.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1274,8 +1304,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("LinearVelocity");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } velocityAttachment ? velocityAttachment : null);
-            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } velocityReferenceAttachment ? velocityReferenceAttachment : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } velocityAttachment ? velocityAttachment : null);
+            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } velocityReferenceAttachment ? velocityReferenceAttachment : null);
             AddComboField("RelativeTo", ["World", "Attachment0", "Attachment1"], selected.RelativeTo);
             AddComboField("VelocityConstraintMode", ["Vector", "Line", "Plane"], selected.VelocityConstraintMode);
             if (selected.VelocityConstraintMode == "Vector") AddTextField("VectorVelocity", VectorText(selected.VectorVelocity));
@@ -1305,9 +1335,9 @@ public partial class MainWindow : Window
             propertyTarget = AddPropertySection("AlignPosition");
             AddCheckField("Enabled", selected.Enabled);
             AddComboField("Mode", ["OneAttachment", "TwoAttachment"], selected.AlignmentMode);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } alignAttachment0 ? alignAttachment0 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } alignAttachment0 ? alignAttachment0 : null);
             if (selected.AlignmentMode == "TwoAttachment")
-                AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } alignAttachment1 ? alignAttachment1 : null);
+                AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } alignAttachment1 ? alignAttachment1 : null);
             else AddTextField("Position", VectorText(selected.Position));
             AddTextField("Responsiveness", selected.Responsiveness.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("MaxVelocity", selected.MaxVelocity.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1321,9 +1351,9 @@ public partial class MainWindow : Window
             propertyTarget = AddPropertySection("AlignOrientation");
             AddCheckField("Enabled", selected.Enabled);
             AddComboField("Mode", ["OneAttachment", "TwoAttachment"], selected.AlignmentMode);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } orientationAttachment0 ? orientationAttachment0 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } orientationAttachment0 ? orientationAttachment0 : null);
             if (selected.AlignmentMode == "TwoAttachment")
-                AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } orientationAttachment1 ? orientationAttachment1 : null);
+                AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } orientationAttachment1 ? orientationAttachment1 : null);
             else AddTextField("Rotation", VectorText(selected.AlignOrientationRotation));
             AddTextField("Responsiveness", selected.Responsiveness.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("MaxAngularVelocity", selected.MaxAngularVelocity.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1335,9 +1365,9 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("AngularVelocity");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } angularAttachment0 ? angularAttachment0 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } angularAttachment0 ? angularAttachment0 : null);
             AddComboField("RelativeTo", ["World", "Attachment0", "Attachment1"], selected.RelativeTo);
-            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } angularAttachment1 ? angularAttachment1 : null);
+            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } angularAttachment1 ? angularAttachment1 : null);
             AddTextField("AngularVelocity", VectorText(selected.AngularVelocityTarget));
             AddTextField("MaxTorque", selected.MaxTorque.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddCheckField("ReactionTorqueEnabled", selected.ReactionTorqueEnabled);
@@ -1347,9 +1377,9 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("Torque");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } torqueAttachment0 ? torqueAttachment0 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } torqueAttachment0 ? torqueAttachment0 : null);
             AddComboField("RelativeTo", ["World", "Attachment0", "Attachment1"], selected.RelativeTo);
-            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } torqueAttachment1 ? torqueAttachment1 : null);
+            if (selected.RelativeTo == "Attachment1") AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } torqueAttachment1 ? torqueAttachment1 : null);
             AddTextField("Torque", VectorText(selected.TorqueTarget));
             AddLabel("Applies constant torque to Attachment0's part during play.", "Torque");
         }
@@ -1357,8 +1387,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("SpringConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } springAttachment0 ? springAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } springAttachment1 ? springAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } springAttachment0 ? springAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } springAttachment1 ? springAttachment1 : null);
             AddTextField("FreeLength", selected.SpringFreeLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Stiffness", selected.SpringStiffness.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Damping", selected.SpringDamping.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1375,8 +1405,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("TorsionSpringConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } torsionAttachment0 ? torsionAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } torsionAttachment1 ? torsionAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } torsionAttachment0 ? torsionAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } torsionAttachment1 ? torsionAttachment1 : null);
             AddLabel($"CurrentAngle: {selected.TorsionSpringCurrentAngle:0.##}", "CurrentAngle");
             AddTextField("Stiffness", selected.TorsionSpringStiffness.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Damping", selected.TorsionSpringDamping.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1395,8 +1425,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("BallSocketConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } ballSocketAttachment0 ? ballSocketAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } ballSocketAttachment1 ? ballSocketAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } ballSocketAttachment0 ? ballSocketAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } ballSocketAttachment1 ? ballSocketAttachment1 : null);
             AddTextField("Radius", selected.BallSocketRadius.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Restitution", selected.BallSocketRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("MaxFrictionTorque", selected.BallSocketMaxFrictionTorque.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1414,8 +1444,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("UniversalConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } universalAttachment0 ? universalAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } universalAttachment1 ? universalAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } universalAttachment0 ? universalAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } universalAttachment1 ? universalAttachment1 : null);
             AddTextField("Radius", selected.UniversalRadius.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Restitution", selected.UniversalRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddCheckField("LimitsEnabled", selected.UniversalLimitsEnabled);
@@ -1426,8 +1456,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("HingeConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } hingeAttachment0 ? hingeAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } hingeAttachment1 ? hingeAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } hingeAttachment0 ? hingeAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } hingeAttachment1 ? hingeAttachment1 : null);
             AddComboField("ActuatorType", ["None", "Motor", "Servo"], selected.HingeActuatorType);
             AddLabel($"CurrentAngle: {selected.HingeCurrentAngle:0.##}°", "CurrentAngle");
             AddTextField("Radius", selected.HingeRadius.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1457,8 +1487,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("PrismaticConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } prismaticAttachment0 ? prismaticAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } prismaticAttachment1 ? prismaticAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } prismaticAttachment0 ? prismaticAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } prismaticAttachment1 ? prismaticAttachment1 : null);
             AddComboField("ActuatorType", ["None", "Motor", "Servo"], selected.PrismaticActuatorType);
             AddLabel($"CurrentPosition: {selected.PrismaticCurrentPosition:0.##}", "CurrentPosition");
             AddTextField("Size", selected.PrismaticSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1488,8 +1518,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("CylindricalConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } cylindricalAttachment0 ? cylindricalAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } cylindricalAttachment1 ? cylindricalAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } cylindricalAttachment0 ? cylindricalAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } cylindricalAttachment1 ? cylindricalAttachment1 : null);
             AddComboField("ActuatorType", ["None", "Motor", "Servo"], selected.PrismaticActuatorType);
             AddLabel($"CurrentPosition: {selected.PrismaticCurrentPosition:0.##}", "CurrentPosition");
             AddTextField("Size", selected.PrismaticSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1543,24 +1573,24 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("PlaneConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } planeAttachment0 ? planeAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } planeAttachment1 ? planeAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } planeAttachment0 ? planeAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } planeAttachment1 ? planeAttachment1 : null);
             AddLabel("Keeps Attachment1 on the plane through Attachment0, using Attachment0's X axis as the normal.", "Attachment0");
         }
         if (selected.Type == "RigidConstraint")
         {
             propertyTarget = AddPropertySection("RigidConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } rigidAttachment0 ? rigidAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } rigidAttachment1 ? rigidAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } rigidAttachment0 ? rigidAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } rigidAttachment1 ? rigidAttachment1 : null);
             AddLabel("Keeps both attachment frames aligned during play.", "Attachment0");
         }
         if (selected.Type == "RopeConstraint")
         {
             propertyTarget = AddPropertySection("RopeConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } ropeAttachment0 ? ropeAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } ropeAttachment1 ? ropeAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } ropeAttachment0 ? ropeAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } ropeAttachment1 ? ropeAttachment1 : null);
             AddTextField("Length", selected.RopeLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("Restitution", selected.RopeRestitution.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddCheckField("WinchEnabled", selected.RopeWinchEnabled);
@@ -1577,8 +1607,8 @@ public partial class MainWindow : Window
         {
             propertyTarget = AddPropertySection("RodConstraint");
             AddCheckField("Enabled", selected.Enabled);
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } rodAttachment0 ? rodAttachment0 : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } rodAttachment1 ? rodAttachment1 : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } rodAttachment0 ? rodAttachment0 : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } rodAttachment1 ? rodAttachment1 : null);
             AddTextField("Length", selected.RodLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddLabel($"CurrentDistance: {selected.RodCurrentDistance:0.##}", "CurrentDistance");
             AddTextField("Thickness", selected.RodThickness.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1597,6 +1627,10 @@ public partial class MainWindow : Window
             AddTextField("MaxHealth", selected.MaxHealth.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("WalkSpeed", selected.WalkSpeed.ToString(System.Globalization.CultureInfo.InvariantCulture));
             AddTextField("JumpPower", selected.JumpPower.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddTextField("JumpHeight", selected.JumpHeight.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AddCheckField("Jump", selected.Jump);
+            AddCheckField("UseJumpPower", selected.UseJumpPower);
+            AddCheckField("AutoRotate", selected.AutoRotate);
             AddLabel("The generated character uses these values for movement and respawns at zero Health.", "Health");
         }
         if (selected.Type == "BodyColors")
@@ -1620,8 +1654,8 @@ public partial class MainWindow : Window
         if (selected.Type == "PathfindingLink")
         {
             propertyTarget = AddPropertySection("Pathfinding Link");
-            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" } first ? first : null);
-            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" } second ? second : null);
+            AddObjectReferenceField("Attachment0", selected, FindSceneNode(selected.Attachment0) is { Type: "Attachment" or "Bone" } first ? first : null);
+            AddObjectReferenceField("Attachment1", selected, FindSceneNode(selected.Attachment1) is { Type: "Attachment" or "Bone" } second ? second : null);
             AddTextField("Label", selected.PathfindingLinkLabel);
             AddCheckField("IsBidirectional", selected.PathfindingLinkBidirectional);
             AddLabel("Custom waypoint label for scripts. A one-way link travels from Attachment0 to Attachment1.", "Label");
@@ -3001,19 +3035,21 @@ public partial class MainWindow : Window
         }
         else if (property == "Gravity" && target.Type == "Workspace" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gravity) && float.IsFinite(gravity)) target.Gravity = Math.Clamp(gravity, 0, 1000);
         else if (property == "FallenPartsDestroyHeight" && target.Type == "Workspace" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fallenPartsDestroyHeight) && float.IsFinite(fallenPartsDestroyHeight)) target.FallenPartsDestroyHeight = Math.Clamp(fallenPartsDestroyHeight, -1000000, 1000000);
-        else if (target.Type == "Humanoid" && property is ("Health" or "MaxHealth" or "WalkSpeed" or "JumpPower")
+        else if (target.Type == "Humanoid" && property is ("Health" or "MaxHealth" or "WalkSpeed" or "JumpPower" or "JumpHeight")
             && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var humanoidValue) && float.IsFinite(humanoidValue))
         {
             if (property == "MaxHealth") { target.MaxHealth = Math.Clamp(humanoidValue, 1, 100000); target.Health = Math.Min(target.Health, target.MaxHealth); }
             else if (property == "Health") target.Health = Math.Clamp(humanoidValue, 0, target.MaxHealth);
             else if (property == "WalkSpeed") target.WalkSpeed = Math.Clamp(humanoidValue, 0, 1000);
-            else target.JumpPower = Math.Clamp(humanoidValue, 0, 1000);
+            else if (property == "JumpPower") target.JumpPower = Math.Clamp(humanoidValue, 0, 1000);
+            else target.JumpHeight = Math.Clamp(humanoidValue, 0, 1000);
         }
-        else if (target.Type == "StarterPlayer" && property is ("CharacterWalkSpeed" or "CharacterJumpPower")
+        else if (target.Type == "StarterPlayer" && property is ("CharacterWalkSpeed" or "CharacterJumpPower" or "CharacterJumpHeight")
             && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var starterPlayerMovement) && float.IsFinite(starterPlayerMovement))
         {
             if (property == "CharacterWalkSpeed") target.WalkSpeed = Math.Clamp(starterPlayerMovement, 0, 1000);
-            else target.JumpPower = Math.Clamp(starterPlayerMovement, 0, 1000);
+            else if (property == "CharacterJumpPower") target.JumpPower = Math.Clamp(starterPlayerMovement, 0, 1000);
+            else target.JumpHeight = Math.Clamp(starterPlayerMovement, 0, 1000);
         }
         else if (target.Type == "StarterPlayer" && property is ("CameraMinZoomDistance" or "CameraMaxZoomDistance")
             && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var starterPlayerZoom) && float.IsFinite(starterPlayerZoom))
@@ -3119,10 +3155,12 @@ public partial class MainWindow : Window
         else if (property == "HoverImage" && target.Type == "ImageButton") target.HoverImage = text;
         else if (property == "PressedImage" && target.Type == "ImageButton") target.PressedImage = text;
         else if (property == "AnimationId" && target.Type == "Animation") target.AnimationId = text;
+        else if (property == "Time" && target.Type == "Keyframe" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var keyframeTime) && float.IsFinite(keyframeTime)) target.KeyframeTime = Math.Clamp(keyframeTime, 0, 60);
+        else if (property == "Weight" && target.Type == "Pose" && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var poseWeight) && float.IsFinite(poseWeight)) target.PoseWeight = Math.Clamp(poseWeight, 0, 1);
         else if (property == "ShirtTemplate" && target.Type == "Shirt") target.ShirtTemplate = text;
         else if (property == "PantsTemplate" && target.Type == "Pants") target.PantsTemplate = text;
         else if (property == "Graphic" && target.Type == "ShirtGraphic") target.Graphic = text;
-        else if (property == "Asset" && target.Type is ("MeshPart" or "Decal" or "Texture" or "Sound") || property == "MeshId" && target.Type is ("SpecialMesh" or "FileMesh")) target.Asset = text;
+        else if (property == "Asset" && target.Type is ("MeshPart" or "UnionOperation" or "Decal" or "Texture" or "Sound") || property == "MeshId" && target.Type is ("MeshPart" or "SpecialMesh" or "FileMesh")) target.Asset = text;
         else if (property == "Video" && target.Type == "VideoFrame") target.Video = text;
         else if (property == "ColorMap" && SceneNodeTypes.IsSurfaceAppearance(target)) target.SurfaceAppearanceColorMap = text;
         else if (property == "NormalMap" && SceneNodeTypes.IsSurfaceAppearance(target)) target.SurfaceAppearanceNormalMap = text;
@@ -3131,7 +3169,7 @@ public partial class MainWindow : Window
         else if (property == "EmissiveMaskContent" && SceneNodeTypes.IsSurfaceAppearance(target)) target.SurfaceAppearanceEmissiveMask = text;
         else if (property == "ActionText") target.ActionText = text;
         else if (property == "ObjectText") target.ObjectText = text;
-        else if (property == "Texture" && target.Type is ("Part" or "ParticleEmitter" or "Trail") || property == "TextureId" && target.Type is ("SpecialMesh" or "FileMesh")) target.Texture = text;
+        else if (property == "Texture" && target.Type is ("Part" or "ParticleEmitter" or "Trail") || property == "TextureId" && target.Type is ("MeshPart" or "SpecialMesh" or "FileMesh")) target.Texture = text;
         else if (property == "Text") target.Text = text;
         else if (property == "PlaceholderText" && target.Type == "TextBox") target.PlaceholderText = text;
         else if (property == "TextColor") target.TextColor = text;
@@ -3263,8 +3301,10 @@ public partial class MainWindow : Window
             "MaxHealth" => node.MaxHealth,
             "WalkSpeed" => node.WalkSpeed,
             "JumpPower" => node.JumpPower,
+            "JumpHeight" => node.Type == "Humanoid" ? node.JumpHeight : (float?)null,
             "CharacterWalkSpeed" => node.Type == "StarterPlayer" ? node.WalkSpeed : (float?)null,
             "CharacterJumpPower" => node.Type == "StarterPlayer" ? node.JumpPower : (float?)null,
+            "CharacterJumpHeight" => node.Type == "StarterPlayer" ? node.JumpHeight : (float?)null,
             "Brightness" => node.Type is "Lighting" or "ColorCorrectionEffect" || SceneNodeTypes.IsLight(node) ? node.Brightness : (float?)null,
             "Contrast" => node.Type == "ColorCorrectionEffect" ? node.ColorCorrectionContrast : (float?)null,
             "Saturation" => node.Type == "ColorCorrectionEffect" ? node.ColorCorrectionSaturation : (float?)null,
@@ -3403,6 +3443,7 @@ public partial class MainWindow : Window
         if (property == "TextEditable" && target.Type == "TextBox") target.TextEditable = box.IsChecked == true;
         if (property == "ClearTextOnFocus" && target.Type == "TextBox") target.ClearTextOnFocus = box.IsChecked == true;
         if (property == "Enabled") target.Enabled = box.IsChecked == true;
+        if (property == "Loop" && target.Type == "KeyframeSequence") target.KeyframeSequenceLooped = box.IsChecked == true;
         if (property == "RequiresLineOfSight" && target.Type == "ProximityPrompt") target.RequiresLineOfSight = box.IsChecked == true;
         if (property == "ClickablePrompt" && target.Type == "ProximityPrompt") target.ClickablePrompt = box.IsChecked == true;
         if (property == "ApplyAtCenterOfMass" && target.Type is ("VectorForce" or "AlignPosition")) target.ApplyAtCenterOfMass = box.IsChecked == true;
@@ -3435,6 +3476,11 @@ public partial class MainWindow : Window
         if (property == "Looped") target.Looped = box.IsChecked == true;
         if (property == "Playing") target.Playing = box.IsChecked == true;
         if (property == "AutoManageCharacter" && target.Type == "Workspace") target.AutoManageCharacter = box.IsChecked == true;
+        if (property == "UseJumpPower" && target.Type == "Humanoid") target.UseJumpPower = box.IsChecked == true;
+        if (property == "Jump" && target.Type == "Humanoid") target.Jump = box.IsChecked == true;
+        if (property == "AutoRotate" && target.Type == "Humanoid") target.AutoRotate = box.IsChecked == true;
+        if (property == "CharacterUseJumpPower" && target.Type == "StarterPlayer") target.UseJumpPower = box.IsChecked == true;
+        if (property == "CharacterAutoRotate" && target.Type == "StarterPlayer") target.AutoRotate = box.IsChecked == true;
         if (property == "PassThrough" && target.Type == "PathfindingModifier") target.PathfindingPassThrough = box.IsChecked == true;
         if (property == "IsBidirectional" && target.Type == "PathfindingLink") target.PathfindingLinkBidirectional = box.IsChecked == true;
         if (property == "ResetOnSpawn" && target.Type == "ScreenGui") target.ResetOnSpawn = box.IsChecked == true;
@@ -3468,6 +3514,9 @@ public partial class MainWindow : Window
         }
         if (property == "Mode" && target.Type == "Camera") target.CameraMode = value;
         if (property == "RunContext" && target.Type == "Script" && value is ("Legacy" or "Server" or "Client" or "Plugin")) target.RunContext = value;
+        if (property == "Priority" && target.Type == "KeyframeSequence" && value is ("Core" or "Idle" or "Movement" or "Action" or "Action2" or "Action3" or "Action4")) target.KeyframeSequencePriority = value;
+        if (property == "EasingStyle" && target.Type == "Pose" && value is ("Linear" or "Sine" or "Back" or "Bounce" or "Quad" or "Quart" or "Quint" or "Elastic" or "Exponential" or "Circular" or "Cubic")) target.PoseEasingStyle = value;
+        if (property == "EasingDirection" && target.Type == "Pose" && value is ("In" or "Out" or "InOut")) target.PoseEasingDirection = value;
         if (property == "RollOffMode" && target.Type == "Sound" && SceneNodeTypes.RollOffModes.Contains(value, StringComparer.Ordinal)) target.RollOffMode = value;
         if (property == "Mode" && target.Type == "AlignPosition" && value is ("OneAttachment" or "TwoAttachment")) target.AlignmentMode = value;
         if (property == "Mode" && target.Type == "AlignOrientation" && value is ("OneAttachment" or "TwoAttachment")) target.AlignmentMode = value;
@@ -3862,7 +3911,7 @@ public partial class MainWindow : Window
             : new (string Type, string Name)[] { ("Part", "Part"), ("Ball", "Ball"), ("Cylinder", "Cylinder"), ("WedgePart", "WedgePart"), ("CornerWedgePart", "CornerWedgePart"), ("TrussPart", "TrussPart"), ("SpawnLocation", "SpawnLocation"), ("Seat", "Seat"), ("VehicleSeat", "VehicleSeat"), ("MeshPart", "MeshPart"), ("UnionOperation", "UnionOperation"), ("Camera", "Camera"), ("Attachment", "Attachment"), ("SpecialMesh", "SpecialMesh"), ("BlockMesh", "BlockMesh"), ("CylinderMesh", "CylinderMesh"), ("FileMesh", "FileMesh"), ("Beam", "Beam"), ("Trail", "Trail"), ("BodyForce", "BodyForce"), ("BodyThrust", "BodyThrust"), ("BodyVelocity", "BodyVelocity"), ("BodyPosition", "BodyPosition"), ("BodyGyro", "BodyGyro"), ("BodyAngularVelocity", "BodyAngularVelocity"), ("RocketPropulsion", "RocketPropulsion"), ("VectorForce", "VectorForce"), ("LineForce", "LineForce"), ("Torque", "Torque"), ("SpringConstraint", "SpringConstraint"), ("TorsionSpringConstraint", "TorsionSpringConstraint"), ("RopeConstraint", "RopeConstraint"), ("RodConstraint", "RodConstraint"), ("BallSocketConstraint", "BallSocketConstraint"), ("HingeConstraint", "HingeConstraint"), ("PrismaticConstraint", "PrismaticConstraint"), ("CylindricalConstraint", "CylindricalConstraint"), ("PlaneConstraint", "PlaneConstraint"), ("UniversalConstraint", "UniversalConstraint"), ("RigidConstraint", "RigidConstraint"), ("LinearVelocity", "LinearVelocity"), ("AlignPosition", "AlignPosition"), ("PointLight", "PointLight"), ("SpotLight", "SpotLight"), ("SurfaceLight", "SurfaceLight"), ("Decal", "Decal"), ("Texture", "Texture"), ("Sound", "Sound"), ("ProximityPrompt", "ProximityPrompt"), ("ClickDetector", "ClickDetector"), ("Highlight", "Highlight"), ("SelectionBox", "SelectionBox"), ("SelectionSphere", "SelectionSphere"), ("ForceField", "ForceField"), ("Explosion", "Explosion"), ("WeldConstraint", "WeldConstraint"), ("Weld", "Weld"), ("Motor6D", "Motor6D"), ("NoCollisionConstraint", "NoCollisionConstraint"), ("Humanoid", "Humanoid"), ("ImageLabel", "ImageLabel"), ("Model", "Model"), ("Folder", "Folder"), ("Tool", "Tool"), ("Accessory", "Accessory"), ("BoolValue", "BoolValue"), ("IntValue", "IntValue"), ("NumberValue", "NumberValue"), ("StringValue", "StringValue"), ("Script", $"Script{project.Scripts.Count + 1}"), ("LocalScript", $"LocalScript{project.Scripts.Count + 1}") };
         choices = choices.Concat(new (string Type, string Name)[] { ("Team", "Team"), ("Animation", "Animation"), ("AnimationController", "AnimationController"), ("Animator", "Animator"), ("BodyColors", "BodyColors"), ("PathfindingModifier", "PathfindingModifier"), ("PathfindingLink", "PathfindingLink"), ("Configuration", "Configuration"), ("BindableEvent", "BindableEvent"), ("BindableFunction", "BindableFunction"), ("RemoteEvent", "RemoteEvent"), ("UnreliableRemoteEvent", "UnreliableRemoteEvent"), ("RemoteFunction", "RemoteFunction"), ("AlignOrientation", "AlignOrientation"), ("AngularVelocity", "AngularVelocity"), ("SoundGroup", "SoundGroup"), ("PitchShiftSoundEffect", "PitchShiftSoundEffect"), ("DistortionSoundEffect", "DistortionSoundEffect"), ("EqualizerSoundEffect", "EqualizerSoundEffect"), ("ChorusSoundEffect", "ChorusSoundEffect"), ("CompressorSoundEffect", "CompressorSoundEffect"), ("EchoSoundEffect", "EchoSoundEffect"), ("FlangeSoundEffect", "FlangeSoundEffect"), ("TremoloSoundEffect", "TremoloSoundEffect"), ("ReverbSoundEffect", "ReverbSoundEffect"), ("ModuleScript", $"ModuleScript{project.Scripts.Count + 1}"), ("Vector2Value", "Vector2Value"), ("Vector3Value", "Vector3Value"), ("Color3Value", "Color3Value"), ("ObjectValue", "ObjectValue"), ("Sky", "Sky"), ("Atmosphere", "Atmosphere"), ("Clouds", "Clouds"), ("BloomEffect", "BloomEffect"), ("BlurEffect", "BlurEffect"), ("ColorCorrectionEffect", "ColorCorrectionEffect"), ("SurfaceAppearance", "SurfaceAppearance"), ("Fire", "Fire"), ("Smoke", "Smoke"), ("Sparkles", "Sparkles"), ("ParticleEmitter", "ParticleEmitter"), ("BillboardGui", "BillboardGui"), ("SurfaceGui", "SurfaceGui") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type is "Ball" or "Cylinder" ? "Part" : choice.Type, Name = choice.Name }, parent)).ToArray();
-        choices = choices.Concat(new (string Type, string Name)[] { ("Shirt", "Shirt"), ("Pants", "Pants"), ("ShirtGraphic", "ShirtGraphic"), ("Bone", "Bone") })
+        choices = choices.Concat(new (string Type, string Name)[] { ("Shirt", "Shirt"), ("Pants", "Pants"), ("ShirtGraphic", "ShirtGraphic"), ("Bone", "Bone"), ("KeyframeSequence", "KeyframeSequence"), ("Keyframe", "Keyframe"), ("Pose", "Pose") })
             .Where(choice => GameProjectStore.CanParentNode(project, new SceneNode { Type = choice.Type, Name = choice.Name }, parent)).ToArray();
         var menu = new ContextMenu { PlacementTarget = placementTarget, StaysOpen = true };
         var search = new TextBox { Width = 190, Margin = new Thickness(5), Padding = new Thickness(5, 3, 5, 3), ToolTip = "Search objects" };
@@ -4174,7 +4223,9 @@ public partial class MainWindow : Window
             "Part" when imageAsset => "Texture",
             "ParticleEmitter" when imageAsset => "Texture",
             "Trail" when imageAsset => "Texture",
-            "MeshPart" when asset.Type == "obj" => "Asset",
+            "MeshPart" when asset.Type == "obj" => "MeshId",
+            "MeshPart" when imageAsset => "TextureId",
+            "UnionOperation" when asset.Type == "obj" => "Asset",
             "SpecialMesh" or "FileMesh" when asset.Type == "obj" => "MeshId",
             "SpecialMesh" or "FileMesh" when imageAsset => "TextureId",
             "SurfaceAppearance" when imageAsset => "ColorMap",
@@ -4199,7 +4250,7 @@ public partial class MainWindow : Window
         }
 
         if (property is "Texture" or "TextureId") selected.Texture = relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) ? relativePath[7..] : relativePath;
-        else if (property == "MeshId" && selected.Type is ("SpecialMesh" or "FileMesh")) selected.Asset = relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) ? relativePath[7..] : relativePath;
+        else if (property == "MeshId" && selected.Type is ("MeshPart" or "SpecialMesh" or "FileMesh")) selected.Asset = relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) ? relativePath[7..] : relativePath;
         else if (property == "HoverImage" && selected.Type == "ImageButton") selected.HoverImage = relativePath;
         else if (property == "PressedImage" && selected.Type == "ImageButton") selected.PressedImage = relativePath;
         else if (property == "ColorMap" && SceneNodeTypes.IsSurfaceAppearance(selected)) selected.SurfaceAppearanceColorMap = relativePath.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) ? relativePath[7..] : relativePath;
@@ -4968,7 +5019,11 @@ public partial class MainWindow : Window
     private static readonly Regex LuaXTypedLocalPattern = new(@"\blocal\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<type>[^=,\r\n;]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex LuaXConnectedFunctionPattern = new(@"\.(?<signal>Touched|TouchEnded|TextChanged|Focused|FocusLost|MouseButton1Click|MouseButton1Down|MouseButton1Up|Triggered|MouseClick|MouseHoverEnter|MouseHoverLeave|MouseEnter|MouseLeave|Changed)\s*:\s*Connect\s*\(\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
     private static readonly HashSet<string> LuaXInstanceTypes = new(["Instance", "BasePart", "PVInstance", "Constraint", "BodyMover", "DataModelMesh", "BevelMesh", "PartOperation", "Part", "MeshPart", "UnionOperation", "SpecialMesh", "BlockMesh", "CylinderMesh", "FileMesh", "WedgePart", "CornerWedgePart", "SpawnLocation", "TrussPart", "Seat", "VehicleSeat", "Humanoid", "AnimationController", "Animator", "AnimationTrack", "PathfindingModifier", "PathfindingLink", "ValueBase", "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue", "Light", "PointLight", "SpotLight", "SurfaceLight", "FaceInstance", "Decal", "Texture", "Sound", "Animation", "SoundGroup", "SoundEffect", "PitchShiftSoundEffect", "DistortionSoundEffect", "EqualizerSoundEffect", "ChorusSoundEffect", "CompressorSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "Weld", "Motor6D", "NoCollisionConstraint", "Attachment", "Beam", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "Tool", "Model", "WorldModel", "WorldRoot", "Camera", "Workspace", "Players", "Player", "Teams", "Team", "Lighting", "SoundService", "Sky", "Atmosphere", "Clouds", "PostEffect", "BloomEffect", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "ReplicatedStorage", "ReplicatedFirst", "ServerScriptService", "ServerStorage", "StarterPack", "StarterPlayer", "StarterGui", "PlayerGui", "BasePlayerGui", "Backpack", "PlayerScripts", "BasePlayerScripts", "Terrain", "DataModel", "CollectionService", "RunService", "UserInputService", "ContextActionService", "TweenService", "HttpService", "PathfindingService", "Path", "PathWaypoint", "Tween", "TweenInfo", "Folder", "Configuration", "BindableEvent", "BindableFunction", "BaseRemoteEvent", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "ModuleScript", "LocalScript", "LuaSourceContainer", "BaseScript", "Script", "Gui", "GuiBase2d", "GuiObject", "UIComponent", "LayerCollector", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ViewportFrame", "VideoFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox", "UICanvasGroup", "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem", "UIPageLayout"], StringComparer.Ordinal);
-    static MainWindow() => LuaXInstanceTypes.UnionWith(["Clothing", "CharacterAppearance", "Shirt", "Pants", "ShirtGraphic", "ShirtTemplate", "PantsTemplate", "Graphic", "UIDragDetector", "Bone"]);
+    static MainWindow()
+    {
+        LuaXInstanceTypes.UnionWith(["Clothing", "CharacterAppearance", "Shirt", "Pants", "ShirtGraphic", "ShirtTemplate", "PantsTemplate", "Graphic", "UIDragDetector", "Bone", "KeyframeSequence", "Keyframe", "Pose"]);
+        LuaXCreatableClassNameCompletions = [.. LuaXCreatableClassNameCompletions, "KeyframeSequence", "Keyframe", "Pose"];
+    }
 
     private static IEnumerable<(string Name, string? Type)> GetLuaXFunctionParameters(string source)
     {
@@ -5112,6 +5167,7 @@ public partial class MainWindow : Window
         if (node.Type == "BasePart" || SceneNodeTypes.IsBasePart(node)) members.AddRange(["Position", "Rotation", "Size", "Color", "AnimationId", "Material", "Transparency", "Reflectance", "Anchored", "Massless", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "AssemblyRootPart", "CastShadow", "Touched", "touched", "TouchEnded", "BreakJoints", "GetTouchingParts", "GetConnectedParts", "GetMass", "GetVelocityAtPosition", "ApplyImpulse", "ApplyImpulseAtPosition", "ApplyAngularImpulse"]);
         if (node.Type is "Frame" or "ScrollingFrame" or "ViewportFrame" or "VideoFrame" or "ImageLabel" or "ImageButton" or "TextLabel" or "TextButton" or "TextBox" or "UICanvasGroup") members.AddRange(["MouseEnter", "MouseLeave"]);
         if (node.Type == "Part") members.AddRange(["Shape", "Texture"]);
+        if (node.Type == "MeshPart") members.AddRange(["MeshId", "TextureId"]);
         if (node.Type == "SpecialMesh") members.AddRange(["MeshType", "MeshId", "TextureId", "Scale", "Offset", "VertexColor"]);
         else if (node.Type == "FileMesh") members.AddRange(["MeshId", "TextureId", "Scale", "Offset", "VertexColor"]);
         else if (node.Type is "BlockMesh" or "CylinderMesh") members.AddRange(["Scale", "Offset", "VertexColor"]);
@@ -5119,7 +5175,7 @@ public partial class MainWindow : Window
         if (node.Type == "SpawnLocation") members.Add("Enabled");
         if (node.Type == "Seat") members.Add("Occupant");
         if (node.Type == "VehicleSeat") members.AddRange(["Occupant", "Disabled", "HeadsUpDisplay", "MaxSpeed", "Torque", "TurnSpeed", "ThrottleFloat", "SteerFloat", "AreHingesDetected"]);
-        if (node.Type == "Humanoid") members.AddRange(["Health", "MaxHealth", "WalkSpeed", "JumpPower", "HealthChanged", "Died", "MoveTo", "MoveToFinished", "Animator", "LoadAnimation", "TakeDamage"]);
+        if (node.Type == "Humanoid") members.AddRange(["Health", "MaxHealth", "WalkSpeed", "JumpPower", "JumpHeight", "Jump", "UseJumpPower", "AutoRotate", "Sit", "HealthChanged", "Died", "MoveTo", "MoveToFinished", "Animator", "LoadAnimation", "TakeDamage"]);
         if (node.Type == "Animator") members.AddRange(["LoadAnimation", "GetPlayingAnimationTracks"]);
         if (node.Type == "ForceField") members.Add("Visible");
         if (node.Type == "Explosion") members.AddRange(["Position", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Visible", "Hit"]);
@@ -5143,7 +5199,7 @@ public partial class MainWindow : Window
         if (node.Type == "ColorCorrectionEffect") members.AddRange(["Enabled", "TintColor", "Brightness", "Contrast", "Saturation"]);
         if (SceneNodeTypes.IsSurfaceAppearance(node)) members.AddRange(["Color", "ColorMap", "NormalMap", "RoughnessMap", "MetalnessMap", "EmissiveMaskContent", "EmissiveTint", "EmissiveStrength"]);
         if (node.Type == "RemoteFunction") members.AddRange(["OnServerInvoke", "OnClientInvoke", "InvokeServer", "InvokeClient"]);
-        if (node.Type == "MeshPart") members.Add("Asset");
+        if (node.Type is "MeshPart" or "UnionOperation") members.Add("Asset");
         if (node.Type == "Light" || SceneNodeTypes.IsLight(node)) members.AddRange(["Enabled", "Color", "Brightness", "Range", "Position"]);
         if (node.Type is "SpotLight" or "SurfaceLight") members.Add("Angle");
         if (node.Type == "SpotLight") members.Add("Rotation");
@@ -5205,6 +5261,9 @@ public partial class MainWindow : Window
         if (node.Type == "RopeConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "Length", "CurrentLength", "Restitution", "WinchEnabled", "WinchForce", "WinchResponsiveness", "WinchSpeed", "WinchTarget"]);
         if (node.Type == "RodConstraint") members.AddRange(["Enabled", "Attachment0", "Attachment1", "CurrentDistance", "Length", "LimitAngle0", "LimitAngle1", "LimitsEnabled", "Thickness"]);
         if (SceneNodeTypes.IsAttachment(node)) members.AddRange(["Position", "Rotation", "Axis", "SecondaryAxis", "WorldPosition", "WorldRotation", "WorldAxis", "WorldSecondaryAxis", "GetAxis", "GetSecondaryAxis", "SetAxis", "SetSecondaryAxis", "GetConstraints"]);
+        if (node.Type == "KeyframeSequence") members.AddRange(["Loop", "Priority", "GetKeyframes", "AddKeyframe"]);
+        if (node.Type == "Keyframe") members.AddRange(["Time", "GetPoses", "AddPose"]);
+        if (node.Type == "Pose") members.AddRange(["Position", "Rotation", "Weight", "EasingStyle", "EasingDirection", "GetSubPoses", "AddSubPose"]);
         if (node.Type == "Camera") members.AddRange(["Mode", "CameraMode", "Subject", "FieldOfView", "Position", "Rotation"]);
         if (node.Type == "ViewportFrame") members.Add("CurrentCamera");
         if (node.Type == "Workspace") members.AddRange(["Gravity", "FallenPartsDestroyHeight", "AutoManageCharacter", "CurrentCamera", "Raycast", "Blockcast", "Spherecast", "Shapecast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom"]);
@@ -5215,7 +5274,7 @@ public partial class MainWindow : Window
         if (node.Type == "Clouds") members.AddRange(["Enabled", "Cover", "Density", "Color"]);
         if (node.Type == "Sky") members.AddRange(["SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn"]);
         if (node.Type == "Players") members.AddRange(["LocalPlayer", "GetPlayers", "GetPlayerFromCharacter"]);
-        if (node.Type == "StarterPlayer") members.AddRange(["CharacterWalkSpeed", "CharacterJumpPower"]);
+        if (node.Type == "StarterPlayer") members.AddRange(["CharacterWalkSpeed", "CharacterJumpPower", "CharacterJumpHeight", "CharacterUseJumpPower", "CharacterAutoRotate"]);
         if (node.Type == "StarterPlayer") members.AddRange(["CameraMinZoomDistance", "CameraMaxZoomDistance"]);
         if (node.Type == "Tool") members.AddRange(["ToolTip", "RequiresHandle", "CanBeDropped", "ManualActivationOnly", "GripPosition", "GripRotation", "Activated", "Deactivated", "Equipped", "Unequipped", "Activate", "Deactivate"]);
         if (node.Type == "Player") members.AddRange(["Backpack", "Character", "CharacterAdded", "CharacterRemoving", "PlayerScripts", "Team", "TeamColor"]);
@@ -5305,7 +5364,7 @@ public partial class MainWindow : Window
         if (inferredType == "Model" || receiverNode?.Type == "Model") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "FindFirstChildWhichIsA", "FindFirstChildOfClass", "FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA", "GetChildren", "GetDescendants", "GetFullName", "IsDescendantOf", "IsA", "Clone", "Destroy", "ClearAllChildren", "MoveTo", "RotateTo", "GetExtentsSize", "GetScale", "ScaleTo"];
         if (inferredType is "number" or "string" or "boolean" or "table") return [];
         if (inferredType is "Seat" or "VehicleSeat" || receiverNode?.Type is "Seat" or "VehicleSeat") return ["Sit"];
-        if (inferredType == "Humanoid" || receiverNode?.Type == "Humanoid") return ["HealthChanged", "Died", "MoveTo", "MoveToFinished", "TakeDamage", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
+        if (inferredType == "Humanoid" || receiverNode?.Type == "Humanoid") return ["Health", "MaxHealth", "WalkSpeed", "JumpPower", "JumpHeight", "Jump", "UseJumpPower", "AutoRotate", "Sit", "HealthChanged", "Died", "MoveTo", "MoveToFinished", "TakeDamage", "GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy"];
         if (inferredType == "Sound" || receiverNode?.Type == "Sound") return ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Play", "Pause", "Resume", "Stop"];
         if (inferredType == "ParticleEmitter" || receiverNode?.Type == "ParticleEmitter") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Emit", "Clear"];
         if (inferredType == "Trail" || receiverNode?.Type == "Trail") return ["GetProperty", "SetProperty", "WaitForChild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "Clear"];
@@ -6002,7 +6061,7 @@ public partial class MainWindow : Window
 
     private static readonly string[] LuaXMemberCompletions =
     [
-        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "AnimationId", "ShirtTemplate", "PantsTemplate", "Graphic", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Reflectance", "BackgroundTransparency", "BorderColor3", "BorderSizePixel", "GroupTransparency", "TextTransparency", "Image", "ImageColor3", "ImageTransparency", "ScaleType", "ImageRectOffset", "ImageRectSize", "SliceCenter", "SliceScale", "HoverImage", "PressedImage", "CanvasPosition", "CanvasSize", "AutomaticCanvasSize", "ScrollBarThickness", "ScrollingEnabled", "ScrollingDirection", "AutomaticSize", "MinSize", "MaxSize", "AspectType", "DominantAxis", "MinTextSize", "MaxTextSize", "TextScaled", "TextWrapped", "TextSize", "Texture", "Asset", "Volume", "PlaybackSpeed", "Octave", "Level", "LowGain", "MidGain", "HighGain", "Attack", "GainMakeup", "Ratio", "Release", "Threshold", "SideChain", "Delay", "Feedback", "DryLevel", "WetLevel", "SoundGroup", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "RollOffMode", "Play", "Stop", "Anchored", "Massless", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "FallenPartsDestroyHeight", "AutoManageCharacter", "CurrentCamera", "Raycast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "FilterDescendantsInstances", "FilterType", "MaxParts", "RespectCanCollide", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "Team", "TeamColor", "AutoAssignable", "LocalPlayer", "CharacterWalkSpeed", "CharacterJumpPower", "CameraMinZoomDistance", "CameraMaxZoomDistance", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "HealthChanged", "Died", "TakeDamage", "Enabled", "ClipsDescendants", "Cover", "Part0", "Part1", "PrimaryPart", "Attachment0", "Attachment1", "ActuatorType", "AngularActuatorType", "AngularLimitsEnabled", "AngularRestitution", "AngularResponsiveness", "AngularSpeed", "AngularVelocity", "CurrentAngle", "MaxAngle", "Coils", "Stiffness", "Damping", "LowerAngle", "MotorMaxAcceleration", "MotorMaxAngularAcceleration", "MotorMaxTorque", "ServoMaxTorque", "TargetAngle", "UpperAngle", "CurrentPosition", "CurrentDistance", "LimitAngle0", "LimitAngle1", "Thickness", "InclinationAngle", "RotationAxisVisible", "WorldRotationAxis", "LinearResponsiveness", "LowerLimit", "MotorMaxForce", "ServoMaxForce", "TargetPosition", "UpperLimit", "Speed", "TwistLowerAngle", "TwistUpperAngle", "TwistLimitsEnabled", "LimitsEnabled", "MaxFrictionTorque", "Radius", "Restitution", "Width0", "Width1", "Density", "Haze", "Glare", "Offset", "Decay", "Brightness", "Contrast", "Saturation", "TintColor", "Range", "Angle", "ActionText", "ObjectText", "HoldDuration", "MaxActivationDistance", "KeyboardKeyCode", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "PlaybackState", "Completed", "EasingStyle", "EasingDirection", "Time", "RepeatCount", "Reverses", "DelayTime", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "Deactivated", "Activate", "Deactivate", "MouseButton1Click", "MouseButton1Down", "MouseButton1Up", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal", "CollectionService"
+        "Name", "Parent", "Archivable", "Value", "Changed", "Event", "Fire", "OnInvoke", "Invoke", "Connected", "Disconnect", "Position", "Rotation", "Size", "Color", "AnimationId", "ShirtTemplate", "PantsTemplate", "Graphic", "FillColor", "OutlineColor", "FillTransparency", "OutlineTransparency", "Shape", "Face", "Material", "Transparency", "Reflectance", "BackgroundTransparency", "BorderColor3", "BorderSizePixel", "GroupTransparency", "TextTransparency", "Image", "ImageColor3", "ImageTransparency", "ScaleType", "ImageRectOffset", "ImageRectSize", "SliceCenter", "SliceScale", "HoverImage", "PressedImage", "CanvasPosition", "CanvasSize", "AutomaticCanvasSize", "ScrollBarThickness", "ScrollingEnabled", "ScrollingDirection", "AutomaticSize", "MinSize", "MaxSize", "AspectType", "DominantAxis", "MinTextSize", "MaxTextSize", "TextScaled", "TextWrapped", "TextSize", "Texture", "Asset", "Volume", "PlaybackSpeed", "Octave", "Level", "LowGain", "MidGain", "HighGain", "Attack", "GainMakeup", "Ratio", "Release", "Threshold", "SideChain", "Delay", "Feedback", "DryLevel", "WetLevel", "SoundGroup", "Looped", "Playing", "RollOffMinDistance", "RollOffMaxDistance", "RollOffMode", "Play", "Stop", "Anchored", "Massless", "CanCollide", "CanTouch", "CanQuery", "Velocity", "AssemblyLinearVelocity", "CastShadow", "Gravity", "FallenPartsDestroyHeight", "AutoManageCharacter", "CurrentCamera", "Raycast", "GetPartsInPart", "GetPartBoundsInBox", "GetPartBoundsInRadius", "FilterDescendantsInstances", "FilterType", "MaxParts", "RespectCanCollide", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "Hit", "Ambient", "ClockTime", "GlobalShadows", "Character", "Team", "TeamColor", "AutoAssignable", "LocalPlayer", "CharacterWalkSpeed", "CharacterJumpPower", "CharacterJumpHeight", "CharacterUseJumpPower", "CameraMinZoomDistance", "CameraMaxZoomDistance", "Occupant", "Health", "MaxHealth", "WalkSpeed", "JumpPower", "JumpHeight", "Jump", "UseJumpPower", "HealthChanged", "Died", "TakeDamage", "Enabled", "ClipsDescendants", "Cover", "Part0", "Part1", "PrimaryPart", "Attachment0", "Attachment1", "ActuatorType", "AngularActuatorType", "AngularLimitsEnabled", "AngularRestitution", "AngularResponsiveness", "AngularSpeed", "AngularVelocity", "CurrentAngle", "MaxAngle", "Coils", "Stiffness", "Damping", "LowerAngle", "MotorMaxAcceleration", "MotorMaxAngularAcceleration", "MotorMaxTorque", "ServoMaxTorque", "TargetAngle", "UpperAngle", "CurrentPosition", "CurrentDistance", "LimitAngle0", "LimitAngle1", "Thickness", "InclinationAngle", "RotationAxisVisible", "WorldRotationAxis", "LinearResponsiveness", "LowerLimit", "MotorMaxForce", "ServoMaxForce", "TargetPosition", "UpperLimit", "Speed", "TwistLowerAngle", "TwistUpperAngle", "TwistLimitsEnabled", "LimitsEnabled", "MaxFrictionTorque", "Radius", "Restitution", "Width0", "Width1", "Density", "Haze", "Glare", "Offset", "Decay", "Brightness", "Contrast", "Saturation", "TintColor", "Range", "Angle", "ActionText", "ObjectText", "HoldDuration", "MaxActivationDistance", "KeyboardKeyCode", "Triggered", "MouseClick", "CameraMode", "Subject", "FieldOfView", "PlaybackState", "Completed", "EasingStyle", "EasingDirection", "Time", "RepeatCount", "Reverses", "DelayTime", "Children", "ClassName", "Type", "Touched", "touched", "Activated", "Deactivated", "Activate", "Deactivate", "MouseButton1Click", "MouseButton1Down", "MouseButton1Up", "TextChanged", "SkyboxFront", "SkyboxBack", "SkyboxLeft", "SkyboxRight", "SkyboxTop", "SkyboxBottom", "SkyboxFt", "SkyboxBk", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SkyboxDn", "SetProperty", "GetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "IsA", "Clone", "Destroy", "SecondaryColor", "Heat", "RiseVelocity", "Opacity", "TimeScale", "SparkleColor", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AttributeChanged", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal", "CollectionService"
     ];
 
     private static readonly string[] LuaXMethodCompletions = ["GetProperty", "SetProperty", "WaitForChild", "waitforchild", "FindFirstChild", "GetChildren", "Blockcast", "Spherecast", "Shapecast", "GetPartsInPart", "LoadAnimation", "GetPlayingAnimationTracks", "AdjustSpeed", "AdjustWeight", "BreakJoints", "GetTouchingParts", "GetConnectedParts", "GetMass", "GetVelocityAtPosition", "ApplyImpulse", "ApplyImpulseAtPosition", "ApplyAngularImpulse", "GetPartBoundsInBox", "GetPartBoundsInRadius", "GetPlayers", "GetPlayerFromCharacter", "IsA", "Clone", "Destroy", "Fire", "Abort", "Invoke", "Disconnect", "TakeDamage", "Sit", "AddItem", "SetAttribute", "GetAttribute", "GetAttributes", "GetAttributeChangedSignal", "AddTag", "RemoveTag", "HasTag", "GetTags", "GetTagged", "GetAllTags", "GetInstanceAddedSignal", "GetInstanceRemovedSignal"];
@@ -7037,7 +7096,7 @@ public partial class MainWindow : Window
                                     var size = entry.Size.Select(value => Math.Clamp(value * factor, .05f, 100000)).ToArray();
                                     if (!entry.Node.Size.SequenceEqual(size)) { entry.Node.Size = size; changed = true; }
                                 }
-                                else if (entry.Node.Type == "Attachment")
+                                else if (SceneNodeTypes.IsAttachment(entry.Node))
                                 {
                                     var position = entry.Position.Select(value => value * factor).ToArray();
                                     if (!entry.Node.Position.SequenceEqual(position)) { entry.Node.Position = position; changed = true; }
@@ -7105,7 +7164,7 @@ public partial class MainWindow : Window
                                     modelTransformChanged = true;
                                 }
                             }
-                            else if (node.Type == "Attachment")
+                            else if (SceneNodeTypes.IsAttachment(node))
                             {
                                 var position = startPosition.Select(value => value * factor).ToArray();
                                 if (!node.Position.SequenceEqual(position))

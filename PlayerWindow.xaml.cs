@@ -183,6 +183,12 @@ public partial class PlayerWindow : Window
                 scriptOutput?.Invoke(message);
             }), isStudio: isStudioBuild, sitOnSeat: (targetSeat, humanoid) => Dispatcher.Invoke(() =>
             {
+                if (targetSeat is null)
+                {
+                    if (seats is not null)
+                        foreach (var changedNode in seats.BeforePhysics(true)) SyncSeatNode(changedNode);
+                    return;
+                }
                 if (seats is null && !project.Workspace.AutoManageCharacter
                     && FindRuntimeNode(localPlayer.Character) is { Type: "Model" } playerCharacter
                     && GameProjectStore.Flatten(playerCharacter.Children).Any(node => node.Id == humanoid.Id))
@@ -392,11 +398,14 @@ public partial class PlayerWindow : Window
         var strafe = canMove ? Math.Clamp((Keyboard.IsKeyDown(Key.D) && !contextSunkKeys.Contains(Key.D) ? 1 : 0) - (Keyboard.IsKeyDown(Key.A) && !contextSunkKeys.Contains(Key.A) ? 1 : 0) + (leftStickConsumed ? 0 : leftStick.X), -1, 1) : 0;
         seats?.SetVehicleInput(forward, strafe);
         if (seats is not null)
-            foreach (var node in seats.BeforePhysics(canMove && jumpRequested)) SyncSeatNode(node);
+            foreach (var node in seats.BeforePhysics(canMove && jumpRequested || character?.Humanoid.Jump == true)) SyncSeatNode(node);
         if (seats is not null)
             foreach (var motor in seats.UpdateVehicleMotorTargets()) SyncSeatNode(motor);
+        var scriptJumpRequested = character?.Humanoid.Jump == true;
         if (seats?.IsSeated != true)
             character?.ApplyInput(physics, renderer.CameraYaw, forward, strafe, canMove && jumpRequested, elapsed);
+        if (scriptJumpRequested && character is not null && !character.Humanoid.Jump)
+            runtime?.SynchronizeExternalProperty(character.Humanoid, "Jump");
         jumpRequested = false;
         if (character is not null) runtime?.SynchronizeExternalProperty(character.Root, "Velocity");
         runtime?.UpdateBeforePhysics(elapsed);
