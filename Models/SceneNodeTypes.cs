@@ -74,7 +74,11 @@ public static class SceneNodeTypes
 
     public static bool IsBasePart(SceneNode? node) => IsBasePartType(node?.Type);
 
-    public static bool IsBasePartType(string? type) => type is "Part" or "MeshPart" or "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat" or "VehicleSeat";
+    public static bool IsAttachment(SceneNode? node) => node?.Type is "Attachment" or "Bone";
+
+    public static bool IsAttachmentType(string? type) => type is "Attachment" or "Bone";
+
+    public static bool IsBasePartType(string? type) => type is "Part" or "MeshPart" or "UnionOperation" or "WedgePart" or "CornerWedgePart" or "SpawnLocation" or "TrussPart" or "Seat" or "VehicleSeat";
 
     public static bool IsLight(SceneNode? node) => node?.Type is "PointLight" or "SpotLight" or "SurfaceLight";
 

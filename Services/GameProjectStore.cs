@@ -1277,6 +1277,9 @@ public static class GameProjectStore
         if (node.Type is "Shirt" or "Pants" or "ShirtGraphic") return parentType == "Model" && node.Children.Count == 0;
         if (node.Type == "PathfindingModifier") return SceneNodeTypes.IsBasePartType(parentType) && node.Children.Count == 0;
         if (node.Type == "PathfindingLink") return (parentType is "Workspace" or "Folder" or "Model" or "Configuration") && node.Children.Count == 0;
+        if (node.Type == "Bone")
+            return (parentType == "MeshPart" || parentType == "Bone")
+                && node.Children.All(child => child.Type == "Bone" && IsWorkspaceSubtreeCompatible(child, node.Type));
         if (node.Type == "Attachment")
             return (SceneNodeTypes.IsBasePartType(parentType) || parentType == "Attachment")
                 && node.Children.All(child => IsWorkspaceSubtreeCompatible(child, "Attachment"));

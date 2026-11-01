@@ -197,7 +197,7 @@ public sealed class LuaXRuntime
     }
     private static readonly HashSet<string> CreatableClasses = new(StringComparer.Ordinal)
     {
-        "Part", "MeshPart", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Camera", "Model", "WorldModel", "Folder", "Tool", "Accessory", "Shirt", "Pants", "ShirtGraphic", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid", "AnimationController", "Animator", "BodyColors", "PathfindingModifier", "PathfindingLink", "Animation", "BlockMesh", "CylinderMesh", "FileMesh",
+        "Part", "MeshPart", "UnionOperation", "WedgePart", "CornerWedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat", "Camera", "Model", "WorldModel", "Folder", "Tool", "Accessory", "Shirt", "Pants", "ShirtGraphic", "Configuration", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent", "RemoteFunction", "Script", "ModuleScript", "LocalScript", "Humanoid", "AnimationController", "Animator", "BodyColors", "PathfindingModifier", "PathfindingLink", "Animation", "BlockMesh", "CylinderMesh", "FileMesh", "Bone",
         "BoolValue", "IntValue", "NumberValue", "StringValue", "Vector2Value", "Vector3Value", "Color3Value", "ObjectValue",
         "PointLight", "SpotLight", "SurfaceLight", "Decal", "Texture", "Sound", "SoundGroup", "PitchShiftSoundEffect", "DistortionSoundEffect", "EqualizerSoundEffect", "ChorusSoundEffect", "CompressorSoundEffect", "EchoSoundEffect", "FlangeSoundEffect", "TremoloSoundEffect", "ReverbSoundEffect", "Fire", "Smoke", "Sparkles", "ParticleEmitter", "Trail", "BodyForce", "BodyThrust", "BodyVelocity", "BodyPosition", "BodyGyro", "BodyAngularVelocity", "RocketPropulsion", "VectorForce", "LineForce", "Torque", "SpringConstraint", "TorsionSpringConstraint", "RopeConstraint", "RodConstraint", "BallSocketConstraint", "HingeConstraint", "PrismaticConstraint", "CylindricalConstraint", "PlaneConstraint", "UniversalConstraint", "RigidConstraint", "LinearVelocity", "AlignPosition", "AlignOrientation", "AngularVelocity", "ProximityPrompt", "ClickDetector", "Highlight", "SelectionBox", "SelectionSphere", "ForceField", "Explosion", "WeldConstraint", "Weld", "Motor6D", "NoCollisionConstraint", "Attachment", "Beam", "Team",
         "Sky", "Atmosphere", "Clouds", "BloomEffect", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "SpecialMesh", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ViewportFrame", "VideoFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
@@ -2754,7 +2754,7 @@ public sealed class LuaXRuntime
             instance.Set("MouseHoverEnter", DynValue.NewTable(CreateClickDetectorSignal(node.Id, "MouseHoverEnter", clickDetectorHoverEnterCallbacks)));
             instance.Set("MouseHoverLeave", DynValue.NewTable(CreateClickDetectorSignal(node.Id, "MouseHoverLeave", clickDetectorHoverLeaveCallbacks)));
         }
-        if (node.Type == "Attachment")
+        if (SceneNodeTypes.IsAttachment(node))
         {
             instance.Set("GetAxis", DynValue.NewCallback((_, _) => GetAttachmentLocalAxisValue(node, Vector3.UnitX)));
             instance.Set("GetSecondaryAxis", DynValue.NewCallback((_, _) => GetAttachmentLocalAxisValue(node, Vector3.UnitY)));
@@ -2775,12 +2775,12 @@ public sealed class LuaXRuntime
             if (name == "AssemblyRootPart" && SceneNodeTypes.IsBasePart(node)) return GetAssemblyRootPartValue(node);
             if (node.Type == "RemoteFunction" && name is "OnServerInvoke" or "OnClientInvoke")
                 return remoteFunctionCallbacks.TryGetValue((node.Id, name), out var invokeCallback) ? invokeCallback.Function : DynValue.Nil;
-            if (node.Type == "Attachment" && name == "WorldPosition") return GetAttachmentWorldTransformValue(node, false);
-            if (node.Type == "Attachment" && name == "WorldRotation") return GetAttachmentWorldTransformValue(node, true);
-            if (node.Type == "Attachment" && name == "Axis") return GetAttachmentLocalAxisValue(node, Vector3.UnitX);
-            if (node.Type == "Attachment" && name == "SecondaryAxis") return GetAttachmentLocalAxisValue(node, Vector3.UnitY);
-            if (node.Type == "Attachment" && name == "WorldAxis") return GetAttachmentWorldAxisValue(node, Vector3.UnitX);
-            if (node.Type == "Attachment" && name == "WorldSecondaryAxis") return GetAttachmentWorldAxisValue(node, Vector3.UnitY);
+            if (SceneNodeTypes.IsAttachment(node) && name == "WorldPosition") return GetAttachmentWorldTransformValue(node, false);
+            if (SceneNodeTypes.IsAttachment(node) && name == "WorldRotation") return GetAttachmentWorldTransformValue(node, true);
+            if (SceneNodeTypes.IsAttachment(node) && name == "Axis") return GetAttachmentLocalAxisValue(node, Vector3.UnitX);
+            if (SceneNodeTypes.IsAttachment(node) && name == "SecondaryAxis") return GetAttachmentLocalAxisValue(node, Vector3.UnitY);
+            if (SceneNodeTypes.IsAttachment(node) && name == "WorldAxis") return GetAttachmentWorldAxisValue(node, Vector3.UnitX);
+            if (SceneNodeTypes.IsAttachment(node) && name == "WorldSecondaryAxis") return GetAttachmentWorldAxisValue(node, Vector3.UnitY);
             foreach (var child in node.Children)
             {
                 if (IsReservedBindableMember(node, child.Name)) continue;
@@ -2790,7 +2790,7 @@ public sealed class LuaXRuntime
             }
             return DynValue.Nil;
         }));
-        if (node.Type == "Attachment")
+        if (SceneNodeTypes.IsAttachment(node))
             instanceMetatable.Set("__newindex", DynValue.NewCallback((_, args) =>
             {
                 if (args.Count < 3 || args[1].Type != DataType.String) return DynValue.Nil;
@@ -5399,8 +5399,8 @@ public sealed class LuaXRuntime
         if (className is "WeldConstraint" or "Weld" or "Motor6D" or "NoCollisionConstraint" && args.Count > 1 && ReadNodeArgument(args[1]) is { } constraintParent && IsBasePart(constraintParent))
             node.Part0 = constraintParent.Id;
         if (className is "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" && args.Count > 1 && ReadNodeArgument(args[1]) is { } forceParent)
-            node.Attachment0 = forceParent.Type == "Attachment" ? forceParent.Id
-                : IsBasePart(forceParent) ? forceParent.Children.FirstOrDefault(child => child.Type == "Attachment")?.Id ?? string.Empty : string.Empty;
+            node.Attachment0 = SceneNodeTypes.IsAttachment(forceParent) ? forceParent.Id
+                : IsBasePart(forceParent) ? forceParent.Children.FirstOrDefault(SceneNodeTypes.IsAttachment)?.Id ?? string.Empty : string.Empty;
         createdNodes[node.Id] = node;
         var instance = CreateInstance(node);
         instances[node.Id] = instance;
@@ -8274,7 +8274,7 @@ public sealed class LuaXRuntime
                 case "attachment1":
                     if (node.Type is not ("Beam" or "Trail" or "VectorForce" or "LineForce" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" or "PathfindingLink")) return DynValue.Nil;
                     var attachment = value.Type == DataType.Nil ? null : ReadNodeArgument(value);
-                    if (value.Type != DataType.Nil && attachment?.Type != "Attachment") return DynValue.Nil;
+                    if (value.Type != DataType.Nil && !SceneNodeTypes.IsAttachment(attachment)) return DynValue.Nil;
                     var attachmentId = attachment?.Id ?? string.Empty;
                     if (node.Type is "Beam" or "Trail" or "AlignPosition" or "AlignOrientation" or "AngularVelocity" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" or "PathfindingLink" && attachmentId.Length > 0 && attachmentId == (normalized == "attachment0" ? node.Attachment1 : node.Attachment0)) return DynValue.Nil;
                     if (normalized == "attachment0") node.Attachment0 = attachmentId;
@@ -9219,8 +9219,8 @@ public sealed class LuaXRuntime
         "griprotation" => node.Type == "Tool" ? VectorValue(node.GripRotation) : DynValue.Nil,
         "anchorpoint" => IsGuiObject(node) ? Vector2Value(node.AnchorPoint) : DynValue.Nil,
         "rotation" => node.Type == "UIGradient" ? DynValue.NewNumber(node.GradientRotation) : HasRotationProperty(node) ? VectorValue(node.Type == "AlignOrientation" ? node.AlignOrientationRotation : node.Rotation) : DynValue.Nil,
-        "axis" => node.Type == "Attachment" ? GetAttachmentLocalAxisValue(node, Vector3.UnitX) : DynValue.Nil,
-        "secondaryaxis" => node.Type == "Attachment" ? GetAttachmentLocalAxisValue(node, Vector3.UnitY) : DynValue.Nil,
+        "axis" => SceneNodeTypes.IsAttachment(node) ? GetAttachmentLocalAxisValue(node, Vector3.UnitX) : DynValue.Nil,
+        "secondaryaxis" => SceneNodeTypes.IsAttachment(node) ? GetAttachmentLocalAxisValue(node, Vector3.UnitY) : DynValue.Nil,
         "scale" => node.Type == "UIGradient" ? DynValue.NewNumber(node.GradientScale) : node.Type == "UIScale" ? DynValue.NewNumber(node.Scale) : SceneNodeTypes.IsSpecialMesh(node) ? VectorValue(node.SpecialMeshScale) : DynValue.Nil,
         "tilemode" => node.Type == "UIGradient" ? DynValue.NewString(node.GradientTileMode) : DynValue.Nil,
         "worldposition" => GetAttachmentWorldTransformValue(node, false),
@@ -9710,6 +9710,7 @@ public sealed class LuaXRuntime
         "RemoteEvent" => node.Type == "RemoteEvent",
         "UnreliableRemoteEvent" => node.Type == "UnreliableRemoteEvent",
         "Accoutrement" => node.Type == "Accessory",
+        "Attachment" => SceneNodeTypes.IsAttachment(node),
         "Clothing" => node.Type is "Shirt" or "Pants",
         "CharacterAppearance" => node.Type is "BodyColors" or "Shirt" or "Pants" or "ShirtGraphic",
         "BodyMover" => node.Type is "BodyForce" or "BodyThrust" or "BodyVelocity" or "BodyPosition" or "BodyGyro" or "BodyAngularVelocity" or "RocketPropulsion",
@@ -9717,6 +9718,7 @@ public sealed class LuaXRuntime
         "Constraint" => node.Type is "WeldConstraint" or "NoCollisionConstraint" or "VectorForce" or "LineForce" or "Torque" or "SpringConstraint" or "TorsionSpringConstraint" or "RopeConstraint" or "RodConstraint" or "BallSocketConstraint" or "HingeConstraint" or "PrismaticConstraint" or "CylindricalConstraint" or "PlaneConstraint" or "UniversalConstraint" or "RigidConstraint" or "LinearVelocity" or "AlignPosition" or "AlignOrientation" or "AngularVelocity",
         "SlidingBallConstraint" => node.Type is "PrismaticConstraint" or "CylindricalConstraint",
         "BasePart" => IsBasePart(node) || node.Type == "Terrain",
+        "PartOperation" => node.Type == "UnionOperation",
         "Light" => SceneNodeTypes.IsLight(node),
         "PostEffect" => SceneNodeTypes.IsPostEffectClass(node),
         "SoundEffect" => node.Type is "PitchShiftSoundEffect" or "DistortionSoundEffect" or "EqualizerSoundEffect" or "ChorusSoundEffect" or "CompressorSoundEffect" or "EchoSoundEffect" or "FlangeSoundEffect" or "TremoloSoundEffect" or "ReverbSoundEffect",
@@ -9742,17 +9744,17 @@ public sealed class LuaXRuntime
     private static bool IsBasePart(SceneNode? node) => SceneNodeTypes.IsBasePart(node);
 
     private bool HasPositionProperty(SceneNode node) =>
-        IsBasePart(node) || node.Type is "Attachment" or "Model" or "Camera" || IsGuiObject(node);
+        IsBasePart(node) || SceneNodeTypes.IsAttachment(node) || node.Type is "Model" or "Camera" || IsGuiObject(node);
 
     private bool HasRotationProperty(SceneNode node) =>
-        IsBasePart(node) || node.Type is "Attachment" or "Model" or "Camera" or "AlignOrientation" || IsGuiObject(node);
+        IsBasePart(node) || SceneNodeTypes.IsAttachment(node) || node.Type is "Model" or "Camera" or "AlignOrientation" || IsGuiObject(node);
 
     private bool TryGetAttachmentWorldTransform(SceneNode attachment, out Vector3 position, out float[] rotation)
     {
         position = default;
         rotation = [0, 0, 0];
         var parent = FindParentNode(attachment);
-        if (attachment.Type != "Attachment") return false;
+        if (!SceneNodeTypes.IsAttachment(attachment)) return false;
         if (parent is null)
         {
             position = new Vector3(attachment.Position[0], attachment.Position[1], attachment.Position[2]);
@@ -9772,7 +9774,7 @@ public sealed class LuaXRuntime
             parentPosition = new Vector3(pivot[0], pivot[1], pivot[2]);
             parentRotation = RotationMath.FromDegrees(parent.Rotation);
         }
-        else if (parent.Type == "Attachment" && TryGetAttachmentWorldTransform(parent, out var attachmentPosition, out var attachmentRotation))
+        else if (SceneNodeTypes.IsAttachment(parent) && TryGetAttachmentWorldTransform(parent, out var attachmentPosition, out var attachmentRotation))
         {
             parentPosition = attachmentPosition;
             parentRotation = RotationMath.FromDegrees(attachmentRotation);
@@ -9865,7 +9867,7 @@ public sealed class LuaXRuntime
             rotation = RotationMath.FromDegrees(parent.Rotation);
             return true;
         }
-        if (parent.Type == "Attachment" && TryGetAttachmentWorldTransform(parent, out _, out var parentRotation))
+        if (SceneNodeTypes.IsAttachment(parent) && TryGetAttachmentWorldTransform(parent, out _, out var parentRotation))
         {
             rotation = RotationMath.FromDegrees(parentRotation);
             return true;

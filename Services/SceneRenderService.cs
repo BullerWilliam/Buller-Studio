@@ -253,10 +253,10 @@ public sealed class SceneRenderService
             if (hasVisibleForceFields) RefreshForceFields(project);
             if (hasParticleEffects) RefreshParticleEffects(project);
             if (showAttachmentGizmos)
-                foreach (var attachment in GameProjectStore.Flatten(node.Children).Where(child => child.Type == "Attachment"))
+                foreach (var attachment in GameProjectStore.Flatten(node.Children).Where(SceneNodeTypes.IsAttachment))
                     UpdateAttachmentVisual(attachment, project);
         }
-        if (node.Type == "Attachment")
+        if (SceneNodeTypes.IsAttachment(node))
         {
             if (showAttachmentGizmos) UpdateAttachmentVisual(node, project);
             RefreshBeams(project);
@@ -348,7 +348,7 @@ public sealed class SceneRenderService
             if (hasVisibleForceFields) RefreshForceFields(project);
             if (hasParticleEffects) RefreshParticleEffects(project);
             if (showAttachmentGizmos)
-                foreach (var attachment in node.Children.Where(child => child.Type == "Attachment"))
+                foreach (var attachment in node.Children.Where(SceneNodeTypes.IsAttachment))
                     UpdateAttachmentVisual(attachment, project);
             foreach (var decal in node.Children.Where(child => child.Type is "Decal" or "Texture")) UpdateNode(decal, project);
             if (highlightFills.TryGetValue(node.Id, out var fill))
@@ -648,7 +648,7 @@ public sealed class SceneRenderService
             builder.AddQuad(new Vector3(-halfX, -halfY, 0), new Vector3(halfX, -halfY, 0), new Vector3(halfX, halfY, 0), new Vector3(-halfX, halfY, 0));
         }
         else if (node.Type is "Decal" or "Texture") AddDecalFace(builder, node.Face);
-        else if (node.Type == "Attachment") builder.AddSphere(Vector3.Zero, .09, 12, 8);
+        else if (SceneNodeTypes.IsAttachment(node)) builder.AddSphere(Vector3.Zero, node.Type == "Bone" ? .06 : .09, 12, 8);
         else if (node.Type == "Explosion") builder.AddSphere(Vector3.Zero, node.ExplosionAge < 0 ? Math.Max(.1f, node.BlastRadius) : 2 + node.ExplosionAge * 6, 24, 16);
         else if (node.Type == "MeshPart" && !string.IsNullOrWhiteSpace(node.Asset) && File.Exists(ResolveAsset(project, node.Asset)))
         {
@@ -713,7 +713,7 @@ public sealed class SceneRenderService
 
     private static float EffectiveTransparency(SceneNode node) => Math.Clamp(Math.Max(node.Transparency, node.Material == "Glass" ? .55f : 0), 0, 1);
 
-    private bool IsRenderable(SceneNode node) => SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Decal" or "Texture" or "Explosion" || showAttachmentGizmos && node.Type == "Attachment";
+    private bool IsRenderable(SceneNode node) => SceneNodeTypes.IsBasePart(node) || node.Type is "ImageLabel" or "Decal" or "Texture" or "Explosion" || showAttachmentGizmos && SceneNodeTypes.IsAttachment(node);
 
     private void UpdateAttachmentVisual(SceneNode attachment, GameProject project)
     {
@@ -730,7 +730,7 @@ public sealed class SceneRenderService
         transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(1, 0, 0), attachment.Rotation[0])));
         transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0, 1, 0), attachment.Rotation[1])));
         transform.Children.Add(new TranslateTransform3D(attachment.Position[0], attachment.Position[1], attachment.Position[2]));
-        transform.Children.Add(parent.Type == "Attachment"
+        transform.Children.Add(SceneNodeTypes.IsAttachment(parent)
             ? AttachmentTransformFor(parent, project)
             : TransformFor(parent, false));
         return transform;
@@ -740,7 +740,7 @@ public sealed class SceneRenderService
     {
         var workspaceNodes = GameProjectStore.Flatten(project.Workspace.Children);
         var parts = workspaceNodes.Where(SceneNodeTypes.IsBasePart).ToArray();
-        var attachments = workspaceNodes.Where(node => node.Type == "Attachment")
+        var attachments = workspaceNodes.Where(SceneNodeTypes.IsAttachment)
             .ToDictionary(node => node.Id, StringComparer.Ordinal);
         var beams = workspaceNodes.Where(node => node.Type == "Beam" && node.Enabled).ToArray();
         hasBeamNodes = beams.Length > 0;
@@ -808,7 +808,7 @@ public sealed class SceneRenderService
     private static SceneNode? FindAttachmentParent(GameProject project, SceneNode child)
     {
         for (var parent = FindSceneParent(project, child); parent is not null; parent = FindSceneParent(project, parent))
-            if (parent.Type == "Attachment") return parent;
+            if (SceneNodeTypes.IsAttachment(parent)) return parent;
         return null;
     }
 
@@ -818,7 +818,7 @@ public sealed class SceneRenderService
     private void AdvanceTrails(GameProject project, float elapsedSeconds)
     {
         var nodes = GameProjectStore.Flatten(project.Workspace.Children);
-        var attachments = nodes.Where(node => node.Type == "Attachment").ToDictionary(node => node.Id, StringComparer.Ordinal);
+        var attachments = nodes.Where(SceneNodeTypes.IsAttachment).ToDictionary(node => node.Id, StringComparer.Ordinal);
         foreach (var trail in nodes.Where(node => node.Type == "Trail"))
         {
             var now = trailTimes.GetValueOrDefault(trail.Id) + Math.Clamp(elapsedSeconds, 0, .25f);
@@ -1900,7 +1900,7 @@ public sealed class SceneRenderService
             transform.Children.Add(new TranslateTransform3D(specialMesh.SpecialMeshOffset[0], specialMesh.SpecialMeshOffset[1], specialMesh.SpecialMeshOffset[2]));
         }
         var parent = node.Type is "Decal" or "Texture" ? FindPartParent(project, node) : null;
-        transform.Children.Add(node.Type == "Attachment" ? AttachmentTransformFor(node, project)
+        transform.Children.Add(SceneNodeTypes.IsAttachment(node) ? AttachmentTransformFor(node, project)
             : node.Type == "Explosion" ? new TranslateTransform3D(node.Position[0], node.Position[1], node.Position[2])
             : parent is null ? TransformFor(node) : TransformFor(parent));
         return transform;
