@@ -9,9 +9,64 @@ namespace BullerStudio.Services;
 
 public static class GameProjectStore
 {
+    public const int MaxCollisionGroups = 32;
     public static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true, PropertyNameCaseInsensitive = true };
     public static string ProjectsRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Buller Studio Projects");
     public static string GameFileName => "game.buller.json";
+
+    public static bool IsCollisionGroupRegistered(GameProject project, string? name) =>
+        !string.IsNullOrWhiteSpace(name) && project.CollisionGroupNames.Contains(name, StringComparer.OrdinalIgnoreCase);
+
+    public static bool RegisterCollisionGroup(GameProject project, string? name)
+    {
+        var normalizedName = name?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedName) || normalizedName.Length > 100
+            || normalizedName.Any(char.IsControl) || IsCollisionGroupRegistered(project, normalizedName)
+            || project.CollisionGroupNames.Count >= MaxCollisionGroups) return false;
+        project.CollisionGroupNames.Add(normalizedName);
+        return true;
+    }
+
+    public static bool RenameCollisionGroup(GameProject project, string? from, string? to)
+    {
+        var sourceName = from?.Trim();
+        var targetName = to?.Trim();
+        if (string.IsNullOrWhiteSpace(sourceName) || string.IsNullOrWhiteSpace(targetName)
+            || targetName.Length > 100 || targetName.Any(char.IsControl)
+            || string.Equals(sourceName, "Default", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(targetName, "Default", StringComparison.OrdinalIgnoreCase)
+            || !IsCollisionGroupRegistered(project, sourceName)
+            || IsCollisionGroupRegistered(project, targetName)) return false;
+
+        var index = project.CollisionGroupNames.FindIndex(name => string.Equals(name, sourceName, StringComparison.OrdinalIgnoreCase));
+        if (index < 0) return false;
+        var actualSourceName = project.CollisionGroupNames[index];
+        project.CollisionGroupNames[index] = targetName;
+        foreach (var pair in project.NonCollidableGroupPairs)
+        {
+            if (string.Equals(pair.Group0, actualSourceName, StringComparison.OrdinalIgnoreCase)) pair.Group0 = targetName;
+            if (string.Equals(pair.Group1, actualSourceName, StringComparison.OrdinalIgnoreCase)) pair.Group1 = targetName;
+        }
+        foreach (var part in Flatten(project).Where(SceneNodeTypes.IsBasePart))
+            if (string.Equals(part.CollisionGroup, actualSourceName, StringComparison.OrdinalIgnoreCase)) part.CollisionGroup = targetName;
+        return true;
+    }
+
+    public static bool CanCollisionGroupsCollide(GameProject project, string? first, string? second)
+    {
+        if (!IsCollisionGroupRegistered(project, first) || !IsCollisionGroupRegistered(project, second)) return true;
+        return !project.NonCollidableGroupPairs.Any(pair =>
+            string.Equals(pair.Group0, first, StringComparison.OrdinalIgnoreCase) && string.Equals(pair.Group1, second, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(pair.Group0, second, StringComparison.OrdinalIgnoreCase) && string.Equals(pair.Group1, first, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static void SetCollisionGroupsCollidable(GameProject project, string first, string second, bool collidable)
+    {
+        project.NonCollidableGroupPairs.RemoveAll(pair =>
+            string.Equals(pair.Group0, first, StringComparison.OrdinalIgnoreCase) && string.Equals(pair.Group1, second, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(pair.Group0, second, StringComparison.OrdinalIgnoreCase) && string.Equals(pair.Group1, first, StringComparison.OrdinalIgnoreCase));
+        if (!collidable) project.NonCollidableGroupPairs.Add(new CollisionGroupPair { Group0 = first, Group1 = second });
+    }
 
     public static async Task<IReadOnlyList<ProjectSummary>> ListAsync()
     {
@@ -261,6 +316,7 @@ public static class GameProjectStore
         project.Settings ??= new ProjectSettings();
         project.Settings.MoveSnapIncrement = float.IsFinite(project.Settings.MoveSnapIncrement) ? Math.Clamp(project.Settings.MoveSnapIncrement, .01f, 1000) : 1;
         project.Settings.RotateSnapIncrement = float.IsFinite(project.Settings.RotateSnapIncrement) ? Math.Clamp(project.Settings.RotateSnapIncrement, .1f, 360) : 15;
+        project.Settings.ScaleSnapIncrement = float.IsFinite(project.Settings.ScaleSnapIncrement) ? Math.Clamp(project.Settings.ScaleSnapIncrement, .01f, 1000) : 1;
         project.Workspace ??= new SceneNode { Id = "workspace", Type = "Workspace", Name = "Workspace" };
         project.Workspace.Children ??= [];
         project.Workspace.Gravity = float.IsFinite(project.Workspace.Gravity) ? Math.Clamp(project.Workspace.Gravity, 0, 1000) : 24;
@@ -305,6 +361,9 @@ public static class GameProjectStore
         project.Lighting.Name = "Lighting";
         project.Lighting.Children ??= [];
         if (project.Lighting.Ambient is null || !System.Text.RegularExpressions.Regex.IsMatch(project.Lighting.Ambient, "^#[0-9A-Fa-f]{6}$")) project.Lighting.Ambient = "#808080";
+        if (project.Lighting.FogColor is null || !System.Text.RegularExpressions.Regex.IsMatch(project.Lighting.FogColor, "^#[0-9A-Fa-f]{6}$")) project.Lighting.FogColor = "#C0C0C0";
+        project.Lighting.FogStart = float.IsFinite(project.Lighting.FogStart) ? Math.Clamp(project.Lighting.FogStart, 0, 999999) : 0;
+        project.Lighting.FogEnd = float.IsFinite(project.Lighting.FogEnd) ? Math.Clamp(project.Lighting.FogEnd, project.Lighting.FogStart + 1, 1000000) : Math.Max(project.Lighting.FogStart + 1, 100000);
         project.Lighting.ClockTime = float.IsFinite(project.Lighting.ClockTime) ? Math.Clamp(project.Lighting.ClockTime, 0, 24) : 14;
         project.Lighting.Brightness = float.IsFinite(project.Lighting.Brightness) ? Math.Clamp(project.Lighting.Brightness, 0, 8) : 1;
         foreach (var atmosphere in project.Lighting.Children.Where(node => node.Type == "Atmosphere"))
@@ -476,6 +535,9 @@ public static class GameProjectStore
             node.ImageRectOffset = NormalizeImageRectPair(node.ImageRectOffset);
             node.ImageRectSize = NormalizeImageRectPair(node.ImageRectSize);
             node.TextSize = float.IsFinite(node.TextSize) ? Math.Clamp(node.TextSize, 1, 200) : 18;
+            node.StrokeThickness = float.IsFinite(node.StrokeThickness) ? Math.Clamp(node.StrokeThickness, 0, 100) : 1;
+            if (node.StrokeApplyMode is not ("Contextual" or "Border")) node.StrokeApplyMode = "Contextual";
+            if (node.StrokeLineJoinMode is not ("Round" or "Bevel" or "Miter")) node.StrokeLineJoinMode = "Round";
             node.LayoutSpacing = float.IsFinite(node.LayoutSpacing) ? Math.Clamp(node.LayoutSpacing, 0, 1000000) : 0;
             node.ListPaddingScale = float.IsFinite(node.ListPaddingScale) ? Math.Clamp(node.ListPaddingScale, 0, 100) : 0;
             node.MinTextSize = float.IsFinite(node.MinTextSize) ? Math.Clamp(node.MinTextSize, 1, 1000) : 1;
@@ -549,6 +611,11 @@ public static class GameProjectStore
             if (node.PromptStyle is not ("Default" or "Custom")) node.PromptStyle = "Default";
             node.MaxDistance = float.IsFinite(node.MaxDistance) ? Math.Clamp(node.MaxDistance, 0, 100000) : 0;
             node.PixelsPerStud = float.IsFinite(node.PixelsPerStud) ? Math.Clamp(node.PixelsPerStud, 1, 1000) : 50;
+            node.SurfaceGuiCanvasSize = node.SurfaceGuiCanvasSize is null ? [800, 600] : EnsurePair(node.SurfaceGuiCanvasSize);
+            for (var index = 0; index < node.SurfaceGuiCanvasSize.Length; index++)
+                node.SurfaceGuiCanvasSize[index] = float.IsFinite(node.SurfaceGuiCanvasSize[index]) ? Math.Clamp(node.SurfaceGuiCanvasSize[index], 1, 1000000) : index == 0 ? 800 : 600;
+            if (node.SurfaceGuiSizingMode is not ("PixelsPerStud" or "FixedSize")) node.SurfaceGuiSizingMode = "PixelsPerStud";
+            node.SurfaceGuiZOffset = float.IsFinite(node.SurfaceGuiZOffset) ? Math.Clamp(node.SurfaceGuiZOffset, -1000, 1000) : 0;
             if (node.Type == "SurfaceGui" && !SceneNodeTypes.IsFace(node.Face)) node.Face = "Front";
             node.Volume = float.IsFinite(node.Volume) ? Math.Clamp(node.Volume, 0, 1) : .5f;
             node.PlaybackSpeed = float.IsFinite(node.PlaybackSpeed) ? Math.Clamp(node.PlaybackSpeed, 0, 20) : 1;
@@ -792,6 +859,40 @@ public static class GameProjectStore
                 if (attribute.Color3Value is null || !System.Text.RegularExpressions.Regex.IsMatch(attribute.Color3Value, "^#[0-9A-Fa-f]{6}$"))
                     attribute.Color3Value = "#000000";
             }
+        }
+        project.CollisionGroupNames ??= ["Default"];
+        project.CollisionGroupNames = project.CollisionGroupNames
+            .Where(name => !string.IsNullOrWhiteSpace(name) && name.Length <= 100 && !name.Any(char.IsControl))
+            .Select(name => name.Trim())
+            .Where(name => name.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var defaultGroupIndex = project.CollisionGroupNames.FindIndex(name => string.Equals(name, "Default", StringComparison.OrdinalIgnoreCase));
+        if (defaultGroupIndex < 0) project.CollisionGroupNames.Insert(0, "Default");
+        else if (defaultGroupIndex > 0)
+        {
+            project.CollisionGroupNames.RemoveAt(defaultGroupIndex);
+            project.CollisionGroupNames.Insert(0, "Default");
+        }
+        if (project.CollisionGroupNames.Count > MaxCollisionGroups)
+            project.CollisionGroupNames = project.CollisionGroupNames.Take(MaxCollisionGroups).ToList();
+        project.NonCollidableGroupPairs ??= [];
+        project.NonCollidableGroupPairs = project.NonCollidableGroupPairs
+            .Where(pair => pair is not null && IsCollisionGroupRegistered(project, pair.Group0) && IsCollisionGroupRegistered(project, pair.Group1))
+            .Select(pair => new CollisionGroupPair { Group0 = pair.Group0.Trim(), Group1 = pair.Group1.Trim() })
+            .DistinctBy(pair => string.Compare(pair.Group0, pair.Group1, StringComparison.OrdinalIgnoreCase) <= 0
+                ? $"{pair.Group0}\0{pair.Group1}" : $"{pair.Group1}\0{pair.Group0}", StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        foreach (var part in Flatten(project).Where(SceneNodeTypes.IsBasePart))
+        {
+            if (!IsCollisionGroupRegistered(project, part.CollisionGroup)) part.CollisionGroup = "Default";
+            if (part.CustomPhysicalProperties is not { } physical) continue;
+            physical.Density = float.IsFinite(physical.Density) ? Math.Clamp(physical.Density, .0001f, 100) : .7f;
+            physical.Friction = float.IsFinite(physical.Friction) ? Math.Clamp(physical.Friction, 0, 2) : .3f;
+            physical.Elasticity = float.IsFinite(physical.Elasticity) ? Math.Clamp(physical.Elasticity, 0, 1) : .5f;
+            physical.FrictionWeight = float.IsFinite(physical.FrictionWeight) ? Math.Clamp(physical.FrictionWeight, 0, 100) : 1;
+            physical.ElasticityWeight = float.IsFinite(physical.ElasticityWeight) ? Math.Clamp(physical.ElasticityWeight, 0, 100) : 1;
+            physical.AcousticAbsorption = float.IsFinite(physical.AcousticAbsorption) ? Math.Clamp(physical.AcousticAbsorption, 0, 1) : .5f;
         }
         var validObjectIds = Flatten(project).Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
         var validTeamIds = project.Teams.Children.Where(node => node.Type == "Team").Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
@@ -1239,7 +1340,9 @@ public static class GameProjectStore
         if (node.Type is "Script" or "LocalScript") return node.Children.Count == 0;
         if (SceneNodeTypes.IsValueObject(node)) return node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (node.Type == "UITextSizeConstraint") return destinationType is "TextLabel" or "TextButton" or "TextBox" && node.Children.Count == 0;
-        if (node.Type == "UIGradient") return (destinationType == "UIShadow" || destinationType is not null && IsGuiObject(destinationType)) && node.Children.Count == 0;
+        if (node.Type == "UIGradient") return (destinationType is "UIShadow" or "UIStroke" || destinationType is not null && IsGuiObject(destinationType)) && node.Children.Count == 0;
+        if (node.Type == "UIStroke") return destinationType is not null && IsGuiObject(destinationType)
+            && node.Children.All(child => child.Type == "UIGradient" && IsGuiSubtreeCompatible(child, false, node.Type));
         if (node.Type == "UIShadow") return destinationType is not null && IsGuiObject(destinationType)
             && node.Children.All(child => IsGuiSubtreeCompatible(child, false, node.Type));
         if (IsGuiComponent(node.Type)) return destinationType is not null && IsGuiObject(destinationType) && node.Children.Count == 0;

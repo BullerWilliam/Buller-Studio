@@ -4,6 +4,7 @@ using System.Windows.Media.Media3D;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Effects;
 using System.IO;
+using System.Security.Cryptography;
 using HelixToolkit.Wpf.SharpDX;
 using HelixToolkit.SharpDX.Core;
 using BullerStudio.Models;
@@ -41,11 +42,17 @@ public sealed class SceneRenderService
     private readonly Dictionary<string, (string Attachment0, string Attachment1)> trailReferences = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SceneNode> highlightSources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> renderedAssetSources = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, GltfMeshReader.MaterialFactors> gltfMaterialFactors = new(StringComparer.Ordinal);
     private Dictionary<string, string> bodyColorOverrides = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (TextureModel Texture, MemoryStream Stream)> packedSurfaceMapCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (TextureModel Texture, MemoryStream Stream)> embeddedGltfTextureCache = new(StringComparer.Ordinal);
     private readonly List<Light3D> objectLights = [];
     private readonly List<(MeshGeometryModel3D Model, Vector3 Direction, float Pitch, float Yaw)> skyboxVisuals = [];
     private readonly List<MeshGeometryModel3D> cloudVisuals = [];
+    private Point3D? lastFogCameraPosition;
+    private string? lastFogColor;
+    private float lastFogStart = float.NaN;
+    private float lastFogEnd = float.NaN;
     private SceneNode cameraNode;
     private GameProject? activeProject;
     private string? selectedId;
@@ -157,6 +164,7 @@ public sealed class SceneRenderService
             if (inner is not null) viewport.Items.Remove(inner);
         }
         visuals.Clear();
+        gltfMaterialFactors.Clear();
         highlightFills.Clear();
         foreach (var (surface, outline) in selectionBoxVisuals.Values)
         {
@@ -219,7 +227,7 @@ public sealed class SceneRenderService
             {
                 if (!partsById.TryGetValue(partId, out var part) || !visuals.TryGetValue(partId, out var visual)) continue;
                 visual.Material = MakeMaterial(part);
-                if (part.Type == "MeshPart") ApplySurfaceAppearance(visual, part, project);
+                if (part.Type == "MeshPart") ApplyMeshPartMaterials(visual, part, project);
             }
             return;
         }
@@ -335,7 +343,9 @@ public sealed class SceneRenderService
         }
         model.Transform = TransformForVisual(node, project);
         model.IsThrowingShadow = node.Type is not ("Decal" or "Texture") && node.CastShadow;
-        model.IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0;
+        model.IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion")
+            || EffectiveTransparency(node) > 0
+            || gltfMaterialFactors.TryGetValue(node.Id, out var gltfFactors) && gltfFactors.AlphaMode is "BLEND" or "MASK";
         if (node.Type is "Decal" or "Texture" or "ImageLabel")
             model.Visibility = node.Visible && (node.Type is not ("Decal" or "Texture") || model.Material is PhongMaterial { DiffuseMap: not null })
                 ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
@@ -344,8 +354,7 @@ public sealed class SceneRenderService
             ApplySpecialMeshVertexColor(model, updatedSpecialMesh);
         if (node.Type == "MeshPart")
         {
-            ApplySurfaceAppearance(model, node, project);
-            ApplyMeshPartTexture(model, node, project);
+            ApplyMeshPartMaterials(model, node, project);
         }
         if (SceneNodeTypes.IsBasePart(node))
         {
@@ -454,6 +463,118 @@ public sealed class SceneRenderService
             catch { }
         }
         visual.Material = material;
+    }
+
+    private void ApplyMeshPartMaterials(MeshGeometryModel3D visual, SceneNode meshPart, GameProject project)
+    {
+        if (meshPart.Children.Any(SceneNodeTypes.IsSurfaceAppearance)) ApplySurfaceAppearance(visual, meshPart, project);
+        else if (gltfMaterialFactors.TryGetValue(meshPart.Id, out var factors)) ApplyGltfMaterial(visual, meshPart, factors, project);
+        ApplyMeshPartTexture(visual, meshPart, project);
+    }
+
+    private void ApplyGltfMaterial(MeshGeometryModel3D visual, SceneNode meshPart, GltfMeshReader.MaterialFactors factors, GameProject project)
+    {
+        var partTint = ParseColor(bodyColorOverrides.GetValueOrDefault(meshPart.Id, meshPart.Color));
+        var baseColor = ApplyColorCorrection(System.Windows.Media.Color.FromRgb(
+            (byte)Math.Clamp(partTint.R * factors.Red, 0, 255),
+            (byte)Math.Clamp(partTint.G * factors.Green, 0, 255),
+            (byte)Math.Clamp(partTint.B * factors.Blue, 0, 255)));
+        var baseColorPath = ResolveAsset(project, factors.BaseColorTexture);
+        var baseColorMap = factors.AlphaMode == "MASK"
+            ? LoadMaskedGltfTexture(factors.BaseColorTextureData, baseColorPath, factors.Alpha, factors.AlphaCutoff)
+            : LoadGltfTexture(factors.BaseColorTextureData, baseColorPath);
+        var material = new PBRMaterial
+        {
+            AlbedoColor = new Color4(baseColor.R / 255f, baseColor.G / 255f, baseColor.B / 255f,
+                (factors.AlphaMode switch
+                {
+                    "BLEND" => factors.Alpha,
+                    "MASK" when baseColorMap is not null => 1,
+                    "MASK" => factors.Alpha >= factors.AlphaCutoff ? 1 : 0,
+                    _ => 1
+                }) * (1 - EffectiveTransparency(meshPart))),
+            MetallicFactor = factors.Metallic,
+            RoughnessFactor = factors.Roughness,
+            EmissiveColor = GetGltfEmissiveColor(factors)
+        };
+        material.AlbedoMap = baseColorMap;
+        material.RenderAlbedoMap = material.AlbedoMap is not null;
+        material.NormalMap = LoadGltfTexture(factors.NormalTextureData, ResolveAsset(project, factors.NormalTexture));
+        material.RenderNormalMap = material.NormalMap is not null;
+        material.RoughnessMetallicMap = LoadGltfTexture(factors.MetallicRoughnessTextureData, ResolveAsset(project, factors.MetallicRoughnessTexture));
+        material.RenderRoughnessMetallicMap = material.RoughnessMetallicMap is not null;
+        material.EmissiveMap = LoadGltfTexture(factors.EmissiveTextureData, ResolveAsset(project, factors.EmissiveTexture));
+        material.RenderEmissiveMap = material.EmissiveMap is not null;
+        visual.Material = material;
+    }
+
+    private TextureModel? LoadGltfTexture(byte[]? embeddedData, string externalPath)
+    {
+        try
+        {
+            if (embeddedData is { Length: > 0 })
+            {
+                var cacheKey = Convert.ToHexString(SHA256.HashData(embeddedData));
+                if (embeddedGltfTextureCache.TryGetValue(cacheKey, out var cached)) return cached.Texture;
+                var stream = new MemoryStream(embeddedData, writable: false);
+                try
+                {
+                    var texture = TextureModel.Create(stream);
+                    embeddedGltfTextureCache[cacheKey] = (texture, stream);
+                    return texture;
+                }
+                catch
+                {
+                    stream.Dispose();
+                    return null;
+                }
+            }
+            if (string.IsNullOrEmpty(externalPath) || !File.Exists(externalPath)) return null;
+            ValidateImageFile(externalPath);
+            return TextureModel.Create(externalPath);
+        }
+        catch { return null; }
+    }
+
+    private TextureModel? LoadMaskedGltfTexture(byte[]? embeddedData, string externalPath, float factorAlpha, float cutoff)
+    {
+        try
+        {
+            byte[] source;
+            if (embeddedData is { Length: > 0 }) source = embeddedData;
+            else
+            {
+                if (string.IsNullOrEmpty(externalPath) || !File.Exists(externalPath)) return null;
+                ValidateImageFile(externalPath);
+                source = File.ReadAllBytes(externalPath);
+            }
+            using var input = new MemoryStream(source, writable: false);
+            var decoder = BitmapDecoder.Create(input, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+            if (decoder.Frames.Count == 0) return null;
+            var converted = new FormatConvertedBitmap(decoder.Frames[0], PixelFormats.Bgra32, null, 0);
+            var pixels = new byte[converted.PixelWidth * converted.PixelHeight * 4];
+            converted.CopyPixels(pixels, converted.PixelWidth * 4, 0);
+            for (var offset = 3; offset < pixels.Length; offset += 4)
+                pixels[offset] = pixels[offset] / 255f * factorAlpha < cutoff ? (byte)0 : (byte)255;
+            var bitmap = BitmapSource.Create(converted.PixelWidth, converted.PixelHeight, 96, 96, PixelFormats.Bgra32, null, pixels, converted.PixelWidth * 4);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            using var output = new MemoryStream();
+            encoder.Save(output);
+            return LoadGltfTexture(output.ToArray(), string.Empty);
+        }
+        catch { return null; }
+    }
+
+    private Color4 GetGltfEmissiveColor(GltfMeshReader.MaterialFactors factors)
+    {
+        var tint = ApplyColorCorrection(System.Windows.Media.Color.FromRgb(
+            (byte)Math.Clamp(factors.EmissiveRed * 255, 0, 255),
+            (byte)Math.Clamp(factors.EmissiveGreen * 255, 0, 255),
+            (byte)Math.Clamp(factors.EmissiveBlue * 255, 0, 255)));
+        return new Color4(tint.R / 255f * factors.EmissiveStrength,
+            tint.G / 255f * factors.EmissiveStrength,
+            tint.B / 255f * factors.EmissiveStrength, 1);
     }
 
     private void ApplyMeshPartTexture(MeshGeometryModel3D visual, SceneNode meshPart, GameProject project)
@@ -628,6 +749,7 @@ public sealed class SceneRenderService
                 camera.UpDirection = new Vector3D(0, 1, 0);
                 UpdateSkybox(camera.Position);
                 UpdateClouds(camera.Position);
+                RefreshFogMaterials();
                 if (activeProject is not null && hasParticleEffects) RefreshParticleEffects(activeProject);
                 if (activeProject is not null && hasTrailNodes) RefreshTrails(activeProject);
             }
@@ -641,6 +763,7 @@ public sealed class SceneRenderService
         camera.UpDirection = new Vector3D(0, 1, 0);
         UpdateSkybox(camera.Position);
         UpdateClouds(camera.Position);
+        RefreshFogMaterials();
         if (activeProject is not null && hasParticleEffects) RefreshParticleEffects(activeProject);
         if (activeProject is not null && hasTrailNodes) RefreshTrails(activeProject);
     }
@@ -648,6 +771,7 @@ public sealed class SceneRenderService
     private MeshGeometryModel3D CreateVisual(SceneNode node, GameProject project)
     {
         var builder = new MeshBuilder();
+        GltfMeshReader.MaterialFactors? importedMaterialFactors = null;
         var specialMesh = node.Type == "Part" ? node.Children.FirstOrDefault(SceneNodeTypes.IsSpecialMesh) : null;
         var specialMeshType = specialMesh is null ? null : specialMesh.Type switch
         {
@@ -666,12 +790,12 @@ public sealed class SceneRenderService
         else if (node.Type == "Explosion") builder.AddSphere(Vector3.Zero, node.ExplosionAge < 0 ? Math.Max(.1f, node.BlastRadius) : 2 + node.ExplosionAge * 6, 24, 16);
         else if (node.Type is "MeshPart" or "UnionOperation" && !string.IsNullOrWhiteSpace(node.Asset) && File.Exists(ResolveAsset(project, node.Asset)))
         {
-            try { builder = ReadObj(ResolveAsset(project, node.Asset)); }
-            catch { builder.AddBox(Vector3.Zero, 1, 1, 1); }
+            try { builder = ReadMeshAsset(ResolveAsset(project, node.Asset), project, out importedMaterialFactors); }
+            catch { importedMaterialFactors = null; builder.AddBox(Vector3.Zero, 1, 1, 1); }
         }
         else if (specialMesh is not null && specialMeshType == "FileMesh" && !string.IsNullOrWhiteSpace(specialMesh.Asset) && File.Exists(ResolveAsset(project, specialMesh.Asset)))
         {
-            try { builder = ReadObj(ResolveAsset(project, specialMesh.Asset)); }
+            try { builder = ReadMeshAsset(ResolveAsset(project, specialMesh.Asset), project, out _); }
             catch { builder.AddBox(Vector3.Zero, 1, 1, 1); }
         }
         else if (specialMesh is not null && specialMeshType is "Sphere" or "Head") builder.AddSphere(Vector3.Zero, .5, 24, 16);
@@ -693,10 +817,12 @@ public sealed class SceneRenderService
         if (node.Type == "Texture" && decalParent is not null) ApplyTextureTiling(geometry, node, decalParent);
         var visual = new OutLineMeshGeometryModel3D { Geometry = geometry, Material = MakeMaterial(node), Transform = TransformForVisual(node, project), IsThrowingShadow = node.Type is not ("Decal" or "Texture" or "Attachment" or "Bone" or "Explosion") && node.CastShadow, IsHitTestVisible = node.Type is not ("Decal" or "Texture" or "Explosion"), IsTransparent = node.Type is ("ImageLabel" or "Decal" or "Texture" or "Explosion") || EffectiveTransparency(node) > 0, EnableOutline = false, OutlineColor = Colors.Orange, Visibility = node.Type is ("Decal" or "Texture" or "ImageLabel" or "Explosion") && !node.Visible ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible };
         if (specialMesh is not null) ApplySpecialMeshVertexColor(visual, specialMesh);
+        if (node.Type == "MeshPart" && importedMaterialFactors is not null) gltfMaterialFactors[node.Id] = importedMaterialFactors;
+        else gltfMaterialFactors.Remove(node.Id);
+        if (importedMaterialFactors is { AlphaMode: "BLEND" or "MASK" }) visual.IsTransparent = true;
         if (node.Type == "MeshPart")
         {
-            ApplySurfaceAppearance(visual, node, project);
-            ApplyMeshPartTexture(visual, node, project);
+            ApplyMeshPartMaterials(visual, node, project);
         }
         if (node.Type == "ImageLabel" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
         if (node.Type is "Decal" or "Texture" && !string.IsNullOrWhiteSpace(node.Asset)) LoadImageAsset(visual, ResolveAsset(project, node.Asset), node);
@@ -1816,6 +1942,28 @@ public sealed class SceneRenderService
         }
         catch { parsed = Colors.CornflowerBlue; }
         parsed = ApplyColorCorrection(parsed);
+        if (SceneNodeTypes.IsBasePart(node) && activeProject is not null && viewport.Camera is HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera)
+        {
+            var lighting = activeProject.Lighting;
+            var fogDistance = Math.Max(1, lighting.FogEnd - lighting.FogStart);
+            var cameraPosition = camera.Position;
+            var dx = node.Position[0] - cameraPosition.X;
+            var dy = node.Position[1] - cameraPosition.Y;
+            var dz = node.Position[2] - cameraPosition.Z;
+            var fog = Math.Clamp(((float)Math.Sqrt(dx * dx + dy * dy + dz * dz) - lighting.FogStart) / fogDistance, 0, 1);
+            if (fog > 0)
+            {
+                try
+                {
+                    var fogColor = (System.Windows.Media.Color)ColorConverter.ConvertFromString(lighting.FogColor);
+                    parsed = System.Windows.Media.Color.FromArgb(parsed.A,
+                        (byte)Math.Clamp(parsed.R * (1 - fog) + fogColor.R * fog, 0, 255),
+                        (byte)Math.Clamp(parsed.G * (1 - fog) + fogColor.G * fog, 0, 255),
+                        (byte)Math.Clamp(parsed.B * (1 - fog) + fogColor.B * fog, 0, 255));
+                }
+                catch { }
+            }
+        }
         var bloomStrength = GetBloomStrength(parsed);
         var red = parsed.R / 255f;
         var green = parsed.G / 255f;
@@ -1840,6 +1988,33 @@ public sealed class SceneRenderService
                 ? new Color4(red * (.5f + bloomStrength), green * (.5f + bloomStrength), blue * (.5f + bloomStrength), 1)
                 : new Color4(red * bloomStrength, green * bloomStrength, blue * bloomStrength, 1)
         };
+    }
+
+    private void RefreshFogMaterials()
+    {
+        if (activeProject is null || visuals.Count == 0 || viewport.Camera is not HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera) return;
+        var cameraPosition = camera.Position;
+        var lighting = activeProject.Lighting;
+        if (lastFogCameraPosition is { } previousCamera
+            && lastFogColor == lighting.FogColor
+            && lastFogStart == lighting.FogStart
+            && lastFogEnd == lighting.FogEnd
+            && (cameraPosition - previousCamera).LengthSquared < .0625)
+            return;
+        lastFogCameraPosition = cameraPosition;
+        lastFogColor = lighting.FogColor;
+        lastFogStart = lighting.FogStart;
+        lastFogEnd = lighting.FogEnd;
+        var nodes = GameProjectStore.Flatten(activeProject.Workspace.Children).ToDictionary(node => node.Id, StringComparer.Ordinal);
+        foreach (var (id, visual) in visuals)
+        {
+            if (!nodes.TryGetValue(id, out var node) || !SceneNodeTypes.IsBasePart(node)
+                || !string.IsNullOrWhiteSpace(node.Texture)
+                || node.Children.Any(SceneNodeTypes.IsSurfaceAppearance)
+                || visual.Material is not PhongMaterial)
+                continue;
+            visual.Material = MakeMaterial(node);
+        }
     }
 
     private float GetBloomStrength(System.Windows.Media.Color color)
@@ -1947,6 +2122,14 @@ public sealed class SceneRenderService
             for (var index = 1; index < indices.Length - 1; index++) builder.AddTriangle(vertices[indices[0]], vertices[indices[index]], vertices[indices[index + 1]]);
         }
         return builder;
+    }
+
+    private static MeshBuilder ReadMeshAsset(string path, GameProject project, out GltfMeshReader.MaterialFactors? materialFactors)
+    {
+        if (Path.GetExtension(path).ToLowerInvariant() is ".glb" or ".gltf")
+            return GltfMeshReader.Read(path, project, out materialFactors);
+        materialFactors = null;
+        return ReadObj(path);
     }
 
     private static string ResolveAsset(GameProject project, string relative)

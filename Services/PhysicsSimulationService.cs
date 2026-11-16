@@ -119,7 +119,7 @@ public sealed class PhysicsSimulationService
         var ignoredPairs = BuildIgnoredCollisionPairs(parts);
         foreach (var other in parts)
         {
-            if (ReferenceEquals(other, part) || !other.CanCollide) continue;
+            if (ReferenceEquals(other, part) || !other.CanCollide || !GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, other.CollisionGroup)) continue;
             if (ignoredPairs.Contains(CollisionPair(part.Id, other.Id))) continue;
             if (CollisionGeometry.SweepFraction(part, other, 1, -.08f) < 1) return true;
         }
@@ -899,7 +899,97 @@ public sealed class PhysicsSimulationService
     }
 
     public static float PartMass(SceneNode part) => part.Massless ? .1f : Math.Max(.1f,
-        Math.Abs(part.Size[0] * part.Size[1] * part.Size[2]));
+        Math.Abs(part.Size[0] * part.Size[1] * part.Size[2]) * PhysicalPropertiesService.Get(part).Density);
+
+    private bool TransferCollisionVelocity(SceneNode movingPart, SceneNode collisionPart, float[] movingVelocity,
+        int axis, int direction, float elasticity, Dictionary<string, SceneNode[]> weldedGroups)
+    {
+        var movingMembers = weldedGroups.GetValueOrDefault(movingPart.Id, [movingPart]);
+        var collisionMembers = weldedGroups.GetValueOrDefault(collisionPart.Id, [collisionPart]);
+        if (movingMembers.Any(member => collisionMembers.Any(other => other.Id == member.Id))) return false;
+        var movingInverseMass = movingMembers.Any(member => member.Anchored) ? 0 : 1 / movingMembers.Sum(PartMass);
+        var collisionInverseMass = collisionMembers.Any(member => member.Anchored) ? 0 : 1 / collisionMembers.Sum(PartMass);
+        var inverseMassSum = movingInverseMass + collisionInverseMass;
+        if (inverseMassSum <= 0) return false;
+
+        var movingSpeed = movingVelocity[axis];
+        var collisionSpeed = collisionMembers[0].Velocity[axis];
+        var closingSpeed = (movingSpeed - collisionSpeed) * direction;
+        if (closingSpeed <= 0) return false;
+        var impulse = (1 + Math.Clamp(elasticity, 0, 1)) * closingSpeed / inverseMassSum;
+        movingVelocity[axis] = movingSpeed - direction * impulse * movingInverseMass;
+        var collisionSpeedAfter = collisionSpeed + direction * impulse * collisionInverseMass;
+        foreach (var member in collisionMembers)
+        {
+            if (member.Anchored || member.Velocity[axis] == collisionSpeedAfter) continue;
+            var updatedVelocity = (float[])member.Velocity.Clone();
+            updatedVelocity[axis] = collisionSpeedAfter;
+            member.Velocity = updatedVelocity;
+            moved(member);
+        }
+        var axisDirection = axis switch
+        {
+            0 => Vector3.UnitX,
+            1 => Vector3.UnitY,
+            _ => Vector3.UnitZ
+        } * direction;
+        var contactPoint = CollisionContactPoint(movingPart, collisionPart, axis, direction);
+        ApplyCollisionAngularImpulse(movingMembers, -axisDirection * impulse, contactPoint);
+        ApplyCollisionAngularImpulse(collisionMembers, axisDirection * impulse, contactPoint);
+        if (collisionMembers.Length > 1 && collisionInverseMass > 0)
+            weldedVelocities[AssemblyKey(collisionMembers)] = [collisionMembers[0].Velocity[0], collisionMembers[0].Velocity[1], collisionMembers[0].Velocity[2]];
+        return movingInverseMass > 0;
+    }
+
+    private static Vector3 CollisionContactPoint(SceneNode moving, SceneNode stationary, int axis, int direction)
+    {
+        var movingPosition = new Vector3(moving.Position[0], moving.Position[1], moving.Position[2]);
+        var stationaryPosition = new Vector3(stationary.Position[0], stationary.Position[1], stationary.Position[2]);
+        var worldAxis = axis switch { 0 => Vector3.UnitX, 1 => Vector3.UnitY, _ => Vector3.UnitZ };
+        static float AxisExtent(SceneNode part, Vector3 axis)
+        {
+            var rotation = RotationMath.FromDegrees(part.Rotation);
+            var x = Vector3.TransformNormal(Vector3.UnitX, rotation);
+            var y = Vector3.TransformNormal(Vector3.UnitY, rotation);
+            var z = Vector3.TransformNormal(Vector3.UnitZ, rotation);
+            return Math.Abs(Vector3.Dot(axis, x)) * Math.Abs(part.Size[0]) * .5f
+                + Math.Abs(Vector3.Dot(axis, y)) * Math.Abs(part.Size[1]) * .5f
+                + Math.Abs(Vector3.Dot(axis, z)) * Math.Abs(part.Size[2]) * .5f;
+        }
+        var movingEdge = Vector3.Dot(movingPosition, worldAxis) + direction * AxisExtent(moving, worldAxis);
+        var stationaryEdge = Vector3.Dot(stationaryPosition, worldAxis) - direction * AxisExtent(stationary, worldAxis);
+        var point = (movingPosition + stationaryPosition) * .5f;
+        var coordinate = (movingEdge + stationaryEdge) * .5f;
+        return axis switch
+        {
+            0 => new Vector3(coordinate, point.Y, point.Z),
+            1 => new Vector3(point.X, coordinate, point.Z),
+            _ => new Vector3(point.X, point.Y, coordinate)
+        };
+    }
+
+    private void ApplyCollisionAngularImpulse(SceneNode[] members, Vector3 impulse, Vector3 contactPoint)
+    {
+        if (members.Length == 0 || members.Any(member => member.Anchored)) return;
+        var mass = members.Sum(PartMass);
+        var center = members.Aggregate(Vector3.Zero, (sum, member) =>
+            sum + new Vector3(member.Position[0], member.Position[1], member.Position[2]) * PartMass(member)) / mass;
+        var inertia = members.Sum(member =>
+        {
+            var position = new Vector3(member.Position[0], member.Position[1], member.Position[2]);
+            return PartMomentOfInertia(member) + PartMass(member) * (position - center).LengthSquared();
+        });
+        if (!float.IsFinite(inertia) || inertia <= .000001f) return;
+        var angularVelocity = new Vector3(members[0].AssemblyAngularVelocity[0], members[0].AssemblyAngularVelocity[1], members[0].AssemblyAngularVelocity[2])
+            + Vector3.Cross(contactPoint - center, impulse) / inertia;
+        if (!float.IsFinite(angularVelocity.X) || !float.IsFinite(angularVelocity.Y) || !float.IsFinite(angularVelocity.Z)) return;
+        var values = new[] { Math.Clamp(angularVelocity.X, -10000, 10000), Math.Clamp(angularVelocity.Y, -10000, 10000), Math.Clamp(angularVelocity.Z, -10000, 10000) };
+        foreach (var member in members)
+        {
+            member.AssemblyAngularVelocity = (float[])values.Clone();
+            moved(member);
+        }
+    }
 
     public static Vector3 AssemblyCenterOfMass(GameProject project, SceneNode part)
     {
@@ -1593,6 +1683,7 @@ public sealed class PhysicsSimulationService
             var overlaps = new HashSet<(string, string)>();
             foreach (var (member, other) in collisionPairs)
             {
+                if (!GameProjectStore.CanCollisionGroupsCollide(project, member.CollisionGroup, other.CollisionGroup)) continue;
                 if (!CollisionGeometry.Intersects(member, other)) continue;
                 var pair = CollisionPair(member.Id, other.Id);
                 if (sample > 0 && !previousOverlaps.Contains(pair))
@@ -1874,17 +1965,57 @@ public sealed class PhysicsSimulationService
         {
             var desiredMotion = velocity[axis] * deltaTime;
             var allowedMotion = desiredMotion;
+            SceneNode? collisionPart = null;
+            SceneNode? collisionMember = null;
             if (desiredMotion == 0) continue;
             foreach (var member in group.Where(part => part.CanCollide))
             foreach (var other in parts)
             {
-                if (memberIds.Contains(other.Id) || !other.CanCollide) continue;
+                if (memberIds.Contains(other.Id) || !other.CanCollide
+                    || !GameProjectStore.CanCollisionGroupsCollide(project, member.CollisionGroup, other.CollisionGroup)) continue;
                 if (ignoredPairs.Contains(CollisionPair(member.Id, other.Id))) continue;
-                var fraction = CollisionGeometry.SweepFraction(member, other, axis, desiredMotion);
-                if (desiredMotion > 0) allowedMotion = Math.Min(allowedMotion, desiredMotion * fraction);
-                else allowedMotion = Math.Max(allowedMotion, desiredMotion * fraction);
+                var otherAssembly = weldedGroups.GetValueOrDefault(other.Id, [other]);
+                var otherMotion = otherAssembly.Any(part => part.Anchored) ? 0 : otherAssembly[0].Velocity[axis] * deltaTime;
+                var fraction = CollisionGeometry.SweepFraction(member, other, axis, desiredMotion - otherMotion);
+                var candidateMotion = desiredMotion * fraction;
+                if (desiredMotion > 0 && candidateMotion < allowedMotion || desiredMotion < 0 && candidateMotion > allowedMotion)
+                {
+                    allowedMotion = candidateMotion;
+                    collisionPart = other;
+                    collisionMember = member;
+                }
             }
-            if (allowedMotion != desiredMotion) velocity[axis] = 0;
+            if (allowedMotion != desiredMotion)
+            {
+                var transferred = false;
+                if (collisionPart is not null && collisionMember is not null)
+                {
+                    var movingProperties = PhysicalPropertiesService.Get(collisionMember);
+                    var surfaceProperties = PhysicalPropertiesService.Get(collisionPart);
+                    var elasticity = PhysicalPropertiesService.Combine(movingProperties.Elasticity, movingProperties.ElasticityWeight,
+                        surfaceProperties.Elasticity, surfaceProperties.ElasticityWeight);
+                    transferred = TransferCollisionVelocity(collisionMember, collisionPart, velocity, axis,
+                        Math.Sign(desiredMotion), elasticity, weldedGroups);
+                }
+                if (axis == 1 && desiredMotion < 0 && collisionPart is not null && collisionMember is not null)
+                {
+                    var movingProperties = PhysicalPropertiesService.Get(collisionMember);
+                    var surfaceProperties = PhysicalPropertiesService.Get(collisionPart);
+                    if (!transferred)
+                    {
+                        var elasticity = PhysicalPropertiesService.Combine(movingProperties.Elasticity, movingProperties.ElasticityWeight,
+                            surfaceProperties.Elasticity, surfaceProperties.ElasticityWeight);
+                        velocity[1] = Math.Abs(velocity[1]) * elasticity;
+                        if (velocity[1] < .5f) velocity[1] = 0;
+                    }
+                    var friction = PhysicalPropertiesService.Combine(movingProperties.Friction, movingProperties.FrictionWeight,
+                        surfaceProperties.Friction, surfaceProperties.FrictionWeight);
+                    var slideRetention = MathF.Exp(-friction * deltaTime * 8);
+                    velocity[0] *= slideRetention;
+                    velocity[2] *= slideRetention;
+                }
+                else if (!transferred) velocity[axis] = 0;
+            }
             if (Math.Abs(allowedMotion) < .000001f) continue;
             for (var index = 0; index < group.Length; index++)
             {
@@ -2019,17 +2150,55 @@ public sealed class PhysicsSimulationService
             if (motion == 0) continue;
             var origin = part.Position[axis];
             var allowedMotion = motion;
+            SceneNode? collisionPart = null;
             if (part.CanCollide)
             {
                 foreach (var other in parts)
                 {
-                    if (ReferenceEquals(part, other) || !other.CanCollide) continue;
+                    if (ReferenceEquals(part, other) || !other.CanCollide
+                        || !GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, other.CollisionGroup)) continue;
                     if (ignoredPairs.Contains(CollisionPair(part.Id, other.Id))) continue;
-                    var fraction = CollisionGeometry.SweepFraction(part, other, axis, motion);
-                    if (motion > 0) allowedMotion = Math.Min(allowedMotion, motion * fraction);
-                    else allowedMotion = Math.Max(allowedMotion, motion * fraction);
+                    var otherAssembly = weldedGroups.GetValueOrDefault(other.Id, [other]);
+                    var otherMotion = otherAssembly.Any(member => member.Anchored) ? 0 : otherAssembly[0].Velocity[axis] * deltaTime;
+                    var fraction = CollisionGeometry.SweepFraction(part, other, axis, motion - otherMotion);
+                    var candidateMotion = motion * fraction;
+                    if (motion > 0 && candidateMotion < allowedMotion || motion < 0 && candidateMotion > allowedMotion)
+                    {
+                        allowedMotion = candidateMotion;
+                        collisionPart = other;
+                    }
                 }
-                if (allowedMotion != motion) velocity[axis] = 0;
+                if (allowedMotion != motion)
+                {
+                    var transferred = false;
+                    if (collisionPart is not null)
+                    {
+                        var partProperties = PhysicalPropertiesService.Get(part);
+                        var surfaceProperties = PhysicalPropertiesService.Get(collisionPart);
+                        var elasticity = PhysicalPropertiesService.Combine(partProperties.Elasticity, partProperties.ElasticityWeight,
+                            surfaceProperties.Elasticity, surfaceProperties.ElasticityWeight);
+                        transferred = TransferCollisionVelocity(part, collisionPart, velocity, axis,
+                            Math.Sign(motion), elasticity, weldedGroups);
+                    }
+                    if (axis == 1 && motion < 0 && collisionPart is not null)
+                    {
+                        var partProperties = PhysicalPropertiesService.Get(part);
+                        var surfaceProperties = PhysicalPropertiesService.Get(collisionPart);
+                        if (!transferred)
+                        {
+                            var elasticity = PhysicalPropertiesService.Combine(partProperties.Elasticity, partProperties.ElasticityWeight,
+                                surfaceProperties.Elasticity, surfaceProperties.ElasticityWeight);
+                            velocity[1] = Math.Abs(velocity[1]) * elasticity;
+                            if (velocity[1] < .5f) velocity[1] = 0;
+                        }
+                        var friction = PhysicalPropertiesService.Combine(partProperties.Friction, partProperties.FrictionWeight,
+                            surfaceProperties.Friction, surfaceProperties.FrictionWeight);
+                        var slideRetention = MathF.Exp(-friction * deltaTime * 8);
+                        velocity[0] *= slideRetention;
+                        velocity[2] *= slideRetention;
+                    }
+                    else if (!transferred) velocity[axis] = 0;
+                }
             }
             var destination = origin + allowedMotion;
             if (Math.Abs(destination - origin) < .000001f) continue;

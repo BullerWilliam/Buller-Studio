@@ -10,6 +10,8 @@ public sealed class GameProject
     public SceneNode Workspace { get; set; } = new() { Id = "workspace", Type = "Workspace", Name = "Workspace", Children = [new SceneNode { Id = "workspace-terrain", Type = "Terrain", Name = "Terrain" }] };
     public SceneNode Players { get; set; } = new() { Id = "players", Type = "Players", Name = "Players" };
     public SceneNode Teams { get; set; } = new() { Id = "teams", Type = "Teams", Name = "Teams" };
+    public List<string> CollisionGroupNames { get; set; } = ["Default"];
+    public List<CollisionGroupPair> NonCollidableGroupPairs { get; set; } = [];
     public SceneNode Lighting { get; set; } = new() { Id = "lighting", Type = "Lighting", Name = "Lighting", Ambient = "#808080", ClockTime = 14, Children = [new SceneNode { Id = "sky-main", Type = "Sky", Name = "Sky" }] };
     public SceneNode SoundService { get; set; } = new() { Id = "sound-service", Type = "SoundService", Name = "SoundService" };
     public SceneNode ReplicatedStorage { get; set; } = new() { Id = "replicated-storage", Type = "ReplicatedStorage", Name = "ReplicatedStorage" };
@@ -25,6 +27,22 @@ public sealed class GameProject
     [JsonIgnore] public bool BuildIncluded { get; set; } = true;
 }
 
+public sealed class CollisionGroupPair
+{
+    public string Group0 { get; set; } = string.Empty;
+    public string Group1 { get; set; } = string.Empty;
+}
+
+public sealed class PhysicalPropertiesData
+{
+    public float Density { get; set; } = .7f;
+    public float Friction { get; set; } = .3f;
+    public float Elasticity { get; set; } = .5f;
+    public float FrictionWeight { get; set; } = 1;
+    public float ElasticityWeight { get; set; } = 1;
+    public float AcousticAbsorption { get; set; } = .5f;
+}
+
 public sealed class ProjectSettings
 {
     public string Background { get; set; } = "#101522";
@@ -32,6 +50,7 @@ public sealed class ProjectSettings
     public bool SnapToGrid { get; set; } = true;
     public float MoveSnapIncrement { get; set; } = 1;
     public float RotateSnapIncrement { get; set; } = 15;
+    public float ScaleSnapIncrement { get; set; } = 1;
 }
 
 public sealed class SceneNode
@@ -94,6 +113,9 @@ public sealed class SceneNode
     public float[] StudsOffset { get; set; } = [0, 0, 0];
     public float[] StudsOffsetWorldSpace { get; set; } = [0, 0, 0];
     public float PixelsPerStud { get; set; } = 50;
+    public string SurfaceGuiSizingMode { get; set; } = "PixelsPerStud";
+    public float[] SurfaceGuiCanvasSize { get; set; } = [800, 600];
+    public float SurfaceGuiZOffset { get; set; }
     public string SurfaceColor3 { get; set; } = "#FFFFFF";
     public float SurfaceTransparency { get; set; } = 1;
     public float LineThickness { get; set; } = .05f;
@@ -126,6 +148,9 @@ public sealed class SceneNode
     public string RunContext { get; set; } = "Legacy";
     public float Brightness { get; set; } = 1;
     public string Ambient { get; set; } = "#808080";
+    public string FogColor { get; set; } = "#C0C0C0";
+    public float FogStart { get; set; }
+    public float FogEnd { get; set; } = 100000;
     public string AtmosphereDecay { get; set; } = "#607080";
     public string TintColor { get; set; } = "#FFFFFF";
     public float ColorCorrectionContrast { get; set; }
@@ -394,6 +419,8 @@ public sealed class SceneNode
     public bool ShadowShowBehindParent { get; set; } = true;
     public string ShadowMode { get; set; } = "Shape";
     public float StrokeThickness { get; set; } = 1;
+    public string StrokeApplyMode { get; set; } = "Contextual";
+    public string StrokeLineJoinMode { get; set; } = "Round";
     public float LayoutSpacing { get; set; }
     public float ListPaddingScale { get; set; }
     public float[] CellSize { get; set; } = [100, 100];
@@ -434,9 +461,11 @@ public sealed class SceneNode
     public string SkyboxBottom { get; set; } = string.Empty;
     public bool Anchored { get; set; } = true;
     public bool Massless { get; set; }
+    public PhysicalPropertiesData? CustomPhysicalProperties { get; set; }
     public bool CanCollide { get; set; } = true;
     public bool CanTouch { get; set; } = true;
     public bool CanQuery { get; set; } = true;
+    public string CollisionGroup { get; set; } = "Default";
     public float[] Velocity { get; set; } = [0, 0, 0];
     [JsonIgnore] public float[] AssemblyAngularVelocity { get; set; } = [0, 0, 0];
     public bool CastShadow { get; set; } = true;
@@ -444,6 +473,7 @@ public sealed class SceneNode
     public float Gravity { get; set; } = 24;
     public float FallenPartsDestroyHeight { get; set; } = -500;
     public bool AutoManageCharacter { get; set; } = true;
+    public bool TouchesUseCollisionGroups { get; set; }
     public string PathfindingModifierLabel { get; set; } = string.Empty;
     public bool PathfindingPassThrough { get; set; }
     public string PathfindingLinkLabel { get; set; } = string.Empty;

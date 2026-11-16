@@ -50,6 +50,8 @@ public sealed class LuaXRuntime
     private readonly Dictionary<string, List<ScriptCallback>> clickDetectorHoverEnterCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> clickDetectorHoverLeaveCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> humanoidDiedCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<ScriptCallback>> humanoidStateChangedCallbacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> humanoidStates = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> humanoidMoveToFinishedCallbacks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HumanoidMoveTarget> humanoidMoveTargets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ScriptCallback>> explosionHitCallbacks = new(StringComparer.Ordinal);
@@ -205,6 +207,7 @@ public sealed class LuaXRuntime
         "Sky", "Atmosphere", "Clouds", "BloomEffect", "BlurEffect", "ColorCorrectionEffect", "SurfaceAppearance", "SpecialMesh", "ScreenGui", "BillboardGui", "SurfaceGui", "Frame", "ScrollingFrame", "ViewportFrame", "VideoFrame", "ImageLabel", "ImageButton", "TextLabel", "TextButton", "TextBox",
         "UICorner", "UIOutline", "UIStroke", "UIGradient", "UIShadow", "UIPadding", "UIScale", "UIListLayout", "UIGridLayout", "UITableLayout", "UIPageLayout", "UICanvasGroup", "UIAspectRatio", "UIAspectRatioConstraint", "UISizeConstraint", "UITextSizeConstraint", "UIFlexItem", "UIDragDetector"
     };
+    public static IReadOnlyList<string> CreatableClassNames { get; } = CreatableClasses.OrderBy(name => name, StringComparer.Ordinal).ToArray();
 
     public LuaXRuntime(GameProject project, Action<SceneNode, string, DynValue>? propertyChanged = null, Action<string>? output = null, bool isStudio = true, Action<SceneNode?, SceneNode>? sitOnSeat = null, Action<string, bool>? focusTextBox = null)
     {
@@ -264,9 +267,12 @@ public sealed class LuaXRuntime
         activeContactParts.Clear();
         scriptDrivenTransformChanges.Clear();
         DisconnectCallbacksInRegistry(humanoidDiedCallbacks);
+        DisconnectCallbacksInRegistry(humanoidStateChangedCallbacks);
         DisconnectCallbacksInRegistry(humanoidHealthChangedCallbacks);
         DisconnectCallbacksInRegistry(humanoidMoveToFinishedCallbacks);
         humanoidDiedCallbacks.Clear();
+        humanoidStateChangedCallbacks.Clear();
+        humanoidStates.Clear();
         humanoidHealthChangedCallbacks.Clear();
         humanoidMoveToFinishedCallbacks.Clear();
         humanoidMoveTargets.Clear();
@@ -549,6 +555,7 @@ public sealed class LuaXRuntime
         AdvanceExplosions(elapsed);
         AdvanceDebris(elapsed);
         StartQueuedScripts();
+        UpdateHumanoidStates();
         var scriptDrivenTransforms = scriptDrivenTransformChanges.ToHashSet(StringComparer.Ordinal);
         scriptDrivenTransformChanges.Clear();
         var touchingNow = new HashSet<string>(StringComparer.Ordinal);
@@ -557,7 +564,9 @@ public sealed class LuaXRuntime
         for (var first = 0; first < parts.Length; first++)
         for (var second = first + 1; second < parts.Length; second++)
         {
-            if (!CollisionGeometry.Intersects(parts[first], parts[second])) continue;
+            if ((project.Workspace.TouchesUseCollisionGroups
+                    && !GameProjectStore.CanCollisionGroupsCollide(project, parts[first].CollisionGroup, parts[second].CollisionGroup))
+                || !CollisionGeometry.Intersects(parts[first], parts[second])) continue;
             var key = string.CompareOrdinal(parts[first].Id, parts[second].Id) < 0 ? $"{parts[first].Id}:{parts[second].Id}" : $"{parts[second].Id}:{parts[first].Id}";
             touchingNow.Add(key);
             contactPartsNow[key] = (parts[first], parts[second]);
@@ -695,6 +704,7 @@ public sealed class LuaXRuntime
         var starterPlayer = instances[project.StarterPlayer.Id];
         var gui = instances[project.Gui.Id];
         var httpService = CreateHttpService();
+        var physicsService = CreatePhysicsService();
         var pathfindingService = CreatePathfindingService();
         proximityPromptService = new Table(script);
         runtimeTypeTags.Add(proximityPromptService, new LuaXTypeTag("ProximityPromptService"));
@@ -733,6 +743,7 @@ public sealed class LuaXRuntime
         game.Set("ContextActionService", DynValue.NewTable(contextActionService));
         game.Set("TweenService", DynValue.NewTable(tweenService));
         game.Set("HttpService", DynValue.NewTable(httpService));
+        game.Set("PhysicsService", DynValue.NewTable(physicsService));
         game.Set("PathfindingService", DynValue.NewTable(pathfindingService));
         game.Set("ProximityPromptService", DynValue.NewTable(proximityPromptService));
         game.Set("GetService", DynValue.NewCallback((_, args) =>
@@ -760,6 +771,7 @@ public sealed class LuaXRuntime
                 "ContextActionService" => DynValue.NewTable(contextActionService),
                 "TweenService" => DynValue.NewTable(tweenService),
                 "HttpService" => DynValue.NewTable(httpService),
+                "PhysicsService" => DynValue.NewTable(physicsService),
                 "PathfindingService" => DynValue.NewTable(pathfindingService),
                 "ProximityPromptService" => DynValue.NewTable(proximityPromptService),
                 _ => throw new ScriptRuntimeException(string.IsNullOrWhiteSpace(serviceName)
@@ -782,6 +794,7 @@ public sealed class LuaXRuntime
         script.Globals.Set("Gui", DynValue.NewTable(gui));
         script.Globals.Set("StarterGui", DynValue.NewTable(gui));
         script.Globals.Set("TweenService", DynValue.NewTable(tweenService));
+        script.Globals.Set("PhysicsService", DynValue.NewTable(physicsService));
         script.Globals.Set("UserInputService", DynValue.NewTable(userInputService));
         script.Globals.Set("ContextActionService", DynValue.NewTable(contextActionService));
         script.Globals.Set("ProximityPromptService", DynValue.NewTable(proximityPromptService));
@@ -848,6 +861,10 @@ public sealed class LuaXRuntime
         var pathStatusEnum = new Table(script);
         foreach (var state in new[] { "Success", "NoPath", "ClosestNoPath", "FailStartNotEmpty", "FailFinishNotEmpty", "FailFinishUnreachable", "FailTooFar" }) pathStatusEnum.Set(state, DynValue.NewString(state));
         enumTable.Set("PathStatus", DynValue.NewTable(pathStatusEnum));
+        var humanoidStateTypeEnum = new Table(script);
+        foreach (var state in new[] { "Running", "Jumping", "Freefall", "Landed", "Seated", "Dead", "GettingUp", "PlatformStanding" })
+            humanoidStateTypeEnum.Set(state, DynValue.NewString(state));
+        enumTable.Set("HumanoidStateType", DynValue.NewTable(humanoidStateTypeEnum));
         var pathWaypointActionEnum = new Table(script);
         foreach (var action in new[] { "Walk", "Jump", "Custom" }) pathWaypointActionEnum.Set(action, DynValue.NewString(action));
         enumTable.Set("PathWaypointAction", DynValue.NewTable(pathWaypointActionEnum));
@@ -857,6 +874,9 @@ public sealed class LuaXRuntime
         var meshTypeEnum = new Table(script);
         foreach (var meshType in new[] { "Brick", "FileMesh", "Head", "Sphere", "Cylinder", "Wedge", "Torso", "Prism", "Pyramid", "ParallelRamp", "RightAngleRamp", "CornerWedge" }) meshTypeEnum.Set(meshType, DynValue.NewString(meshType));
         enumTable.Set("MeshType", DynValue.NewTable(meshTypeEnum));
+        var surfaceGuiSizingModeEnum = new Table(script);
+        foreach (var mode in new[] { "FixedSize", "PixelsPerStud" }) surfaceGuiSizingModeEnum.Set(mode, DynValue.NewString(mode));
+        enumTable.Set("SurfaceGuiSizingMode", DynValue.NewTable(surfaceGuiSizingModeEnum));
         enumTable.Set("LayoutDirection", DynValue.NewTable(layoutDirectionEnum));
         enumTable.Set("FillDirection", DynValue.NewTable(layoutDirectionEnum));
         enumTable.Set("ScrollingDirection", DynValue.NewTable(scrollingDirectionEnum));
@@ -886,6 +906,12 @@ public sealed class LuaXRuntime
         var gradientTypeEnum = new Table(script);
         foreach (var type in new[] { "Linear", "Radial", "Conical", "Elliptical" }) gradientTypeEnum.Set(type, DynValue.NewString(type));
         enumTable.Set("GradientType", DynValue.NewTable(gradientTypeEnum));
+        var applyStrokeModeEnum = new Table(script);
+        foreach (var mode in new[] { "Contextual", "Border" }) applyStrokeModeEnum.Set(mode, DynValue.NewString(mode));
+        enumTable.Set("ApplyStrokeMode", DynValue.NewTable(applyStrokeModeEnum));
+        var lineJoinModeEnum = new Table(script);
+        foreach (var mode in new[] { "Round", "Bevel", "Miter" }) lineJoinModeEnum.Set(mode, DynValue.NewString(mode));
+        enumTable.Set("LineJoinMode", DynValue.NewTable(lineJoinModeEnum));
         var actuatorRelativeToEnum = new Table(script);
         actuatorRelativeToEnum.Set("World", DynValue.NewString("World"));
         actuatorRelativeToEnum.Set("Attachment0", DynValue.NewString("Attachment0"));
@@ -905,6 +931,7 @@ public sealed class LuaXRuntime
             runtimeTypeTags.Add(parameters, new LuaXTypeTag("RaycastParams"));
             parameters.Set("FilterDescendantsInstances", DynValue.NewTable(new Table(script)));
             parameters.Set("FilterType", DynValue.NewString("Exclude"));
+            parameters.Set("CollisionGroup", DynValue.NewString("Default"));
             parameters.Set("RespectCanCollide", DynValue.NewBoolean(false));
             return DynValue.NewTable(parameters);
         }));
@@ -917,6 +944,7 @@ public sealed class LuaXRuntime
             parameters.Set("FilterDescendantsInstances", DynValue.NewTable(new Table(script)));
             parameters.Set("FilterType", DynValue.NewString("Exclude"));
             parameters.Set("MaxParts", DynValue.NewNumber(0));
+            parameters.Set("CollisionGroup", DynValue.NewString("Default"));
             parameters.Set("RespectCanCollide", DynValue.NewBoolean(false));
             return DynValue.NewTable(parameters);
         }));
@@ -952,6 +980,9 @@ public sealed class LuaXRuntime
             return ColorValue(hex.Length > 0 && !hex.StartsWith('#') ? $"#{hex}" : hex);
         }));
         script.Globals.Set("Color3", DynValue.NewTable(color3));
+        var physicalProperties = new Table(script);
+        physicalProperties.Set("new", DynValue.NewCallback((_, args) => CreatePhysicalProperties(args)));
+        script.Globals.Set("PhysicalProperties", DynValue.NewTable(physicalProperties));
         var numberRange = new Table(script);
         numberRange.Set("new", DynValue.NewCallback((_, args) =>
         {
@@ -1473,6 +1504,14 @@ public sealed class LuaXRuntime
             instance.Set("Color", ColorSequenceValue(node.ColorSequence.Count >= 2 ? node.ColorSequence : [new(0, node.StartColor), new(1, node.EndColor)]));
             instance.Set("Transparency", NumberSequenceValue(node.TransparencySequence.Count >= 2 ? node.TransparencySequence : [new(0, node.Transparency), new(1, node.Transparency)]));
         }
+        if (node.Type == "UIStroke")
+        {
+            instance.Set("Color", ColorValue(node.StrokeColor));
+            instance.Set("Thickness", DynValue.NewNumber(node.StrokeThickness));
+            instance.Set("Transparency", DynValue.NewNumber(node.Transparency));
+            instance.Set("ApplyStrokeMode", DynValue.NewString(node.StrokeApplyMode));
+            instance.Set("LineJoinMode", DynValue.NewString(node.StrokeLineJoinMode));
+        }
         if (node.Type == "UIPadding")
         {
             instance.Set("PaddingLeft", CreateUDim(node.PaddingLeft[0], node.PaddingLeft[1]));
@@ -1562,7 +1601,13 @@ public sealed class LuaXRuntime
             instance.Set("StudsOffset", VectorValue(node.StudsOffset));
             instance.Set("StudsOffsetWorldSpace", VectorValue(node.StudsOffsetWorldSpace));
         }
-        if (node.Type == "SurfaceGui") instance.Set("PixelsPerStud", DynValue.NewNumber(node.PixelsPerStud));
+        if (node.Type == "SurfaceGui")
+        {
+            instance.Set("CanvasSize", Vector2Value(node.SurfaceGuiCanvasSize));
+            instance.Set("SizingMode", DynValue.NewString(node.SurfaceGuiSizingMode));
+            instance.Set("PixelsPerStud", DynValue.NewNumber(node.PixelsPerStud));
+            instance.Set("ZOffset", DynValue.NewNumber(node.SurfaceGuiZOffset));
+        }
         if (node.Type == "Lighting" || SceneNodeTypes.IsLight(node)) instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
         if (node.Type == "ColorCorrectionEffect")
         {
@@ -1798,7 +1843,12 @@ public sealed class LuaXRuntime
         {
             instance.Set("Anchored", DynValue.NewBoolean(node.Anchored));
             instance.Set("Massless", DynValue.NewBoolean(node.Massless));
+            if (node.CustomPhysicalProperties is { } customPhysicalProperties)
+                instance.Set("CustomPhysicalProperties", PhysicalPropertiesValue(customPhysicalProperties));
+            instance.Set("CurrentPhysicalProperties", PhysicalPropertiesValue(PhysicalPropertiesService.Get(node)));
+            instance.Set("Mass", DynValue.NewNumber(PhysicsSimulationService.PartMass(node)));
             instance.Set("CanCollide", DynValue.NewBoolean(node.CanCollide));
+            instance.Set("CollisionGroup", DynValue.NewString(node.CollisionGroup));
             instance.Set("CanTouch", DynValue.NewBoolean(node.CanTouch));
             instance.Set("CanQuery", DynValue.NewBoolean(node.CanQuery));
             instance.Set("Velocity", VectorValue(node.Velocity));
@@ -1812,12 +1862,16 @@ public sealed class LuaXRuntime
             instance.Set("Gravity", DynValue.NewNumber(node.Gravity));
             instance.Set("FallenPartsDestroyHeight", DynValue.NewNumber(node.FallenPartsDestroyHeight));
             instance.Set("AutoManageCharacter", DynValue.NewBoolean(node.AutoManageCharacter));
+            instance.Set("TouchesUseCollisionGroups", DynValue.NewBoolean(node.TouchesUseCollisionGroups));
             instance.Set("CurrentCamera", GetCurrentCameraReference());
         }
         if (node.Type == "ViewportFrame") instance.Set("CurrentCamera", GetObjectValueReference(node.ViewportCurrentCameraId));
         if (node.Type == "Lighting")
         {
             instance.Set("Ambient", ColorValue(node.Ambient));
+            instance.Set("FogColor", ColorValue(node.FogColor));
+            instance.Set("FogStart", DynValue.NewNumber(node.FogStart));
+            instance.Set("FogEnd", DynValue.NewNumber(node.FogEnd));
             instance.Set("ClockTime", DynValue.NewNumber(node.ClockTime));
             instance.Set("GlobalShadows", DynValue.NewBoolean(project.Settings.Shadows));
         }
@@ -1924,6 +1978,7 @@ public sealed class LuaXRuntime
         if (node.Type == "Humanoid")
         {
             humanoidSitStates[node.Id] = IsHumanoidSeated(node);
+            humanoidStates[node.Id] = GetHumanoidStateName(node);
             instance.Set("Health", DynValue.NewNumber(node.Health));
             instance.Set("MaxHealth", DynValue.NewNumber(node.MaxHealth));
             instance.Set("WalkSpeed", DynValue.NewNumber(node.WalkSpeed));
@@ -1933,6 +1988,33 @@ public sealed class LuaXRuntime
             instance.Set("UseJumpPower", DynValue.NewBoolean(node.UseJumpPower));
             instance.Set("AutoRotate", DynValue.NewBoolean(node.AutoRotate));
             instance.Set("Sit", DynValue.NewBoolean(IsHumanoidSeated(node)));
+            instance.Set("MoveDirection", VectorValue(VectorArray(GetHumanoidMoveDirection(node))));
+            instance.Set("FloorMaterial", DynValue.NewString(GetHumanoidFloorMaterial(node)));
+            instance.Set("GetState", DynValue.NewCallback((_, _) => DynValue.NewString(GetHumanoidStateName(node))));
+            instance.Set("ChangeState", DynValue.NewCallback((_, args) =>
+            {
+                var index = GetInstanceMethodArgumentIndex(node, args);
+                if (args.Count <= index || args[index].Type != DataType.String
+                    || args[index].String is not ("Running" or "Jumping" or "Freefall" or "Landed" or "Seated" or "Dead" or "GettingUp" or "PlatformStanding"))
+                    return DynValue.Nil;
+                switch (args[index].String)
+                {
+                    case "Jumping": node.Jump = true; break;
+                    case "Seated": SetHumanoidSitState(node, true); break;
+                    case "GettingUp": SetHumanoidSitState(node, false); humanoidStates[node.Id] = "GettingUp"; break;
+                    case "Dead": SetPropertyValue(node, "Health", DynValue.NewNumber(0)); break;
+                }
+                return DynValue.Nil;
+            }));
+            var stateChanged = new Table(script);
+            runtimeTypeTags.Add(stateChanged, new LuaXTypeTag("RBXScriptSignal"));
+            stateChanged.Set("Connect", DynValue.NewCallback((_, args) =>
+            {
+                var index = args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, stateChanged) ? 1 : 0;
+                return args.Count > index && args[index].Type == DataType.Function
+                    ? ConnectScriptCallback(humanoidStateChangedCallbacks, node.Id, args[index], "StateChanged") : DynValue.Nil;
+            }));
+            instance.Set("StateChanged", DynValue.NewTable(stateChanged));
         }
         if (SceneNodeTypes.IsValueObject(node)) instance.Set("Value", GetValueObjectValue(node));
         if (node.Type is "MeshPart" or "UnionOperation" or "Decal" or "Texture" or "Sound")
@@ -2694,7 +2776,9 @@ public sealed class LuaXRuntime
                 if (node.CanCollide || hasTouchInterest)
                 {
                     var resultIndex = 1;
-                    foreach (var other in Parts.Where(part => part.Id != node.Id && part.CanCollide && CollisionGeometry.Intersects(node, part)))
+                    foreach (var other in Parts.Where(part => part.Id != node.Id && part.CanCollide
+                                 && (!project.Workspace.TouchesUseCollisionGroups || GameProjectStore.CanCollisionGroupsCollide(project, node.CollisionGroup, part.CollisionGroup))
+                                 && CollisionGeometry.Intersects(node, part)))
                         if (instances.TryGetValue(other.Id, out var otherInstance)) results.Set(resultIndex++, DynValue.NewTable(otherInstance));
                 }
                 return DynValue.NewTable(results);
@@ -3616,6 +3700,113 @@ public sealed class LuaXRuntime
         return DynValue.NewTable(table);
     }
 
+    private Table CreatePhysicsService()
+    {
+        var service = new Table(script);
+        runtimeTypeTags.Add(service, new LuaXTypeTag("PhysicsService"));
+        service.Set("Name", DynValue.NewString("PhysicsService"));
+        service.Set("ClassName", DynValue.NewString("PhysicsService"));
+        service.Set("RegisterCollisionGroup", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetServiceMethodArgumentIndex(service, args);
+            if (args.Count <= index || args[index].Type != DataType.String) return DynValue.Nil;
+            var name = args[index].String;
+            if (GameProjectStore.IsCollisionGroupRegistered(project, name))
+                throw new ScriptRuntimeException($"Collision group '{name}' is already registered.");
+            if (!GameProjectStore.RegisterCollisionGroup(project, name))
+                throw new ScriptRuntimeException("Collision group names must be non-empty and at most 100 characters.");
+            return DynValue.Nil;
+        }));
+        service.Set("RenameCollisionGroup", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetServiceMethodArgumentIndex(service, args);
+            if (args.Count <= index + 1 || args[index].Type != DataType.String || args[index + 1].Type != DataType.String)
+                throw new ScriptRuntimeException("RenameCollisionGroup expects the old and new group names.");
+            var oldName = args[index].String;
+            var newName = args[index + 1].String;
+            if (!GameProjectStore.RenameCollisionGroup(project, oldName, newName))
+                throw new ScriptRuntimeException("The collision group could not be renamed. Check that both names are valid, the old group exists, the new group is unused, and the old group is not Default.");
+            foreach (var part in KnownNodes().Where(node => IsBasePart(node)
+                         && (string.Equals(node.CollisionGroup, oldName, StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(node.CollisionGroup, newName, StringComparison.OrdinalIgnoreCase))))
+            {
+                part.CollisionGroup = newName;
+                if (instances.TryGetValue(part.Id, out var instance)) instance.Set("CollisionGroup", DynValue.NewString(newName));
+                NotifyPropertyChanged(part, "CollisionGroup", DynValue.NewString(newName));
+            }
+            return DynValue.Nil;
+        }));
+        service.Set("UnregisterCollisionGroup", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetServiceMethodArgumentIndex(service, args);
+            if (args.Count <= index || args[index].Type != DataType.String) return DynValue.Nil;
+            var name = args[index].String;
+            if (string.Equals(name, "Default", StringComparison.OrdinalIgnoreCase))
+                throw new ScriptRuntimeException("The Default collision group cannot be unregistered.");
+            if (!GameProjectStore.IsCollisionGroupRegistered(project, name)) return DynValue.Nil;
+            project.CollisionGroupNames.RemoveAll(group => string.Equals(group, name, StringComparison.OrdinalIgnoreCase));
+            project.NonCollidableGroupPairs.RemoveAll(pair =>
+                string.Equals(pair.Group0, name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(pair.Group1, name, StringComparison.OrdinalIgnoreCase));
+            foreach (var part in KnownNodes().Where(node => IsBasePart(node) && string.Equals(node.CollisionGroup, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                part.CollisionGroup = "Default";
+                NotifyPropertyChanged(part, "CollisionGroup", DynValue.NewString("Default"));
+            }
+            return DynValue.Nil;
+        }));
+        service.Set("CollisionGroupSetCollidable", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetServiceMethodArgumentIndex(service, args);
+            if (args.Count <= index + 2 || args[index].Type != DataType.String || args[index + 1].Type != DataType.String || args[index + 2].Type != DataType.Boolean)
+                throw new ScriptRuntimeException("CollisionGroupSetCollidable expects two registered group names and a boolean.");
+            var first = args[index].String;
+            var second = args[index + 1].String;
+            if (!GameProjectStore.IsCollisionGroupRegistered(project, first) || !GameProjectStore.IsCollisionGroupRegistered(project, second))
+                throw new ScriptRuntimeException("Both collision groups must be registered.");
+            GameProjectStore.SetCollisionGroupsCollidable(project, first, second, args[index + 2].Boolean);
+            return DynValue.Nil;
+        }));
+        service.Set("CollisionGroupsAreCollidable", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetServiceMethodArgumentIndex(service, args);
+            if (args.Count <= index + 1 || args[index].Type != DataType.String || args[index + 1].Type != DataType.String)
+                return DynValue.Nil;
+            return DynValue.NewBoolean(GameProjectStore.CanCollisionGroupsCollide(project, args[index].String, args[index + 1].String));
+        }));
+        service.Set("IsCollisionGroupRegistered", DynValue.NewCallback((_, args) =>
+        {
+            var index = GetServiceMethodArgumentIndex(service, args);
+            return index < args.Count && args[index].Type == DataType.String
+                ? DynValue.NewBoolean(GameProjectStore.IsCollisionGroupRegistered(project, args[index].String))
+                : DynValue.Nil;
+        }));
+        service.Set("GetMaxCollisionGroups", DynValue.NewCallback((_, _) => DynValue.NewNumber(GameProjectStore.MaxCollisionGroups)));
+        service.Set("GetCollisionGroups", DynValue.NewCallback((_, _) => DynValue.NewTable(CreateCollisionGroupList(includeIds: true))));
+        service.Set("GetRegisteredCollisionGroups", DynValue.NewCallback((_, _) => DynValue.NewTable(CreateCollisionGroupList())));
+        return service;
+    }
+
+    private Table CreateCollisionGroupList(bool includeIds = false)
+    {
+        var groups = new Table(script);
+        for (var index = 0; index < project.CollisionGroupNames.Count; index++)
+        {
+            var group = new Table(script);
+            runtimeTypeTags.Add(group, new LuaXTypeTag("CollisionGroup"));
+            var groupName = project.CollisionGroupNames[index];
+            var mask = 0;
+            for (var targetIndex = 0; targetIndex < project.CollisionGroupNames.Count; targetIndex++)
+                if (GameProjectStore.CanCollisionGroupsCollide(project, groupName, project.CollisionGroupNames[targetIndex]))
+                    mask |= 1 << targetIndex;
+            group.Set("name", DynValue.NewString(groupName));
+            group.Set("mask", DynValue.NewNumber(mask));
+            if (includeIds) group.Set("id", DynValue.NewNumber(index));
+            groups.Set(index + 1, DynValue.NewTable(group));
+        }
+        return groups;
+    }
+
     private Table CreatePathfindingService()
     {
         var service = new Table(script);
@@ -3702,7 +3893,8 @@ public sealed class LuaXRuntime
                 if (startIndex < 0 || startIndex > pathState.Waypoints.Count)
                     throw new ScriptRuntimeException($"Path:CheckOcclusionAsync index must be between 0 and {pathState.Waypoints.Count}.");
 
-                var parts = Parts.Where(part => part.CanCollide && part.Size.Length >= 3).ToArray();
+                var parts = Parts.Where(part => part.CanCollide && part.Size.Length >= 3
+                    && GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, "Default")).ToArray();
                 var workspaceNodeIds = GameProjectStore.Flatten(project.Workspace.Children).Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
                 return DynValue.NewNumber(FindFirstBlockedPathWaypoint(pathState, startIndex, parts, workspaceNodeIds));
             }));
@@ -3772,7 +3964,8 @@ public sealed class LuaXRuntime
             state.CheckElapsed += elapsed;
             if (state.CheckElapsed < .25f) continue;
             state.CheckElapsed %= .25f;
-            var parts = Parts.Where(part => part.CanCollide && part.Size.Length >= 3).ToArray();
+            var parts = Parts.Where(part => part.CanCollide && part.Size.Length >= 3
+                && GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, "Default")).ToArray();
             var workspaceNodeIds = GameProjectStore.Flatten(project.Workspace.Children).Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
             var currentBlocked = FindBlockedPathWaypoints(state, parts, workspaceNodeIds);
             foreach (var waypointIndex in currentBlocked.Except(state.BlockedWaypoints))
@@ -3822,7 +4015,8 @@ public sealed class LuaXRuntime
     {
         var workspaceNodes = GameProjectStore.Flatten(project.Workspace.Children).ToArray();
         var workspaceNodeIds = workspaceNodes.Select(node => node.Id).ToHashSet(StringComparer.Ordinal);
-        var parts = workspaceNodes.Where(part => IsBasePart(part) && part.CanCollide && part.Size.Length >= 3).ToArray();
+        var parts = workspaceNodes.Where(part => IsBasePart(part) && part.CanCollide && part.Size.Length >= 3
+            && GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, "Default")).ToArray();
         if (parts.Length == 0 || !IsFinite(start) || !IsFinite(finish)) return [];
 
         var spacing = Math.Clamp(waypointSpacing, Math.Min(16, Math.Max(1, agentRadius)), 16);
@@ -3972,7 +4166,7 @@ public sealed class LuaXRuntime
 
     private static bool IsFinite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
 
-    private static bool TryFindWalkableGround(float x, float z, float referenceY, IReadOnlyList<SceneNode> parts, float agentRadius, float agentHeight, float verticalRange, float maxRise, out float groundY, out SceneNode? groundPart)
+    private bool TryFindWalkableGround(float x, float z, float referenceY, IReadOnlyList<SceneNode> parts, float agentRadius, float agentHeight, float verticalRange, float maxRise, out float groundY, out SceneNode? groundPart)
     {
         var candidates = new List<(float Height, SceneNode Part)>();
         foreach (var part in parts)
@@ -3988,6 +4182,7 @@ public sealed class LuaXRuntime
             probe.Position = [x, candidate.Height + Math.Max(1, agentHeight) * .5f, z];
             var blocked = parts.Any(part => !ReferenceEquals(part, candidate.Part)
                 && !part.Children.Any(child => child.Type == "PathfindingModifier" && child.PathfindingPassThrough)
+                && GameProjectStore.CanCollisionGroupsCollide(project, "Default", part.CollisionGroup)
                 && CollisionGeometry.Intersects(probe, part));
             if (blocked) continue;
             groundY = candidate.Height;
@@ -4922,6 +5117,7 @@ public sealed class LuaXRuntime
                 ? new HashSet<string>(StringComparer.Ordinal) { root.Id }
                 : GameProjectStore.Flatten(model.Children).Where(SceneNodeTypes.IsBasePart).Select(part => part.Id).ToHashSet(StringComparer.Ordinal);
             if (!workspaceParts.Any(part => !modelPartIds.Contains(part.Id) && part.CanCollide
+                    && GameProjectStore.CanCollisionGroupsCollide(project, root.CollisionGroup, part.CollisionGroup)
                     && CollisionGeometry.SweepFraction(root, part, 1, -.08f) < 1)) continue;
 
             root.Velocity[1] = PlayerCharacterService.GetJumpVelocity(humanoid, project.Workspace.Gravity);
@@ -5186,7 +5382,8 @@ public sealed class LuaXRuntime
         CollisionGeometry.RayHit? closestHit = null;
         foreach (var part in GetWorldRootParts(workspace))
         {
-            if (!(options.RespectCanCollide ? part.CanCollide : part.CanQuery)) continue;
+            if (!(options.RespectCanCollide ? part.CanCollide : part.CanQuery)
+                || !GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, options.CollisionGroup)) continue;
             var matchesFilter = options.FilteredIds.Contains(part.Id);
             if (options.FilterType == "Include" ? !matchesFilter : matchesFilter) continue;
             var hit = CollisionGeometry.Raycast(part, origin, direction);
@@ -5221,7 +5418,8 @@ public sealed class LuaXRuntime
         CollisionGeometry.RayHit? closestHit = null;
         foreach (var part in GetWorldRootParts(workspace))
         {
-            if (!(options.RespectCanCollide ? part.CanCollide : part.CanQuery)) continue;
+            if (!(options.RespectCanCollide ? part.CanCollide : part.CanQuery)
+                || !GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, options.CollisionGroup)) continue;
             var matchesFilter = options.FilteredIds.Contains(part.Id);
             if (options.FilterType == "Include" ? !matchesFilter : matchesFilter) continue;
             var hit = CollisionGeometry.Boxcast(castBox, part, direction);
@@ -5249,7 +5447,8 @@ public sealed class LuaXRuntime
         CollisionGeometry.RayHit? closestHit = null;
         foreach (var part in GetWorldRootParts(workspace))
         {
-            if (!(options.RespectCanCollide ? part.CanCollide : part.CanQuery)) continue;
+            if (!(options.RespectCanCollide ? part.CanCollide : part.CanQuery)
+                || !GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, options.CollisionGroup)) continue;
             var matchesFilter = options.FilteredIds.Contains(part.Id);
             if (options.FilterType == "Include" ? !matchesFilter : matchesFilter) continue;
             var hit = CollisionGeometry.Spherecast(position, radius, direction, part);
@@ -5273,7 +5472,8 @@ public sealed class LuaXRuntime
         CollisionGeometry.RayHit? closestHit = null;
         foreach (var part in GetWorldRootParts(workspace))
         {
-            if (part.Id == movingPart.Id || !(options.RespectCanCollide ? part.CanCollide : part.CanQuery)) continue;
+            if (part.Id == movingPart.Id || !(options.RespectCanCollide ? part.CanCollide : part.CanQuery)
+                || !GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, options.CollisionGroup)) continue;
             var matchesFilter = options.FilteredIds.Contains(part.Id);
             if (options.FilterType == "Include" ? !matchesFilter : matchesFilter) continue;
             var hit = CollisionGeometry.Shapecast(movingPart, part, direction);
@@ -5290,6 +5490,7 @@ public sealed class LuaXRuntime
         var filterType = "Exclude";
         var filteredIds = new HashSet<string>(StringComparer.Ordinal);
         var respectCanCollide = false;
+        var collisionGroup = "Default";
         if (value.Type != DataType.Nil)
         {
             if (!IsTypedValue(value, "RaycastParams")) { options = default!; return false; }
@@ -5307,8 +5508,11 @@ public sealed class LuaXRuntime
             var respect = parameters.Get("RespectCanCollide");
             if (respect.Type == DataType.Boolean) respectCanCollide = respect.Boolean;
             else if (respect.Type != DataType.Nil) { options = default!; return false; }
+            var group = parameters.Get("CollisionGroup");
+            if (group.Type == DataType.String && GameProjectStore.IsCollisionGroupRegistered(project, group.String)) collisionGroup = group.String;
+            else if (group.Type != DataType.Nil) { options = default!; return false; }
         }
-        options = new RaycastQueryOptions(filterType, filteredIds, respectCanCollide);
+        options = new RaycastQueryOptions(filterType, filteredIds, respectCanCollide, collisionGroup);
         return true;
     }
 
@@ -5325,7 +5529,7 @@ public sealed class LuaXRuntime
         return DynValue.NewTable(result);
     }
 
-    private sealed record RaycastQueryOptions(string FilterType, HashSet<string> FilteredIds, bool RespectCanCollide);
+    private sealed record RaycastQueryOptions(string FilterType, HashSet<string> FilteredIds, bool RespectCanCollide, string CollisionGroup);
 
     private DynValue GetPartsInPart(SceneNode workspace, CallbackArguments args)
     {
@@ -5387,6 +5591,7 @@ public sealed class LuaXRuntime
         var filteredIds = new HashSet<string>(StringComparer.Ordinal);
         var maxParts = 0;
         var respectCanCollide = false;
+        var collisionGroup = "Default";
         if (value.Type != DataType.Nil)
         {
             if (!IsTypedValue(value, "OverlapParams")) { options = default!; return false; }
@@ -5407,8 +5612,11 @@ public sealed class LuaXRuntime
             var respect = parameters.Get("RespectCanCollide");
             if (respect.Type == DataType.Boolean) respectCanCollide = respect.Boolean;
             else if (respect.Type != DataType.Nil) { options = default!; return false; }
+            var group = parameters.Get("CollisionGroup");
+            if (group.Type == DataType.String && GameProjectStore.IsCollisionGroupRegistered(project, group.String)) collisionGroup = group.String;
+            else if (group.Type != DataType.Nil) { options = default!; return false; }
         }
-        options = new OverlapQueryOptions(filterType, filteredIds, maxParts, respectCanCollide);
+        options = new OverlapQueryOptions(filterType, filteredIds, maxParts, respectCanCollide, collisionGroup);
         return true;
     }
 
@@ -5419,7 +5627,8 @@ public sealed class LuaXRuntime
         var count = 0;
         foreach (var part in GetWorldRootParts(worldRoot))
         {
-            if (part.Id == excludedPartId || !(options.RespectCanCollide ? part.CanCollide : part.CanQuery)) continue;
+            if (part.Id == excludedPartId || !(options.RespectCanCollide ? part.CanCollide : part.CanQuery)
+                || !GameProjectStore.CanCollisionGroupsCollide(project, part.CollisionGroup, options.CollisionGroup)) continue;
             var matchesFilter = options.FilteredIds.Contains(part.Id);
             if (options.FilterType == "Include" ? !matchesFilter : matchesFilter) continue;
             if (!intersectsQuery(part) || !instances.TryGetValue(part.Id, out var instance)) continue;
@@ -5435,7 +5644,7 @@ public sealed class LuaXRuntime
 
     private DynValue EmptyArray() => DynValue.NewTable(new Table(script));
 
-    private sealed record OverlapQueryOptions(string FilterType, HashSet<string> FilteredIds, int MaxParts, bool RespectCanCollide);
+    private sealed record OverlapQueryOptions(string FilterType, HashSet<string> FilteredIds, int MaxParts, bool RespectCanCollide, string CollisionGroup);
 
     private DynValue NewInstance(CallbackArguments args)
     {
@@ -5462,7 +5671,7 @@ public sealed class LuaXRuntime
                 && (IsBasePart(adornmentParent) || className is not ("BillboardGui" or "SurfaceGui") && adornmentParent.Type == "Model")) node.Adornee = adornmentParent.Id;
         }
         if (className == "BillboardGui") node.Size = [200, 50, 1];
-        if (className == "SurfaceGui") node.PixelsPerStud = 50;
+        if (className == "SurfaceGui") { node.PixelsPerStud = 50; node.MaxDistance = 1000; node.ClipsDescendants = true; }
         if (className == "UICorner") UICornerRadiusService.Set(node, "CornerRadius", 0, 8);
         if (className == "UIShadow") { node.Color = "#000000"; node.Transparency = .5f; node.ZIndex = -1; }
         if (className is "WeldConstraint" or "Weld" or "Motor6D" or "NoCollisionConstraint" && args.Count > 1 && ReadNodeArgument(args[1]) is { } constraintParent && IsBasePart(constraintParent))
@@ -5592,6 +5801,7 @@ public sealed class LuaXRuntime
             linkedChildKeys.Remove(removed.Id);
             meshPartAssetStates.Remove(removed.Id);
             humanoidWasAlive.Remove(removed.Id);
+            humanoidStates.Remove(removed.Id);
             touchedCallbacks.Remove(removed.Id);
             touchEndedCallbacks.Remove(removed.Id);
             guiActivatedCallbacks.Remove(removed.Id);
@@ -5614,6 +5824,7 @@ public sealed class LuaXRuntime
             clickDetectorHoverEnterCallbacks.Remove(removed.Id);
             clickDetectorHoverLeaveCallbacks.Remove(removed.Id);
             DisconnectCallbacksForNode(humanoidDiedCallbacks, removed.Id);
+            DisconnectCallbacksForNode(humanoidStateChangedCallbacks, removed.Id);
             DisconnectCallbacksForNode(humanoidHealthChangedCallbacks, removed.Id);
             DisconnectCallbacksForNode(humanoidMoveToFinishedCallbacks, removed.Id);
             humanoidMoveTargets.Remove(removed.Id);
@@ -5761,6 +5972,7 @@ public sealed class LuaXRuntime
         RemoveCallbacksOwnedBy(scriptIds, clickDetectorHoverEnterCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, clickDetectorHoverLeaveCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, humanoidDiedCallbacks);
+        RemoveCallbacksOwnedBy(scriptIds, humanoidStateChangedCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, humanoidHealthChangedCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, valueChangedCallbacks);
         RemoveCallbacksOwnedBy(scriptIds, propertyChangedSignalCallbacks);
@@ -6684,6 +6896,8 @@ public sealed class LuaXRuntime
             "studsoffsetworldspace" => "StudsOffsetWorldSpace",
             "alwaystop" => "AlwaysOnTop",
             "pixelsperstud" => "PixelsPerStud",
+            "sizingmode" => "SizingMode",
+            "zoffset" => "ZOffset",
             "video" => "Video",
             "volume" => "Volume",
             "playbackspeed" => "PlaybackSpeed",
@@ -6731,7 +6945,11 @@ public sealed class LuaXRuntime
             "layoutorder" => "LayoutOrder",
             "anchored" => "Anchored",
             "massless" => "Massless",
+            "mass" => "Mass",
+            "currentphysicalproperties" => "CurrentPhysicalProperties",
+            "customphysicalproperties" => "CustomPhysicalProperties",
             "cancollide" => "CanCollide",
+            "collisiongroup" => "CollisionGroup",
             "cantouch" => "CanTouch",
             "canquery" => "CanQuery",
             "castshadow" => "CastShadow",
@@ -6739,9 +6957,13 @@ public sealed class LuaXRuntime
             "gravity" => "Gravity",
             "fallenpartsdestroyheight" => "FallenPartsDestroyHeight",
             "ambient" => "Ambient",
+            "fogcolor" => "FogColor",
+            "fogstart" => "FogStart",
+            "fogend" => "FogEnd",
             "clocktime" => "ClockTime",
             "globalshadows" => "GlobalShadows",
             "automanagecharacter" => "AutoManageCharacter",
+            "touchesusecollisiongroups" => "TouchesUseCollisionGroups",
             "character" => "Character",
             "team" => "Team",
             "teamcolor" => "TeamColor",
@@ -6772,6 +6994,8 @@ public sealed class LuaXRuntime
             "usejumppower" => "UseJumpPower",
             "autorotate" => "AutoRotate",
             "sit" => "Sit",
+            "movedirection" => "MoveDirection",
+            "floormaterial" => "FloorMaterial",
             "characterwalkspeed" => "CharacterWalkSpeed",
             "characterjumppower" => "CharacterJumpPower",
             "characterjumpheight" => "CharacterJumpHeight",
@@ -6833,6 +7057,8 @@ public sealed class LuaXRuntime
             "bottomleftradius" => "BottomLeftRadius",
             "strokecolor" => "StrokeColor",
             "strokethickness" => "StrokeThickness",
+            "applystrokemode" => "ApplyStrokeMode",
+            "linejoinmode" => "LineJoinMode",
             "textsize" => "TextSize",
             "layoutspacing" => "LayoutSpacing",
             "tablecolumns" => "TableColumns",
@@ -6884,6 +7110,15 @@ public sealed class LuaXRuntime
     private DynValue SetPropertyValue(SceneNode node, string property, DynValue value)
     {
         var normalized = property.ToLowerInvariant();
+        if (node.Type == "UIStroke" && normalized == "thickness")
+        {
+            if (value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+            node.StrokeThickness = (float)Math.Clamp(value.Number, 0, 100);
+            var currentThickness = DynValue.NewNumber(node.StrokeThickness);
+            if (instances.TryGetValue(node.Id, out var strokeInstance)) strokeInstance.Set("Thickness", currentThickness);
+            NotifyPropertyChanged(node, "Thickness", currentThickness);
+            return DynValue.Nil;
+        }
         var tracksPartTransforms = SceneNodeTypes.IsBasePart(node) || node.Type == "Model";
         var priorPosition = tracksPartTransforms && normalized == "position"
             ? node.Type == "Model" ? SceneModelService.GetPivot(node) : (float[])node.Position.Clone()
@@ -7711,6 +7946,7 @@ public sealed class LuaXRuntime
                         node.StartColor = normalizedGradientColors[0].Value;
                         node.EndColor = normalizedGradientColors[^1].Value;
                     }
+                    else if (node.Type == "UIStroke") node.StrokeColor = ReadColor(value, node.StrokeColor);
                     else if (SceneNodeTypes.IsSurfaceAppearance(node)) node.SurfaceAppearanceColor = ReadColor(value, node.SurfaceAppearanceColor);
                     else node.Color = ReadColor(value, node.Color);
                     break;
@@ -7818,9 +8054,18 @@ public sealed class LuaXRuntime
                     node.CanvasPosition = canvasPosition.Select(component => float.IsFinite(component) ? Math.Clamp(component, 0, 1000000) : 0).ToArray();
                     break;
                 case "canvassize":
-                    if (node.Type != "ScrollingFrame" || !TryReadUDim2(value, out var canvasSizeScale, out var canvasSize)) return DynValue.Nil;
-                    node.CanvasSizeScale = canvasSizeScale.Select(component => float.IsFinite(component) ? Math.Clamp(component, 0, 100) : 0).ToArray();
-                    node.CanvasSize = canvasSize.Select(component => float.IsFinite(component) ? Math.Clamp(component, 0, 1000000) : 0).ToArray();
+                    if (node.Type == "SurfaceGui" && TryReadVector2(value, out var surfaceCanvasSize))
+                        node.SurfaceGuiCanvasSize = surfaceCanvasSize.Select(component => Math.Clamp(component, 1, 1000000)).ToArray();
+                    else if (node.Type == "ScrollingFrame" && TryReadUDim2(value, out var canvasSizeScale, out var canvasSize))
+                    {
+                        node.CanvasSizeScale = canvasSizeScale.Select(component => float.IsFinite(component) ? Math.Clamp(component, 0, 100) : 0).ToArray();
+                        node.CanvasSize = canvasSize.Select(component => float.IsFinite(component) ? Math.Clamp(component, 0, 1000000) : 0).ToArray();
+                    }
+                    else return DynValue.Nil;
+                    break;
+                case "sizingmode":
+                    if (node.Type != "SurfaceGui" || value.CastToString() is not ("PixelsPerStud" or "FixedSize")) return DynValue.Nil;
+                    node.SurfaceGuiSizingMode = value.String;
                     break;
                 case "scrollbarthickness":
                     if (node.Type != "ScrollingFrame" || value.Type != DataType.Number || !double.IsFinite(value.Number) || value.Number != Math.Truncate(value.Number)) return DynValue.Nil;
@@ -7911,7 +8156,7 @@ public sealed class LuaXRuntime
                     }
                     else
                     {
-                        if ((!IsBasePart(node) && node.Type is not ("Decal" or "Texture" or "Beam" or "SelectionBox" or "SelectionSphere" or "UIShadow")) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                        if ((!IsBasePart(node) && node.Type is not ("Decal" or "Texture" or "Beam" or "SelectionBox" or "SelectionSphere" or "UIShadow" or "UIStroke")) || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                         node.Transparency = (float)Math.Clamp(value.Number, 0, 1);
                     }
                     break;
@@ -8110,6 +8355,10 @@ public sealed class LuaXRuntime
                     if (node.Type != "SurfaceGui" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.PixelsPerStud = (float)Math.Clamp(value.Number, 1, 1000);
                     break;
+                case "zoffset":
+                    if (node.Type != "SurfaceGui" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.SurfaceGuiZOffset = (float)Math.Clamp(value.Number, -1000, 1000);
+                    break;
                 case "volume":
                     if (node.Type is not ("Sound" or "SoundGroup" or "SoundService" or "VideoFrame") || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     if (node.Type == "SoundGroup") node.SoundGroupVolume = (float)Math.Clamp(value.Number, 0, 1);
@@ -8245,7 +8494,17 @@ public sealed class LuaXRuntime
                     break;
                 case "anchored": if (!IsBasePart(node)) return DynValue.Nil; node.Anchored = value.CastToBool(); break;
                 case "massless": if (!IsBasePart(node) || value.Type != DataType.Boolean) return DynValue.Nil; node.Massless = value.Boolean; break;
+                case "customphysicalproperties":
+                    if (!IsBasePart(node)) return DynValue.Nil;
+                    if (value.IsNil()) node.CustomPhysicalProperties = null;
+                    else if (TryReadPhysicalProperties(value, out var physicalProperties)) node.CustomPhysicalProperties = physicalProperties;
+                    else return DynValue.Nil;
+                    break;
                 case "cancollide": if (!IsBasePart(node)) return DynValue.Nil; node.CanCollide = value.CastToBool(); break;
+                case "collisiongroup":
+                    if (!IsBasePart(node) || value.Type != DataType.String || !GameProjectStore.IsCollisionGroupRegistered(project, value.String)) return DynValue.Nil;
+                    node.CollisionGroup = value.String;
+                    break;
                 case "cantouch":
                     if (!IsBasePart(node) || value.Type != DataType.Boolean) return DynValue.Nil;
                     if (node.CanTouch && !value.Boolean) DisconnectTouchSignals(node.Id);
@@ -8278,6 +8537,18 @@ public sealed class LuaXRuntime
                     if (node.Type != "Lighting" || value.Type != DataType.Table || !IsTypedValue(value, "Color3")) return DynValue.Nil;
                     node.Ambient = ReadColor(value, node.Ambient);
                     break;
+                case "fogcolor":
+                    if (node.Type != "Lighting" || value.Type != DataType.Table || !IsTypedValue(value, "Color3")) return DynValue.Nil;
+                    node.FogColor = ReadColor(value, node.FogColor);
+                    break;
+                case "fogstart":
+                    if (node.Type != "Lighting" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.FogStart = (float)Math.Clamp(value.Number, 0, Math.Min(999999, node.FogEnd - 1));
+                    break;
+                case "fogend":
+                    if (node.Type != "Lighting" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
+                    node.FogEnd = (float)Math.Clamp(value.Number, node.FogStart + 1, 1000000);
+                    break;
                 case "clocktime":
                     if (node.Type != "Lighting" || value.Type != DataType.Number || !double.IsFinite(value.Number)) return DynValue.Nil;
                     node.ClockTime = (float)Math.Clamp(value.Number, 0, 24);
@@ -8289,6 +8560,10 @@ public sealed class LuaXRuntime
                 case "automanagecharacter":
                     if (node.Type != "Workspace" || value.Type != DataType.Boolean) return DynValue.Nil;
                     node.AutoManageCharacter = value.Boolean;
+                    break;
+                case "touchesusecollisiongroups":
+                    if (node.Type != "Workspace" || value.Type != DataType.Boolean) return DynValue.Nil;
+                    node.TouchesUseCollisionGroups = value.Boolean;
                     break;
                 case "character":
                     if (node.Type != "Player") return DynValue.Nil;
@@ -8419,7 +8694,21 @@ public sealed class LuaXRuntime
                 case "cameramode":
                 case "mode":
                 case "tilemode":
+                case "applystrokemode":
+                case "linejoinmode":
                 case "type":
+                    if (node.Type == "UIStroke" && normalized == "applystrokemode")
+                    {
+                        if (value.Type != DataType.String || value.String is not ("Contextual" or "Border")) return DynValue.Nil;
+                        node.StrokeApplyMode = value.String;
+                        break;
+                    }
+                    if (node.Type == "UIStroke" && normalized == "linejoinmode")
+                    {
+                        if (value.Type != DataType.String || value.String is not ("Round" or "Bevel" or "Miter")) return DynValue.Nil;
+                        node.StrokeLineJoinMode = value.String;
+                        break;
+                    }
                     if (node.Type == "UIGradient" && normalized == "tilemode")
                     {
                         if (value.Type != DataType.String || value.String is not ("Clamp" or "Repeat" or "Mirror")) return DynValue.Nil;
@@ -8651,6 +8940,9 @@ public sealed class LuaXRuntime
         if (instances.TryGetValue(node.Id, out var instance))
         {
             if (node.Type == "Lighting" && normalized == "ambient") instance.Set("Ambient", ColorValue(node.Ambient));
+            else if (node.Type == "Lighting" && normalized == "fogcolor") instance.Set("FogColor", ColorValue(node.FogColor));
+            else if (node.Type == "Lighting" && normalized == "fogstart") instance.Set("FogStart", DynValue.NewNumber(node.FogStart));
+            else if (node.Type == "Lighting" && normalized == "fogend") instance.Set("FogEnd", DynValue.NewNumber(node.FogEnd));
             else if (node.Type == "Lighting" && normalized == "brightness") instance.Set("Brightness", DynValue.NewNumber(node.Brightness));
             else if (node.Type == "Lighting" && normalized == "clocktime") instance.Set("ClockTime", DynValue.NewNumber(node.ClockTime));
             else if (node.Type == "Lighting" && normalized == "globalshadows") instance.Set("GlobalShadows", DynValue.NewBoolean(project.Settings.Shadows));
@@ -8867,6 +9159,78 @@ public sealed class LuaXRuntime
     private bool IsHumanoidSeated(SceneNode humanoid) =>
         humanoid.Type == "Humanoid" && KnownNodes().Any(node => (node.Type is "Seat" or "VehicleSeat") && node.Occupant == humanoid.Id);
 
+    private string GetHumanoidStateName(SceneNode humanoid)
+    {
+        if (humanoid.Health <= 0) return "Dead";
+        if (IsHumanoidSeated(humanoid)) return "Seated";
+        if (humanoid.Jump) return "Jumping";
+        if (!TryGetHumanoidRoot(humanoid, out var root)) return "PlatformStanding";
+        if (root.Velocity[1] > .5f) return "Jumping";
+        if (root.Velocity[1] < -.5f) return "Freefall";
+        var grounded = root.Anchored || GetHumanoidFloorPart(humanoid) is not null;
+        if (!grounded) return "Freefall";
+        var previous = humanoidStates.GetValueOrDefault(humanoid.Id);
+        if (previous is "Freefall" or "Jumping") return "Landed";
+        return "Running";
+    }
+
+    private Vector3 GetHumanoidMoveDirection(SceneNode humanoid)
+    {
+        if (!TryGetHumanoidRoot(humanoid, out var root)) return Vector3.Zero;
+        Vector3 direction;
+        if (humanoidMoveTargets.TryGetValue(humanoid.Id, out var target))
+        {
+            var destination = target.Position;
+            direction = new Vector3(destination.X - root.Position[0], 0, destination.Z - root.Position[2]);
+        }
+        else direction = new Vector3(root.Velocity[0], 0, root.Velocity[2]);
+        return direction.LengthSquared() > .0001f ? Vector3.Normalize(direction) : Vector3.Zero;
+    }
+
+    private string GetHumanoidFloorMaterial(SceneNode humanoid)
+    {
+        var floor = GetHumanoidFloorPart(humanoid);
+        return floor is not null && SceneNodeTypes.IsMaterial(floor.Material) ? floor.Material : "Air";
+    }
+
+    private SceneNode? GetHumanoidFloorPart(SceneNode humanoid)
+    {
+        if (!TryGetHumanoidRoot(humanoid, out var root)) return null;
+        var model = FindParentNode(humanoid);
+        while (model is not null && model.Type != "Model") model = FindParentNode(model);
+        var characterPartIds = model is null ? new HashSet<string>(StringComparer.Ordinal) { root.Id }
+            : GameProjectStore.Flatten(model.Children).Where(SceneNodeTypes.IsBasePart).Select(part => part.Id).ToHashSet(StringComparer.Ordinal);
+        return Parts.Where(other => !characterPartIds.Contains(other.Id) && other.CanCollide && root.CanCollide
+                && GameProjectStore.CanCollisionGroupsCollide(project, root.CollisionGroup, other.CollisionGroup)
+                && CollisionGeometry.SweepFraction(root, other, 1, -.08f) < 1)
+            .OrderBy(other => Vector3.DistanceSquared(new(root.Position[0], root.Position[1], root.Position[2]),
+                new(other.Position[0], other.Position[1], other.Position[2])))
+            .FirstOrDefault();
+    }
+
+    private void UpdateHumanoidStates()
+    {
+        foreach (var humanoid in KnownNodes().Where(node => node.Type == "Humanoid"))
+        {
+            var state = GetHumanoidStateName(humanoid);
+            if (instances.TryGetValue(humanoid.Id, out var humanoidInstance))
+            {
+                humanoidInstance.Set("MoveDirection", VectorValue(VectorArray(GetHumanoidMoveDirection(humanoid))));
+                humanoidInstance.Set("FloorMaterial", DynValue.NewString(GetHumanoidFloorMaterial(humanoid)));
+            }
+            if (!humanoidStates.TryGetValue(humanoid.Id, out var previous))
+            {
+                humanoidStates[humanoid.Id] = state;
+                continue;
+            }
+            if (previous == state) continue;
+            humanoidStates[humanoid.Id] = state;
+            if (instances.TryGetValue(humanoid.Id, out var instance)) instance.Set("State", DynValue.NewString(state));
+            if (humanoidStateChangedCallbacks.TryGetValue(humanoid.Id, out var callbacks))
+                foreach (var callback in callbacks.ToArray()) StartCallback(callback, DynValue.NewString(previous), DynValue.NewString(state));
+        }
+    }
+
     private void SetHumanoidSitState(SceneNode humanoid, bool sit)
     {
         if (humanoid.Type != "Humanoid" || sit == IsHumanoidSeated(humanoid)) return;
@@ -9072,6 +9436,12 @@ public sealed class LuaXRuntime
 
     private DynValue GetPropertyValue(SceneNode node, string property)
     {
+        if (node.Type == "UIStroke")
+        {
+            if (property.Equals("Thickness", StringComparison.OrdinalIgnoreCase)) return DynValue.NewNumber(node.StrokeThickness);
+            if (property.Equals("ApplyStrokeMode", StringComparison.OrdinalIgnoreCase)) return DynValue.NewString(node.StrokeApplyMode);
+            if (property.Equals("LineJoinMode", StringComparison.OrdinalIgnoreCase)) return DynValue.NewString(node.StrokeLineJoinMode);
+        }
         if (node.Type == "Players" && property.Equals("LocalPlayer", StringComparison.OrdinalIgnoreCase))
             return GetLocalPlayerValue();
         if (node.Type == "BindableFunction" && property.Equals("OnInvoke", StringComparison.OrdinalIgnoreCase))
@@ -9463,12 +9833,18 @@ public sealed class LuaXRuntime
             var pendingLighting = lightingInstance.Get(property.ToLowerInvariant() switch
             {
                 "ambient" => "Ambient",
+                "fogcolor" => "FogColor",
+                "fogstart" => "FogStart",
+                "fogend" => "FogEnd",
                 "brightness" => "Brightness",
                 "clocktime" => "ClockTime",
                 "globalshadows" => "GlobalShadows",
                 _ => property
             });
             if (property.Equals("Ambient", StringComparison.OrdinalIgnoreCase) && IsTypedValue(pendingLighting, "Color3")) return pendingLighting;
+            if (property.Equals("FogColor", StringComparison.OrdinalIgnoreCase) && IsTypedValue(pendingLighting, "Color3")) return pendingLighting;
+            if (property.Equals("FogStart", StringComparison.OrdinalIgnoreCase) && pendingLighting.Type == DataType.Number && double.IsFinite(pendingLighting.Number)) return pendingLighting;
+            if (property.Equals("FogEnd", StringComparison.OrdinalIgnoreCase) && pendingLighting.Type == DataType.Number && double.IsFinite(pendingLighting.Number)) return pendingLighting;
             if (property.Equals("Brightness", StringComparison.OrdinalIgnoreCase) && pendingLighting.Type == DataType.Number && double.IsFinite(pendingLighting.Number)) return pendingLighting;
             if (property.Equals("ClockTime", StringComparison.OrdinalIgnoreCase) && pendingLighting.Type == DataType.Number && double.IsFinite(pendingLighting.Number)) return pendingLighting;
             if (property.Equals("GlobalShadows", StringComparison.OrdinalIgnoreCase) && pendingLighting.Type == DataType.Boolean) return pendingLighting;
@@ -9505,7 +9881,7 @@ public sealed class LuaXRuntime
         "worldaxis" => GetAttachmentWorldAxisValue(node, Vector3.UnitX),
         "worldsecondaryaxis" => GetAttachmentWorldAxisValue(node, Vector3.UnitY),
         "size" => !HasSizeProperty(node) ? DynValue.Nil : SceneNodeTypes.IsSizedParticleEffect(node) || SceneNodeTypes.IsPostEffect(node) ? DynValue.NewNumber(node.EffectSize) : IsGuiObject(node) || node.Type == "BillboardGui" ? CreateUDim2Value(node.SizeScale, node.Size) : VectorValue(node.Size),
-        "color" => node.Type == "UIGradient" ? ColorSequenceValue(node.ColorSequence.Count >= 2 ? node.ColorSequence : [new(0, node.StartColor), new(1, node.EndColor)]) : ColorValue(SceneNodeTypes.IsSurfaceAppearance(node) ? node.SurfaceAppearanceColor : node.Color),
+        "color" => node.Type == "UIGradient" ? ColorSequenceValue(node.ColorSequence.Count >= 2 ? node.ColorSequence : [new(0, node.StartColor), new(1, node.EndColor)]) : ColorValue(node.Type == "UIStroke" ? node.StrokeColor : SceneNodeTypes.IsSurfaceAppearance(node) ? node.SurfaceAppearanceColor : node.Color),
         "tintcolor" => node.Type == "ColorCorrectionEffect" ? ColorValue(node.TintColor) : DynValue.Nil,
         "contrast" => node.Type == "ColorCorrectionEffect" ? DynValue.NewNumber(node.ColorCorrectionContrast) : DynValue.Nil,
         "saturation" => node.Type == "ColorCorrectionEffect" ? DynValue.NewNumber(node.ColorCorrectionSaturation) : DynValue.Nil,
@@ -9542,7 +9918,7 @@ public sealed class LuaXRuntime
         "cellsize" => node.Type == "UIGridLayout" ? CreateUDim2Value(node.CellSizeScale, node.CellSize) : DynValue.Nil,
         "cellpadding" => node.Type == "UIGridLayout" ? CreateUDim2Value(node.CellPaddingScale, node.CellPadding) : DynValue.Nil,
         "canvasposition" => node.Type == "ScrollingFrame" ? Vector2Value(node.CanvasPosition) : DynValue.Nil,
-        "canvassize" => node.Type == "ScrollingFrame" ? CreateUDim2Value(node.CanvasSizeScale, node.CanvasSize) : DynValue.Nil,
+        "canvassize" => node.Type == "SurfaceGui" ? Vector2Value(node.SurfaceGuiCanvasSize) : node.Type == "ScrollingFrame" ? CreateUDim2Value(node.CanvasSizeScale, node.CanvasSize) : DynValue.Nil,
         "scrollbarthickness" => node.Type == "ScrollingFrame" ? DynValue.NewNumber(node.ScrollBarThickness) : DynValue.Nil,
         "scrollingenabled" => node.Type == "ScrollingFrame" ? DynValue.NewBoolean(node.ScrollingEnabled) : DynValue.Nil,
         "scrollingdirection" => node.Type == "ScrollingFrame" ? DynValue.NewString(node.ScrollingDirection) : DynValue.Nil,
@@ -9559,7 +9935,7 @@ public sealed class LuaXRuntime
         "offsetstudsu" => node.Type == "Texture" ? DynValue.NewNumber(node.OffsetStudsU) : DynValue.Nil,
         "offsetstudsv" => node.Type == "Texture" ? DynValue.NewNumber(node.OffsetStudsV) : DynValue.Nil,
         "material" => IsBasePart(node) ? DynValue.NewString(node.Material) : DynValue.Nil,
-        "transparency" => node.Type == "UIGradient" ? NumberSequenceValue(node.TransparencySequence.Count >= 2 ? node.TransparencySequence : [new(0, node.Transparency), new(1, node.Transparency)]) : IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam" or "SelectionBox" or "SelectionSphere" or "UIShadow" ? DynValue.NewNumber(node.Transparency) : DynValue.Nil,
+        "transparency" => node.Type == "UIGradient" ? NumberSequenceValue(node.TransparencySequence.Count >= 2 ? node.TransparencySequence : [new(0, node.Transparency), new(1, node.Transparency)]) : IsBasePart(node) || node.Type is "Decal" or "Texture" or "Beam" or "SelectionBox" or "SelectionSphere" or "UIShadow" or "UIStroke" ? DynValue.NewNumber(node.Transparency) : DynValue.Nil,
         "backgroundtransparency" => IsGuiObject(node) ? DynValue.NewNumber(node.BackgroundTransparency) : DynValue.Nil,
         "bordercolor3" => IsGuiObject(node) ? ColorValue(node.BorderColor3) : DynValue.Nil,
         "bordersizepixel" => IsGuiObject(node) ? DynValue.NewNumber(node.BorderSizePixel) : DynValue.Nil,
@@ -9593,6 +9969,8 @@ public sealed class LuaXRuntime
         "studsoffset" => node.Type == "BillboardGui" ? VectorValue(node.StudsOffset) : DynValue.Nil,
         "studsoffsetworldspace" => node.Type == "BillboardGui" ? VectorValue(node.StudsOffsetWorldSpace) : DynValue.Nil,
         "pixelsperstud" => node.Type == "SurfaceGui" ? DynValue.NewNumber(node.PixelsPerStud) : DynValue.Nil,
+        "sizingmode" => node.Type == "SurfaceGui" ? DynValue.NewString(node.SurfaceGuiSizingMode) : DynValue.Nil,
+        "zoffset" => node.Type == "SurfaceGui" ? DynValue.NewNumber(node.SurfaceGuiZOffset) : DynValue.Nil,
         "brightness" => node.Type is "Lighting" or "ColorCorrectionEffect" || SceneNodeTypes.IsLight(node) ? DynValue.NewNumber(node.Brightness) : DynValue.Nil,
         "range" => SceneNodeTypes.IsLight(node) ? DynValue.NewNumber(node.Range) : DynValue.Nil,
         "heat" => node.Type == "Fire" ? DynValue.NewNumber(node.Heat) : DynValue.Nil,
@@ -9663,7 +10041,11 @@ public sealed class LuaXRuntime
         "layoutorder" => IsGuiObject(node) ? DynValue.NewNumber(node.LayoutOrder) : DynValue.Nil,
         "anchored" => IsBasePart(node) ? DynValue.NewBoolean(node.Anchored) : DynValue.Nil,
         "massless" => IsBasePart(node) ? DynValue.NewBoolean(node.Massless) : DynValue.Nil,
+        "mass" => IsBasePart(node) ? DynValue.NewNumber(PhysicsSimulationService.PartMass(node)) : DynValue.Nil,
+        "currentphysicalproperties" => IsBasePart(node) ? PhysicalPropertiesValue(PhysicalPropertiesService.Get(node)) : DynValue.Nil,
+        "customphysicalproperties" => IsBasePart(node) && node.CustomPhysicalProperties is { } customPhysicalProperties ? PhysicalPropertiesValue(customPhysicalProperties) : DynValue.Nil,
         "cancollide" => IsBasePart(node) ? DynValue.NewBoolean(node.CanCollide) : DynValue.Nil,
+        "collisiongroup" => IsBasePart(node) ? DynValue.NewString(node.CollisionGroup) : DynValue.Nil,
         "cantouch" => IsBasePart(node) ? DynValue.NewBoolean(node.CanTouch) : DynValue.Nil,
         "canquery" => IsBasePart(node) ? DynValue.NewBoolean(node.CanQuery) : DynValue.Nil,
         "velocity" or "assemblylinearvelocity" => IsBasePart(node) ? VectorValue(node.Velocity) : DynValue.Nil,
@@ -9675,9 +10057,13 @@ public sealed class LuaXRuntime
         "fallenpartsdestroyheight" => node.Type == "Workspace" ? DynValue.NewNumber(node.FallenPartsDestroyHeight) : DynValue.Nil,
         "currentcamera" => node.Type == "Workspace" ? GetCurrentCameraReference() : node.Type == "ViewportFrame" ? GetObjectValueReference(node.ViewportCurrentCameraId) : DynValue.Nil,
         "ambient" => node.Type == "Lighting" ? ColorValue(node.Ambient) : DynValue.Nil,
+        "fogcolor" => node.Type == "Lighting" ? ColorValue(node.FogColor) : DynValue.Nil,
+        "fogstart" => node.Type == "Lighting" ? DynValue.NewNumber(node.FogStart) : DynValue.Nil,
+        "fogend" => node.Type == "Lighting" ? DynValue.NewNumber(node.FogEnd) : DynValue.Nil,
         "clocktime" => node.Type == "Lighting" ? DynValue.NewNumber(node.ClockTime) : DynValue.Nil,
         "globalshadows" => node.Type == "Lighting" ? DynValue.NewBoolean(project.Settings.Shadows) : DynValue.Nil,
         "automanagecharacter" => node.Type == "Workspace" ? DynValue.NewBoolean(node.AutoManageCharacter) : DynValue.Nil,
+        "touchesusecollisiongroups" => node.Type == "Workspace" ? DynValue.NewBoolean(node.TouchesUseCollisionGroups) : DynValue.Nil,
         "character" => GetCharacterValue(node),
         "team" => GetTeamValue(node),
         "teamcolor" => node.Type is "Team" or "SpawnLocation" ? ColorValue(node.TeamColor) : node.Type == "Player" ? ColorValue(FindNode(node.Team)?.TeamColor ?? "#FFFFFF") : DynValue.Nil,
@@ -9705,6 +10091,8 @@ public sealed class LuaXRuntime
         "usejumppower" => node.Type == "Humanoid" ? DynValue.NewBoolean(node.UseJumpPower) : DynValue.Nil,
         "autorotate" => node.Type == "Humanoid" ? DynValue.NewBoolean(node.AutoRotate) : DynValue.Nil,
         "sit" => node.Type == "Humanoid" ? DynValue.NewBoolean(IsHumanoidSeated(node)) : DynValue.Nil,
+        "movedirection" => node.Type == "Humanoid" ? VectorValue(VectorArray(GetHumanoidMoveDirection(node))) : DynValue.Nil,
+        "floormaterial" => node.Type == "Humanoid" ? DynValue.NewString(GetHumanoidFloorMaterial(node)) : DynValue.Nil,
         "characterwalkspeed" => node.Type == "StarterPlayer" ? DynValue.NewNumber(node.WalkSpeed) : DynValue.Nil,
         "characterjumppower" => node.Type == "StarterPlayer" ? DynValue.NewNumber(node.JumpPower) : DynValue.Nil,
         "characterjumpheight" => node.Type == "StarterPlayer" ? DynValue.NewNumber(node.JumpHeight) : DynValue.Nil,
@@ -10680,6 +11068,23 @@ public sealed class LuaXRuntime
                 if (instance.Get("Type").Type == DataType.String && instance.Get("Type").String is "Linear" or "Radial" or "Conical" or "Elliptical")
                     Assign(node, "Type", node.GradientType, instance.Get("Type").String, value => node.GradientType = value);
             }
+            if (node.Type == "UIStroke")
+            {
+                Assign(node, "Color", node.StrokeColor, ReadColor(instance.Get("Color"), node.StrokeColor), value => node.StrokeColor = value);
+                if (instance.Get("Thickness").Type == DataType.Number && double.IsFinite(instance.Get("Thickness").Number))
+                    Assign(node, "Thickness", node.StrokeThickness, (float)Math.Clamp(instance.Get("Thickness").Number, 0, 100), value => node.StrokeThickness = value);
+                if (instance.Get("Transparency").Type == DataType.Number && double.IsFinite(instance.Get("Transparency").Number))
+                    Assign(node, "Transparency", node.Transparency, (float)Math.Clamp(instance.Get("Transparency").Number, 0, 1), value => node.Transparency = value);
+                if (instance.Get("ApplyStrokeMode").Type == DataType.String && instance.Get("ApplyStrokeMode").String is "Contextual" or "Border")
+                    Assign(node, "ApplyStrokeMode", node.StrokeApplyMode, instance.Get("ApplyStrokeMode").String, value => node.StrokeApplyMode = value);
+                if (instance.Get("LineJoinMode").Type == DataType.String && instance.Get("LineJoinMode").String is "Round" or "Bevel" or "Miter")
+                    Assign(node, "LineJoinMode", node.StrokeLineJoinMode, instance.Get("LineJoinMode").String, value => node.StrokeLineJoinMode = value);
+                instance.Set("Color", ColorValue(node.StrokeColor));
+                instance.Set("Thickness", DynValue.NewNumber(node.StrokeThickness));
+                instance.Set("Transparency", DynValue.NewNumber(node.Transparency));
+                instance.Set("ApplyStrokeMode", DynValue.NewString(node.StrokeApplyMode));
+                instance.Set("LineJoinMode", DynValue.NewString(node.StrokeLineJoinMode));
+            }
             if (node.Type == "UIPadding")
             {
                 if (TryReadUDim(instance.Get("PaddingLeft"), out var left) && !node.PaddingLeft.SequenceEqual(left)) { node.PaddingLeft = left; MarkChanged(node, "PaddingLeft"); }
@@ -10836,6 +11241,11 @@ public sealed class LuaXRuntime
             if (node.Type == "Lighting")
             {
                 Assign(node, "Ambient", node.Ambient, ReadColor(instance.Get("Ambient"), node.Ambient), value => node.Ambient = value);
+                Assign(node, "FogColor", node.FogColor, ReadColor(instance.Get("FogColor"), node.FogColor), value => node.FogColor = value);
+                if (instance.Get("FogStart").Type == DataType.Number && double.IsFinite(instance.Get("FogStart").Number))
+                    Assign(node, "FogStart", node.FogStart, (float)Math.Clamp(instance.Get("FogStart").Number, 0, Math.Min(999999, node.FogEnd - 1)), value => node.FogStart = value);
+                if (instance.Get("FogEnd").Type == DataType.Number && double.IsFinite(instance.Get("FogEnd").Number))
+                    Assign(node, "FogEnd", node.FogEnd, (float)Math.Clamp(instance.Get("FogEnd").Number, node.FogStart + 1, 1000000), value => node.FogEnd = value);
                 if (instance.Get("ClockTime").Type == DataType.Number && double.IsFinite(instance.Get("ClockTime").Number))
                     Assign(node, "ClockTime", node.ClockTime, (float)Math.Clamp(instance.Get("ClockTime").Number, 0, 24), value => node.ClockTime = value);
                 if (instance.Get("GlobalShadows").Type == DataType.Boolean)
@@ -10918,6 +11328,19 @@ public sealed class LuaXRuntime
                     Assign(node, "MaxDistance", node.MaxDistance, (float)Math.Clamp(instance.Get("MaxDistance").Number, 0, 100000), value => node.MaxDistance = value);
                 if (node.Type == "SurfaceGui" && instance.Get("PixelsPerStud").Type == DataType.Number && double.IsFinite(instance.Get("PixelsPerStud").Number))
                     Assign(node, "PixelsPerStud", node.PixelsPerStud, (float)Math.Clamp(instance.Get("PixelsPerStud").Number, 1, 1000), value => node.PixelsPerStud = value);
+                if (node.Type == "SurfaceGui" && TryReadVector2(instance.Get("CanvasSize"), out var surfaceCanvasSize))
+                {
+                    var nextSurfaceCanvasSize = surfaceCanvasSize.Select(value => Math.Clamp(value, 1, 1000000)).ToArray();
+                    if (!node.SurfaceGuiCanvasSize.SequenceEqual(nextSurfaceCanvasSize))
+                    {
+                        node.SurfaceGuiCanvasSize = nextSurfaceCanvasSize;
+                        MarkChanged(node, "CanvasSize");
+                    }
+                }
+                if (node.Type == "SurfaceGui" && instance.Get("SizingMode").CastToString() is ("PixelsPerStud" or "FixedSize"))
+                    Assign(node, "SizingMode", node.SurfaceGuiSizingMode, instance.Get("SizingMode").String, value => node.SurfaceGuiSizingMode = value);
+                if (node.Type == "SurfaceGui" && instance.Get("ZOffset").Type == DataType.Number && double.IsFinite(instance.Get("ZOffset").Number))
+                    Assign(node, "ZOffset", node.SurfaceGuiZOffset, (float)Math.Clamp(instance.Get("ZOffset").Number, -1000, 1000), value => node.SurfaceGuiZOffset = value);
             }
             if (node.Type == "Keyframe" && instance.Get("Time").Type == DataType.Number && double.IsFinite(instance.Get("Time").Number))
                 Assign(node, "Time", node.KeyframeTime, (float)Math.Clamp(instance.Get("Time").Number, 0, 60), value => node.KeyframeTime = value);
@@ -11943,7 +12366,42 @@ public sealed class LuaXRuntime
                 Assign(node, "Color3", node.ClothingColor3, ReadColor(instance.Get("Color3"), node.ClothingColor3), value => node.ClothingColor3 = value);
             if (instance.Get("Anchored").Type == DataType.Boolean) Assign(node, "Anchored", node.Anchored, instance.Get("Anchored").Boolean, value => node.Anchored = value);
             if (instance.Get("Massless").Type == DataType.Boolean) Assign(node, "Massless", node.Massless, instance.Get("Massless").Boolean, value => node.Massless = value);
+            if (instance.Get("CustomPhysicalProperties").IsNil())
+            {
+                if (node.CustomPhysicalProperties is not null)
+                {
+                    node.CustomPhysicalProperties = null;
+                    MarkChanged(node, "CustomPhysicalProperties");
+                }
+            }
+            else if (TryReadPhysicalProperties(instance.Get("CustomPhysicalProperties"), out var requestedPhysicalProperties))
+            {
+                var current = node.CustomPhysicalProperties;
+                if (current is null || current.Density != requestedPhysicalProperties.Density || current.Friction != requestedPhysicalProperties.Friction
+                    || current.Elasticity != requestedPhysicalProperties.Elasticity || current.FrictionWeight != requestedPhysicalProperties.FrictionWeight
+                    || current.ElasticityWeight != requestedPhysicalProperties.ElasticityWeight || current.AcousticAbsorption != requestedPhysicalProperties.AcousticAbsorption)
+                {
+                    node.CustomPhysicalProperties = requestedPhysicalProperties;
+                    MarkChanged(node, "CustomPhysicalProperties");
+                }
+            }
+            var currentPhysicalProperties = PhysicalPropertiesService.Get(node);
+            if (!TryReadPhysicalProperties(instance.Get("CurrentPhysicalProperties"), out var exposedPhysicalProperties)
+                || !PhysicalPropertiesEqual(exposedPhysicalProperties, currentPhysicalProperties))
+            {
+                MarkChanged(node, "CurrentPhysicalProperties");
+                instance.Set("CurrentPhysicalProperties", PhysicalPropertiesValue(currentPhysicalProperties));
+            }
+            var partMass = PhysicsSimulationService.PartMass(node);
+            if (instance.Get("Mass").Type != DataType.Number || instance.Get("Mass").Number != partMass)
+            {
+                MarkChanged(node, "Mass");
+                instance.Set("Mass", DynValue.NewNumber(partMass));
+            }
             if (instance.Get("CanCollide").Type == DataType.Boolean) Assign(node, "CanCollide", node.CanCollide, instance.Get("CanCollide").Boolean, value => node.CanCollide = value);
+            if (instance.Get("CollisionGroup").Type == DataType.String && GameProjectStore.IsCollisionGroupRegistered(project, instance.Get("CollisionGroup").String))
+                Assign(node, "CollisionGroup", node.CollisionGroup, instance.Get("CollisionGroup").String, value => node.CollisionGroup = value);
+            instance.Set("CollisionGroup", DynValue.NewString(node.CollisionGroup));
             if (instance.Get("CanTouch").Type == DataType.Boolean)
             {
                 var canTouch = instance.Get("CanTouch").Boolean;
@@ -11976,6 +12434,8 @@ public sealed class LuaXRuntime
                 Assign(node, "Gravity", node.Gravity, (float)Math.Clamp(instance.Get("Gravity").Number, 0, 1000), value => node.Gravity = value);
             if (node.Type == "Workspace" && instance.Get("AutoManageCharacter").Type == DataType.Boolean)
                 Assign(node, "AutoManageCharacter", node.AutoManageCharacter, instance.Get("AutoManageCharacter").Boolean, value => node.AutoManageCharacter = value);
+            if (node.Type == "Workspace" && instance.Get("TouchesUseCollisionGroups").Type == DataType.Boolean)
+                Assign(node, "TouchesUseCollisionGroups", node.TouchesUseCollisionGroups, instance.Get("TouchesUseCollisionGroups").Boolean, value => node.TouchesUseCollisionGroups = value);
             if (node.Type == "Tool")
             {
                 if (instance.Get("ToolTip").Type == DataType.String)
@@ -12510,6 +12970,8 @@ public sealed class LuaXRuntime
         return rectangle;
     }
 
+    private static float[] VectorArray(Vector3 vector) => [vector.X, vector.Y, vector.Z];
+
     private DynValue VectorValue(float[] values)
     {
         var table = new Table(script);
@@ -12586,6 +13048,75 @@ public sealed class LuaXRuntime
 
     private static int GetVectorMethodArgumentIndex(Table receiver, CallbackArguments args) =>
         args.Count > 0 && args[0].Type == DataType.Table && ReferenceEquals(args[0].Table, receiver) ? 1 : 0;
+
+    private DynValue CreatePhysicalProperties(CallbackArguments args)
+    {
+        if (args.Count == 1 && args[0].Type == DataType.String)
+        {
+            return PhysicalPropertiesValue(PhysicalPropertiesService.GetMaterialDefaults(args[0].String));
+        }
+
+        if (args.Count is not (3 or 5 or 6)) return DynValue.Nil;
+        var values = new float[args.Count];
+        for (var index = 0; index < args.Count; index++)
+        {
+            if (args[index].Type != DataType.Number || !double.IsFinite(args[index].Number)) return DynValue.Nil;
+            values[index] = (float)args[index].Number;
+        }
+        var properties = new PhysicalPropertiesData
+        {
+            Density = Math.Clamp(values[0], .0001f, 100),
+            Friction = Math.Clamp(values[1], 0, 2),
+            Elasticity = Math.Clamp(values[2], 0, 1),
+            FrictionWeight = args.Count >= 5 ? Math.Clamp(values[3], 0, 100) : 1,
+            ElasticityWeight = args.Count >= 5 ? Math.Clamp(values[4], 0, 100) : 1,
+            AcousticAbsorption = args.Count == 6 ? Math.Clamp(values[5], 0, 1) : .5f
+        };
+        return PhysicalPropertiesValue(properties);
+    }
+
+    private DynValue PhysicalPropertiesValue(PhysicalPropertiesData properties)
+    {
+        var value = new Table(script);
+        runtimeTypeTags.Add(value, new LuaXTypeTag("PhysicalProperties"));
+        value.Set("Density", DynValue.NewNumber(properties.Density));
+        value.Set("Friction", DynValue.NewNumber(properties.Friction));
+        value.Set("Elasticity", DynValue.NewNumber(properties.Elasticity));
+        value.Set("FrictionWeight", DynValue.NewNumber(properties.FrictionWeight));
+        value.Set("ElasticityWeight", DynValue.NewNumber(properties.ElasticityWeight));
+        value.Set("AcousticAbsorption", DynValue.NewNumber(properties.AcousticAbsorption));
+        value.ReadOnly = true;
+        return DynValue.NewTable(value);
+    }
+
+    private bool TryReadPhysicalProperties(DynValue value, out PhysicalPropertiesData properties)
+    {
+        properties = new PhysicalPropertiesData();
+        if (!IsTypedValue(value, "PhysicalProperties")) return false;
+        var fields = new[] { "Density", "Friction", "Elasticity", "FrictionWeight", "ElasticityWeight", "AcousticAbsorption" };
+        var values = new float[fields.Length];
+        for (var index = 0; index < fields.Length; index++)
+        {
+            var field = value.Table.Get(fields[index]);
+            if (field.Type != DataType.Number || !double.IsFinite(field.Number) || !float.IsFinite((float)field.Number)) return false;
+            values[index] = (float)field.Number;
+        }
+        properties = new PhysicalPropertiesData
+        {
+            Density = Math.Clamp(values[0], .0001f, 100),
+            Friction = Math.Clamp(values[1], 0, 2),
+            Elasticity = Math.Clamp(values[2], 0, 1),
+            FrictionWeight = Math.Clamp(values[3], 0, 100),
+            ElasticityWeight = Math.Clamp(values[4], 0, 100),
+            AcousticAbsorption = Math.Clamp(values[5], 0, 1)
+        };
+        return true;
+    }
+
+    private static bool PhysicalPropertiesEqual(PhysicalPropertiesData first, PhysicalPropertiesData second) =>
+        first.Density == second.Density && first.Friction == second.Friction && first.Elasticity == second.Elasticity
+        && first.FrictionWeight == second.FrictionWeight && first.ElasticityWeight == second.ElasticityWeight
+        && first.AcousticAbsorption == second.AcousticAbsorption;
 
     private DynValue CreateColor(float red, float green, float blue)
     {

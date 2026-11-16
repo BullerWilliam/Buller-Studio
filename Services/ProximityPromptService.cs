@@ -16,7 +16,9 @@ public static class ProximityPromptService
         var ignoredIds = new HashSet<string>(StringComparer.Ordinal) { playerRoot.Id };
         if (FindModelContaining(project.Workspace, playerRoot.Id) is { } character)
             foreach (var part in GameProjectStore.Flatten(character.Children).Where(SceneNodeTypes.IsBasePart)) ignoredIds.Add(part.Id);
-        var occluders = workspaceNodes.Where(node => SceneNodeTypes.IsBasePart(node) && node.CanQuery && !ignoredIds.Contains(node.Id)).ToArray();
+        var occluders = workspaceNodes.Where(node => SceneNodeTypes.IsBasePart(node) && node.CanQuery
+            && GameProjectStore.CanCollisionGroupsCollide(project, node.CollisionGroup, playerRoot.CollisionGroup)
+            && !ignoredIds.Contains(node.Id)).ToArray();
         foreach (var parent in workspaceNodes.Where(SceneNodeTypes.IsBasePart))
         foreach (var (prompt, attachmentPosition) in GetPrompts(parent))
         {

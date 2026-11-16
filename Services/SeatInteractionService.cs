@@ -38,6 +38,7 @@ public sealed class SeatInteractionService
     public IReadOnlyList<SceneNode> Sit(SceneNode targetSeat, SceneNode humanoid)
     {
         if (targetSeat.Type is not ("Seat" or "VehicleSeat") || !targetSeat.CanCollide
+            || !GameProjectStore.CanCollisionGroupsCollide(project, targetSeat.CollisionGroup, root.CollisionGroup)
             || targetSeat.VehicleSeatDisabled || humanoid.Id != this.humanoid.Id || this.humanoid.Health <= 0
             || !string.IsNullOrEmpty(targetSeat.Occupant) && targetSeat.Occupant != humanoid.Id
             || !GameProjectStore.Flatten(project.Workspace.Children).Any(node => ReferenceEquals(node, targetSeat))) return [];
@@ -176,7 +177,9 @@ public sealed class SeatInteractionService
         var stillPresent = GameProjectStore.Flatten(project.Workspace.Children).Any(node => ReferenceEquals(node, seat));
         var characterPresent = GameProjectStore.Flatten(project.Workspace.Children).Any(node => node.Id == root.Id)
             && GameProjectStore.Flatten(project.Workspace.Children).Any(node => node.Id == humanoid.Id);
-        if (stillPresent && characterPresent && seat.CanCollide && !seat.VehicleSeatDisabled && humanoid.Health > 0 && !jump) return [];
+        if (stillPresent && characterPresent && seat.CanCollide
+            && GameProjectStore.CanCollisionGroupsCollide(project, seat.CollisionGroup, root.CollisionGroup)
+            && !seat.VehicleSeatDisabled && humanoid.Health > 0 && !jump) return [];
 
         var oldSeat = seat;
         seat = null;
@@ -198,7 +201,9 @@ public sealed class SeatInteractionService
         {
             if (root.Velocity[1] > .01f) return [];
             seat = GameProjectStore.Flatten(project.Workspace.Children)
-                .Where(node => (node.Type is "Seat" or "VehicleSeat") && node.CanCollide && !node.VehicleSeatDisabled && (string.IsNullOrEmpty(node.Occupant) || node.Occupant == humanoid.Id))
+                .Where(node => (node.Type is "Seat" or "VehicleSeat") && node.CanCollide
+                    && GameProjectStore.CanCollisionGroupsCollide(project, node.CollisionGroup, root.CollisionGroup)
+                    && !node.VehicleSeatDisabled && (string.IsNullOrEmpty(node.Occupant) || node.Occupant == humanoid.Id))
                 .FirstOrDefault(node => CollisionGeometry.SweepFraction(root, node, 1, -.08f) < 1
                     && root.Position[1] >= node.Position[1]);
             if (seat is null) return [];

@@ -7,6 +7,8 @@ using System.Windows.Media.Imaging;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Media3D;
 using System.Windows.Input;
+using System.Text.Json;
+using MeshBuilder = HelixToolkit.SharpDX.Core.MeshBuilder;
 using Vector3 = System.Numerics.Vector3;
 using BullerStudio.Models;
 
@@ -99,8 +101,11 @@ public static class GuiRenderService
         {
             if (ResolveWorldGuiAdornee(project, surfaceGui) is not { } adornee || !TryGetSurfaceFrame(adornee, surfaceGui.Face, out var frame)) continue;
             var pixelsPerStud = Math.Clamp(surfaceGui.PixelsPerStud, 1, 1000);
-            var guiWidth = Math.Clamp(frame.Width * pixelsPerStud, 1, 4000);
-            var guiHeight = Math.Clamp(frame.Height * pixelsPerStud, 1, 4000);
+            var canvasSize = surfaceGui.SurfaceGuiSizingMode == "FixedSize"
+                ? surfaceGui.SurfaceGuiCanvasSize
+                : [frame.Width * pixelsPerStud, frame.Height * pixelsPerStud];
+            var guiWidth = Math.Clamp(canvasSize.ElementAtOrDefault(0), 1, 4000);
+            var guiHeight = Math.Clamp(canvasSize.ElementAtOrDefault(1), 1, 4000);
             var element = new Canvas
             {
                 Tag = surfaceGui,
@@ -112,7 +117,7 @@ public static class GuiRenderService
                 RenderTransformOrigin = new Point(.5, .5)
             };
             AddChildren(element, surfaceGui, project, guiWidth, guiHeight, selectedId, activated, textChanged, propertyChanged, dragSignal, mouseButtonSignal, textFocusSignal);
-            Panel.SetZIndex(element, surfaceGui.AlwaysOnTop ? int.MaxValue : int.MinValue + 1);
+            Panel.SetZIndex(element, SurfaceGuiRenderLayer(surfaceGui));
             canvas.Children.Add(element);
         }
         UpdateSurfaceGuiPositions(canvas, project, cameraPosition, lookDirection, upDirection, fieldOfView, width, height);
@@ -126,20 +131,26 @@ public static class GuiRenderService
         foreach (var visual in canvas.Children.OfType<Canvas>().Where(item => item.Tag is SceneNode { Type: "SurfaceGui" }))
         {
             var surfaceGui = (SceneNode)visual.Tag;
+            Panel.SetZIndex(visual, SurfaceGuiRenderLayer(surfaceGui));
             var adornee = ResolveWorldGuiAdornee(project, surfaceGui);
-            if (!surfaceGui.Enabled || adornee is null || !TryGetSurfaceFrame(adornee, surfaceGui.Face, out var frame)
-                || !TryProjectBillboard([frame.Center.X, frame.Center.Y, frame.Center.Z], cameraPosition, lookDirection,
-                    upDirection, fieldOfView, width, height, out var screenX, out var screenY, out var distance)
-                || surfaceGui.MaxDistance > 0 && distance > surfaceGui.MaxDistance
-                || Vector3.Dot(frame.Normal, cameraPosition - frame.Center) <= 0
-                || !surfaceGui.AlwaysOnTop && IsWorldGuiOccluded(project, adornee, frame.Center, cameraPosition))
+            if (!surfaceGui.Enabled || adornee is null || !TryGetSurfaceFrame(adornee, surfaceGui.Face, out var frame))
             {
                 visual.Visibility = Visibility.Collapsed;
                 continue;
             }
-            if (!TryProjectBillboard([frame.Center.X + frame.Right.X * frame.Width, frame.Center.Y + frame.Right.Y * frame.Width, frame.Center.Z + frame.Right.Z * frame.Width],
+            var surfaceCenter = frame.Center;
+            if (!TryProjectBillboard([surfaceCenter.X, surfaceCenter.Y, surfaceCenter.Z], cameraPosition, lookDirection,
+                    upDirection, fieldOfView, width, height, out var screenX, out var screenY, out var distance)
+                || surfaceGui.MaxDistance > 0 && distance > surfaceGui.MaxDistance
+                || Vector3.Dot(frame.Normal, cameraPosition - surfaceCenter) <= 0
+                || !surfaceGui.AlwaysOnTop && IsWorldGuiOccluded(project, adornee, surfaceCenter, cameraPosition))
+            {
+                visual.Visibility = Visibility.Collapsed;
+                continue;
+            }
+            if (!TryProjectBillboard([surfaceCenter.X + frame.Right.X * frame.Width, surfaceCenter.Y + frame.Right.Y * frame.Width, surfaceCenter.Z + frame.Right.Z * frame.Width],
                     cameraPosition, lookDirection, upDirection, fieldOfView, width, height, out var rightX, out var rightY, out _)
-                || !TryProjectBillboard([frame.Center.X + frame.Up.X * frame.Height, frame.Center.Y + frame.Up.Y * frame.Height, frame.Center.Z + frame.Up.Z * frame.Height],
+                || !TryProjectBillboard([surfaceCenter.X + frame.Up.X * frame.Height, surfaceCenter.Y + frame.Up.Y * frame.Height, surfaceCenter.Z + frame.Up.Z * frame.Height],
                     cameraPosition, lookDirection, upDirection, fieldOfView, width, height, out var upX, out var upY, out _))
             {
                 visual.Visibility = Visibility.Collapsed;
@@ -165,6 +176,12 @@ public static class GuiRenderService
             Canvas.SetLeft(visual, screenX - visual.Width / 2);
             Canvas.SetTop(visual, screenY - visual.Height / 2);
         }
+    }
+
+    private static int SurfaceGuiRenderLayer(SceneNode surfaceGui)
+    {
+        var offset = (int)Math.Clamp(Math.Round(surfaceGui.SurfaceGuiZOffset), -10000, 10000);
+        return surfaceGui.AlwaysOnTop ? int.MaxValue - 10000 + offset : int.MinValue + 10000 + offset;
     }
 
     private static SceneNode? ResolveWorldGuiAdornee(GameProject project, SceneNode gui)
@@ -377,8 +394,20 @@ public static class GuiRenderService
     private static FrameworkElement? CreateNode(SceneNode node, GameProject project, double width, double height, string? selectedId, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged, Action<SceneNode, string, double, double>? dragSignal, Action<SceneNode, string>? mouseButtonSignal, Action<SceneNode, string, bool>? textFocusSignal)
     {
         var rounded = node.Children.FirstOrDefault(child => child.Type == "UICorner");
-        var outline = node.Children.FirstOrDefault(child => child.Enabled && child.Type is ("UIOutline" or "UIStroke"));
+        var textNode = node.Type is "TextLabel" or "TextButton" or "TextBox";
+        var outline = node.Children.FirstOrDefault(child => child.Enabled
+            && (child.Type == "UIOutline" || child.Type == "UIStroke" && (!textNode || child.StrokeApplyMode == "Border")));
+        var textStrokes = node.Type is "TextLabel" or "TextButton" or "TextBox"
+            ? node.Children.Where(child => child.Enabled && child.Type == "UIStroke" && child.StrokeApplyMode == "Contextual").ToArray()
+            : [];
         var visualScale = GetScale(node);
+        var strokeBaseColor = outline is null
+            ? ColorFrom(node.BorderColor3, Colors.Black)
+            : WithTransparency(ColorFrom(outline.StrokeColor, Colors.White), outline.Type == "UIStroke" ? outline.Transparency : 0);
+        var strokeGradient = outline?.Type == "UIStroke" ? outline.Children.FirstOrDefault(child => child.Type == "UIGradient" && child.Enabled) : null;
+        Brush strokeBrush = outline is null
+            ? BrushFrom(node.BorderColor3, Brushes.Black)
+            : strokeGradient is null ? new SolidColorBrush(strokeBaseColor) : GradientBrush(strokeGradient, strokeBaseColor);
         var transform = new TransformGroup();
         transform.Children.Add(new ScaleTransform(visualScale, visualScale));
         transform.Children.Add(new RotateTransform(node.Rotation[2], width * visualScale * .5, height * visualScale * .5));
@@ -388,7 +417,7 @@ public static class GuiRenderService
             Width = width,
             Height = height,
             Background = Brushes.Transparent,
-            BorderBrush = outline is null ? BrushFrom(node.BorderColor3, Brushes.Black) : BrushFrom(outline.StrokeColor, Brushes.White),
+            BorderBrush = strokeBrush,
             BorderThickness = outline is null
                 ? new Thickness(node.BackgroundTransparency >= 1 ? 0 : Math.Clamp(node.BorderSizePixel, 0, 64))
                 : new Thickness(Math.Max(0, outline.StrokeThickness)),
@@ -399,7 +428,7 @@ public static class GuiRenderService
         if (node.Type == "UICanvasGroup") root.Opacity = 1 - Math.Clamp(node.GroupTransparency, 0, 1);
         var content = new Grid();
         root.Child = content;
-        var element = CreateVisual(node, project, width, height, activated, textChanged, propertyChanged, mouseButtonSignal, textFocusSignal);
+        var element = CreateVisual(node, project, width, height, activated, textChanged, propertyChanged, mouseButtonSignal, textFocusSignal, textStrokes);
         var textShadows = node.Children.Where(child => child.Type == "UIShadow" && child.Enabled && child.ShadowMode == "Text")
             .OrderBy(child => child.ZIndex).ToArray();
         if (textShadows.Length > 0 && parentSupportsTextShadow(node))
@@ -659,12 +688,15 @@ public static class GuiRenderService
         return visual;
     }
 
-    private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, double width, double height, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged, Action<SceneNode, string>? mouseButtonSignal, Action<SceneNode, string, bool>? textFocusSignal)
+    private static FrameworkElement? CreateVisual(SceneNode node, GameProject project, double width, double height, Action<SceneNode>? activated, Action<SceneNode, string>? textChanged, Action<SceneNode, string>? propertyChanged, Action<SceneNode, string>? mouseButtonSignal, Action<SceneNode, string, bool>? textFocusSignal, IReadOnlyList<SceneNode> textStrokes)
     {
         var background = BackgroundFor(node);
         var fontSize = FontSizeFor(node, width, height);
         if (node.Type == "TextBox")
         {
+            var textStroke = textStrokes.Count > 0
+                ? new StrokeTextVisual(node.Text, fontSize, Math.Max(1, width - 10), Math.Max(1, height - 8), node.MultiLine || node.TextScaled, ForegroundFor(node), textStrokes, leftAligned: true, topAligned: node.MultiLine)
+                : null;
             var input = new TextBox
             {
                 Tag = node,
@@ -690,6 +722,7 @@ public static class GuiRenderService
             placeholder.Visibility = string.IsNullOrEmpty(node.Text) && !string.IsNullOrEmpty(node.PlaceholderText) ? Visibility.Visible : Visibility.Collapsed;
             input.TextChanged += (_, _) =>
             {
+                textStroke?.SetText(input.Text);
                 placeholder.Visibility = string.IsNullOrEmpty(input.Text) && !string.IsNullOrEmpty(node.PlaceholderText) ? Visibility.Visible : Visibility.Collapsed;
                 textChanged?.Invoke(node, input.Text);
             };
@@ -712,6 +745,7 @@ public static class GuiRenderService
                 Keyboard.ClearFocus();
             };
             var textBox = new Grid { Background = background };
+            if (textStroke is not null) textBox.Children.Add(textStroke);
             textBox.Children.Add(input);
             textBox.Children.Add(placeholder);
             return textBox;
@@ -724,8 +758,12 @@ public static class GuiRenderService
             "VideoFrame" => CreateVideoFrame(node, project, background, propertyChanged),
             "ImageLabel" => CreateImageLabel(node, project, background),
             "ImageButton" => CreateImageButton(node, project, background),
-            "TextLabel" => new TextBlock { Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextWrapping = node.TextWrapped || node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap },
-            "TextButton" => new Button { Content = node.TextScaled || node.TextWrapped ? new TextBlock { Text = node.Text, FontSize = fontSize, TextWrapping = node.TextWrapped || node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap, TextAlignment = TextAlignment.Center } : node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, Padding = new Thickness(2) },
+            "TextLabel" => textStrokes.Count > 0
+                ? new StrokeTextVisual(node.Text, fontSize, width, height, node.TextWrapped || node.TextScaled, ForegroundFor(node), textStrokes)
+                : new TextBlock { Text = node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextWrapping = node.TextWrapped || node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap },
+            "TextButton" => new Button { Content = textStrokes.Count > 0
+                ? new StrokeTextVisual(node.Text, fontSize, Math.Max(1, width - 4), Math.Max(1, height - 4), node.TextWrapped || node.TextScaled, ForegroundFor(node), textStrokes)
+                : node.TextScaled || node.TextWrapped ? new TextBlock { Text = node.Text, FontSize = fontSize, TextWrapping = node.TextWrapped || node.TextScaled ? TextWrapping.Wrap : TextWrapping.NoWrap, TextAlignment = TextAlignment.Center } : node.Text, Foreground = ForegroundFor(node), Background = background, FontSize = fontSize, Padding = new Thickness(2) },
             _ => null
         };
         if (visual is Button button)
@@ -738,6 +776,68 @@ public static class GuiRenderService
             }
         }
         return visual;
+    }
+
+    private sealed class StrokeTextVisual : FrameworkElement
+    {
+        private readonly double fontSize;
+        private readonly bool wraps;
+        private readonly bool leftAligned;
+        private readonly bool topAligned;
+        private readonly Brush foreground;
+        private readonly IReadOnlyList<SceneNode> strokes;
+        private string text;
+
+        public StrokeTextVisual(string text, double fontSize, double width, double height, bool wraps, Brush foreground, IReadOnlyList<SceneNode> strokes, bool leftAligned = false, bool topAligned = false)
+        {
+            this.text = text;
+            this.fontSize = fontSize;
+            this.wraps = wraps;
+            this.leftAligned = leftAligned;
+            this.topAligned = topAligned;
+            this.foreground = foreground;
+            this.strokes = strokes;
+            Width = width;
+            Height = height;
+            IsHitTestVisible = false;
+        }
+
+        public void SetText(string value)
+        {
+            text = value;
+            Visibility = string.IsNullOrEmpty(value) ? Visibility.Collapsed : Visibility.Visible;
+            InvalidateVisual();
+        }
+
+        protected override void OnRender(DrawingContext drawingContext)
+        {
+            base.OnRender(drawingContext);
+            var typeface = new Typeface(SystemFonts.MessageFontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+            var formatted = new FormattedText(text, System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                typeface, fontSize, foreground, VisualTreeHelper.GetDpi(this).PixelsPerDip)
+            {
+                MaxTextHeight = Math.Max(1, ActualHeight)
+            };
+            formatted.MaxTextWidth = wraps ? Math.Max(1, ActualWidth) : Math.Max(1, formatted.WidthIncludingTrailingWhitespace);
+            formatted.TextAlignment = wraps && !leftAligned ? TextAlignment.Center : TextAlignment.Left;
+            var left = leftAligned ? 5 : wraps ? 0 : Math.Max(0, (ActualWidth - formatted.WidthIncludingTrailingWhitespace) * .5);
+            var top = topAligned ? 4 : Math.Max(0, (ActualHeight - formatted.Height) * .5);
+            var geometry = formatted.BuildGeometry(new Point(left, top));
+            foreach (var stroke in strokes.OrderBy(child => child.ZIndex))
+            {
+                var color = WithTransparency(ColorFrom(stroke.StrokeColor, Colors.White), stroke.Transparency);
+                var gradient = stroke.Children.FirstOrDefault(child => child.Type == "UIGradient" && child.Enabled);
+                var brush = gradient is null ? new SolidColorBrush(color) : GradientBrush(gradient, color);
+                var join = stroke.StrokeLineJoinMode switch
+                {
+                    "Bevel" => PenLineJoin.Bevel,
+                    "Miter" => PenLineJoin.Miter,
+                    _ => PenLineJoin.Round
+                };
+                drawingContext.DrawGeometry(null, new Pen(brush, Math.Max(0, stroke.StrokeThickness)) { LineJoin = join }, geometry);
+            }
+            drawingContext.DrawGeometry(foreground, null, geometry);
+        }
     }
 
     private static double FontSizeFor(SceneNode node, double width, double height)
@@ -963,9 +1063,12 @@ public static class GuiRenderService
             try
             {
                 var path = GameProjectStore.GetSafeAssetFilePathInAssets(project, node.Asset);
-                if (File.Exists(path)) return ReadViewportObj(path);
+                if (File.Exists(path))
+                    return Path.GetExtension(path).ToLowerInvariant() is ".glb" or ".gltf"
+                        ? ReadViewportGltf(path, project)
+                        : ReadViewportObj(path);
             }
-            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or JsonException or InvalidOperationException or OverflowException or FormatException) { }
         }
         if (node.Type == "Part" && node.Shape == "Ball") return CreateViewportSphere();
         if (node.Type == "Part" && node.Shape == "Cylinder") return CreateViewportCylinder();
@@ -999,6 +1102,20 @@ public static class GuiRenderService
                 if (indices[0] >= 0 && indices[index] >= 0 && indices[index + 1] >= 0
                     && indices[0] < vertices.Count && indices[index] < vertices.Count && indices[index + 1] < vertices.Count)
                     AddViewportTriangle(mesh, vertices[indices[0]], vertices[indices[index]], vertices[indices[index + 1]], orientAwayFromOrigin: false);
+        }
+        return mesh.Positions.Count > 0 ? mesh : CreateViewportBoxGeometry();
+    }
+
+    private static MeshGeometry3D ReadViewportGltf(string path, GameProject project)
+    {
+        var builder = GltfMeshReader.Read(path, project, out _);
+        var mesh = new MeshGeometry3D();
+        foreach (var index in builder.TriangleIndices)
+        {
+            if (index < 0 || index >= builder.Positions.Count) continue;
+            var position = builder.Positions[index];
+            mesh.Positions.Add(new Point3D(position.X, position.Y, position.Z));
+            mesh.TriangleIndices.Add(mesh.Positions.Count - 1);
         }
         return mesh.Positions.Count > 0 ? mesh : CreateViewportBoxGeometry();
     }
